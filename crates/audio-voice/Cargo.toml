@@ -1,0 +1,12 @@
+[package]
+name = "audio-voice"
+version.workspace = true
+edition.workspace = true
+description = "Generative audio voice for subit: maps game events to quantised Ensemble MIDI actions"
+
+[dependencies]
+ensemble-client.workspace = true
+ensemble-core.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

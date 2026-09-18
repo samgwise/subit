@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = ["crates/game", "crates/wfc", "crates/audio-voice"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+# Engine
+bevy = { version = "0.19", default-features = false, features = ["2d"] }
+bevy_ecs_tilemap = "0.19"
+avian2d = "0.7"
+# Ensemble audio bridge (local sibling checkout)
+ensemble-client = { path = "../ensemble/ensemble-client" }
+ensemble-core = { path = "../ensemble/ensemble-core" }
+# Async runtime for the Ensemble bridge tasks
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# Snappier runtime iteration for dev builds of Bevy apps
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

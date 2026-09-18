@@ -1,0 +1,5 @@
+[package]
+name = "wfc"
+version.workspace = true
+edition.workspace = true
+description = "Pure-Rust Wave Function Collapse solver for the subit prototype"
