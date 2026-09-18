@@ -1,5 +1,10 @@
 //! Ensemble bridge: publishes game events to the Ensemble hub from a
 //! background thread so the Bevy render loop never blocks on I/O.
+//!
+//! Addressing and signal semantics per the GDD event table: discrete combat
+//! moments are `Event` actions, per-frame player telemetry is high-rate
+//! `Stream` data (dropped rather than queued under congestion), and the
+//! world-integrity value is a `Param` — stateful, replayed to late joiners.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -10,15 +15,83 @@ use ensemble_core::protocol::*;
 use tokio::sync::mpsc;
 
 /// Game events the bridge knows how to publish (GDD section 5).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum GameAudioEvent {
-    /// Placeholder event fired on Space to verify the full chain.
-    TestPulse,
+    /// Primary attack trigger.
+    AttackPrimary,
+    /// Batched result of one cleave swing.
+    MobSweep { kill_count: u32, combo: u32 },
+    /// Streaming player speed for audio modulation.
+    PlayerTelemetry { speed: f32, max_speed: f32 },
+    /// World-integrity ratio of the generated map (walkable fraction).
+    WorldTelemetry { integrity: f32 },
+}
+
+impl GameAudioEvent {
+    /// The hub address the event is published on.
+    fn address(&self) -> &'static str {
+        match self {
+            GameAudioEvent::AttackPrimary => "/subit/game/event/action",
+            GameAudioEvent::MobSweep { .. } => "/subit/game/event/combat",
+            GameAudioEvent::PlayerTelemetry { .. } => "/subit/game/telemetry/player",
+            GameAudioEvent::WorldTelemetry { .. } => "/subit/game/telemetry/world",
+        }
+    }
+
+    /// The hub signal semantics for the event's address.
+    fn signal_type(&self) -> SignalType {
+        match self {
+            GameAudioEvent::AttackPrimary | GameAudioEvent::MobSweep { .. } => SignalType::Event,
+            GameAudioEvent::PlayerTelemetry { .. } => SignalType::Stream,
+            GameAudioEvent::WorldTelemetry { .. } => SignalType::Param,
+        }
+    }
+
+    /// The event payload as a protocol value map.
+    fn payload(&self) -> Value {
+        let mut fields = BTreeMap::new();
+        match self {
+            GameAudioEvent::AttackPrimary => {
+                fields.insert("type".into(), Value::String("attack_primary".into()));
+            }
+            GameAudioEvent::MobSweep { kill_count, combo } => {
+                fields.insert("type".into(), Value::String("mob_sweep".into()));
+                fields.insert("kill_count".into(), Value::Integer(*kill_count as i64));
+                fields.insert("combo".into(), Value::Integer(*combo as i64));
+            }
+            GameAudioEvent::PlayerTelemetry { speed, max_speed } => {
+                fields.insert("type".into(), Value::String("player_speed".into()));
+                fields.insert("speed".into(), Value::Float(FloatValue::new(*speed as f64)));
+                fields.insert(
+                    "max_speed".into(),
+                    Value::Float(FloatValue::new(*max_speed as f64)),
+                );
+            }
+            GameAudioEvent::WorldTelemetry { integrity } => {
+                fields.insert("type".into(), Value::String("world_integrity".into()));
+                fields.insert(
+                    "integrity".into(),
+                    Value::Float(FloatValue::new(*integrity as f64)),
+                );
+            }
+        }
+        Value::Map(fields)
+    }
 }
 
 /// Sender half of the bridge channel.
 #[derive(Resource)]
 pub struct BridgeTx(mpsc::Sender<GameAudioEvent>);
+
+impl BridgeTx {
+    /// Queue an event for publication; drops it (with a warning) when the
+    /// channel is full or not yet connected.
+    pub fn send(&self, event: GameAudioEvent) {
+        if let Err(err) = self.0.try_send(event) {
+            tracing::warn!("dropped {:?}: {err:?}", event.address());
+        }
+    }
+}
 
 pub struct EnsembleBridgePlugin;
 
@@ -54,29 +127,9 @@ async fn bridge_task(mut rx: mpsc::Receiver<GameAudioEvent>) {
     tracing::info!(voice_id = hub.voice_id, "connected to Ensemble hub");
 
     while let Some(event) = rx.recv().await {
-        let mut fields = BTreeMap::new();
-        match event {
-            GameAudioEvent::TestPulse => {
-                fields.insert("type".into(), Value::String("test_pulse".into()));
-            }
-        }
-        let msg = action(
-            "/subit/game/event",
-            SignalType::Event,
-            0.0,
-            Value::Map(fields),
-        );
+        let msg = action(event.address(), event.signal_type(), 0.0, event.payload());
         if let Err(err) = hub.send_action(msg).await {
             tracing::error!("failed to publish game event: {err:?}");
         }
-    }
-}
-
-/// Fire a test event on Space so the audio chain can be verified.
-pub fn send_test_pulse(input: Res<ButtonInput<KeyCode>>, bridge: Res<BridgeTx>) {
-    if input.just_pressed(KeyCode::Space)
-        && let Err(err) = bridge.0.try_send(GameAudioEvent::TestPulse)
-    {
-        tracing::warn!("dropped TestPulse: {err:?}");
     }
 }

@@ -1,7 +1,10 @@
 //! subit game client: boots the generated world, moves the player with
-//! physics-driven movement, and publishes game events to the Ensemble hub.
+//! physics-driven movement, fights the enemy swarm, and publishes game
+//! events to the Ensemble hub.
 
 mod bridge;
+mod combat;
+mod enemies;
 mod world;
 
 use avian2d::prelude::LinearVelocity;
@@ -15,12 +18,11 @@ fn main() {
             avian2d::PhysicsPlugins::default(),
             bridge::EnsembleBridgePlugin,
             world::WorldMapPlugin,
+            enemies::EnemyPlugin,
+            combat::CombatPlugin,
         ))
         .add_systems(Startup, setup)
-        .add_systems(
-            Update,
-            (player_movement, camera_follow, bridge::send_test_pulse),
-        )
+        .add_systems(Update, (player_movement, camera_follow))
         .run();
 }
 

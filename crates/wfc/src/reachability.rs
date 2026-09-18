@@ -72,24 +72,23 @@ pub(crate) fn largest_walkable_region(
     }
 }
 
-/// Choose the spawn cell at random within `region`, then the exit as the
-/// region cell farthest from spawn by BFS distance — a connected, reasonably
-/// long route is guaranteed by construction.
-pub(crate) fn choose_spawn_and_exit(
+/// BFS distances from `from` across the walkable cells of a collapsed grid.
+///
+/// Row-major over `grid.width()`; `None` means the cell is unreachable (a
+/// wall, outside the connected region, or `from` itself is not walkable).
+/// Consumers use this for reachability guarantees over the finished map —
+/// e.g. spawning enemies the player can actually reach.
+pub fn walkable_distances(
     grid: &Grid,
     prototypes: &[WeightedPrototype],
-    region: &[(u32, u32)],
-    rng: &mut SmallRng,
-) -> ((u32, u32), (u32, u32)) {
-    let spawn = region[rng.random_range(0..region.len())];
-
-    // BFS distances from the spawn across walkable cells.
+    from: (u32, u32),
+) -> Vec<Option<u32>> {
     let width = grid.width();
     let height = grid.height();
     let mut distance: Vec<Option<u32>> = vec![None; (width * height) as usize];
     let mut queue = VecDeque::new();
-    distance[(spawn.1 * width + spawn.0) as usize] = Some(0);
-    queue.push_back(spawn);
+    distance[(from.1 * width + from.0) as usize] = Some(0);
+    queue.push_back(from);
     while let Some((cx, cy)) = queue.pop_front() {
         let current = distance[(cy * width + cx) as usize].expect("dequeued cells have distances");
         for direction in Direction::ALL {
@@ -112,17 +111,37 @@ pub(crate) fn choose_spawn_and_exit(
             queue.push_back((nx, ny));
         }
     }
+    distance
+}
+
+/// Choose the spawn cell at random within `region`, then the exit as the
+/// region cell farthest from spawn by BFS distance — a connected, reasonably
+/// long route is guaranteed by construction.
+pub(crate) fn choose_spawn_and_exit(
+    grid: &Grid,
+    prototypes: &[WeightedPrototype],
+    region: &[(u32, u32)],
+    rng: &mut SmallRng,
+) -> ((u32, u32), (u32, u32)) {
+    let spawn = region[rng.random_range(0..region.len())];
+
+    let distance = walkable_distances(grid, prototypes, spawn);
 
     let mut exit = spawn;
     let mut best = 0u32;
     for &(cx, cy) in region {
-        let d = distance[(cy * width + cx) as usize].unwrap_or(0);
+        let d = distance[width_height_index(grid.width, cx, cy)].unwrap_or(0);
         if d > best {
             best = d;
             exit = (cx, cy);
         }
     }
     (spawn, exit)
+}
+
+/// Row-major vector index of a cell.
+fn width_height_index(width: u32, x: u32, y: u32) -> usize {
+    (y * width + x) as usize
 }
 
 #[cfg(test)]
@@ -189,5 +208,42 @@ mod tests {
         assert_ne!(spawn, exit);
         assert!(region.contains(&spawn));
         assert!(region.contains(&exit));
+    }
+
+    #[test]
+    fn walkable_distances_measures_from_the_origin_cell() {
+        let (prototypes, wall, floor) = test_setup();
+        let mut grid = Grid::new(5, 5);
+        for y in 0..5 {
+            for x in 0..5 {
+                grid.set(x, y, floor as u32);
+            }
+        }
+        // Sealed border plus a wall column down the middle splits the space.
+        for xy in 0..5 {
+            grid.set(xy, 0, wall as u32);
+            grid.set(xy, 4, wall as u32);
+            grid.set(0, xy, wall as u32);
+            grid.set(4, xy, wall as u32);
+        }
+        for y in 1..4 {
+            grid.set(2, y, wall as u32);
+        }
+
+        let distances = walkable_distances(&grid, &prototypes, (1, 1));
+        let at = |x: u32, y: u32| distances[(y * 5 + x) as usize];
+        // Origin is zero, same-side cells are reachable, the far side is not.
+        assert_eq!(at(1, 1), Some(0));
+        assert_eq!(at(1, 2), Some(1));
+        assert_eq!(at(1, 3), Some(2));
+        assert_eq!(at(3, 3), None);
+
+        // Distances measure from the origin even when it is a wall cell —
+        // the flood simply walks out of it.
+        let from_wall = walkable_distances(&grid, &prototypes, (2, 1));
+        let from = |x: u32, y: u32| from_wall[(y * 5 + x) as usize];
+        assert_eq!(from(2, 1), Some(0));
+        assert_eq!(from(1, 1), Some(1));
+        assert_eq!(from(3, 3), Some(3));
     }
 }

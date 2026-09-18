@@ -2,14 +2,15 @@
 //! materialise the result as a rendered tilemap with colliders.
 
 use avian2d::prelude::{
-    Collider, Gravity, LockedAxes, Position, RigidBody, Rotation, SleepingDisabled,
+    Collider, CollidingEntities, Gravity, LockedAxes, Position, RigidBody, Rotation,
+    SleepingDisabled,
 };
 use bevy::asset::RenderAssetUsages;
 use bevy::image::Image;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy_ecs_tilemap::prelude::*;
-use wfc::{GeneratorConfig, TileClass, generate, prototype_set};
+use wfc::{GeneratedMap, GeneratorConfig, TileClass, generate, prototype_set};
 
 /// Size of a single tile in world units (pixels).
 pub const TILE_SIZE: f32 = 32.0;
@@ -33,6 +34,15 @@ impl Default for MapConfig {
     }
 }
 
+/// The generated map data (grid, spawn, exit) as an ECS resource, for
+/// systems that need the raw tile data (enemy placement, telemetry).
+#[derive(Resource)]
+pub struct WorldMapRes(pub GeneratedMap);
+
+/// World-space position the player respawns at.
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct SpawnPoint(pub Vec2);
+
 pub struct WorldMapPlugin;
 
 impl Plugin for WorldMapPlugin {
@@ -47,10 +57,11 @@ impl Plugin for WorldMapPlugin {
 
 /// Run the WFC generator and materialise the map as a rendered tilemap with
 /// colliders and a player.
-fn generate_world(
+pub(crate) fn generate_world(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
     config: Res<MapConfig>,
+    bridge: Res<crate::bridge::BridgeTx>,
 ) {
     let generated = generate(&config.generator).expect("world generation failed");
     let (width, height) = (generated.grid.width(), generated.grid.height());
@@ -124,6 +135,8 @@ fn generate_world(
     commands.spawn((RigidBody::Static, Collider::compound(wall_rectangles)));
 
     // Player at the generated spawn point, above the tiles.
+    // CollidingEntities is populated by avian and read by the contact-damage
+    // system; it must be added manually.
     let spawn_pos = tile_world_pos((width, height), generated.spawn, config.tile_size);
     let player_size = config.tile_size * 0.6;
     commands.spawn((
@@ -134,7 +147,22 @@ fn generate_world(
         Collider::rectangle(player_size, player_size),
         LockedAxes::ROTATION_LOCKED,
         SleepingDisabled,
+        CollidingEntities::default(),
     ));
+
+    // Resources other systems build on: the raw map data, the respawn point,
+    // and the world-integrity telemetry (walkable fraction of the grid).
+    commands.insert_resource(WorldMapRes(generated.clone()));
+    commands.insert_resource(SpawnPoint(spawn_pos));
+    let walkable = (0..height)
+        .flat_map(|y| (0..width).map(move |x| (x, y)))
+        .filter(|&(x, y)| {
+            class_of(generated.grid.get(x, y).expect("fully collapsed")) != TileClass::Wall
+        })
+        .count();
+    let integrity = walkable as f32 / (width * height) as f32;
+    bridge.send(crate::bridge::GameAudioEvent::WorldTelemetry { integrity });
+    tracing::info!(integrity, "world integrity published");
 }
 
 /// World-space centre of a tile for an anchor-centred map whose tilemap

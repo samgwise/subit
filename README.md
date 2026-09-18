@@ -6,8 +6,9 @@ generative audio.
 
 ## Workspace
 
-- `crates/game` — Bevy client: window, WASD placeholder player, tilemap/physics
-  wiring, and the Ensemble bridge that publishes game events to the hub.
+- `crates/game` — Bevy client: WFC-generated tilemap with physics, WASD player,
+  enemy swarm, mouse-aimed cleave combat, and the Ensemble bridge that
+  publishes combat events and telemetry to the hub.
 - `crates/wfc` — pure-Rust Wave Function Collapse solver, deliberately
   engine-free so it can run off the ECS thread and be tested in isolation.
 - `crates/audio-voice` — generative audio voice as a library plus a thin
@@ -37,7 +38,7 @@ Print an ASCII rendering of a generated map for a given seed:
 cargo run -p wfc --example ascii_map 42
 ```
 
-## Running the audio chain (Milestone 1 verification)
+## Running the audio chain
 
 ```sh
 # Terminal 1 — from ../ensemble: the hub
@@ -46,10 +47,13 @@ cargo run --bin ensemble-hub-tui
 cargo run --bin ensemble-bridge-midi
 # Terminal 3 — the audio voice
 cargo run -p audio-voice
-# Terminal 4 — the game (press Space to fire a test event)
+# Terminal 4 — the game
+#   WASD to move, left-click to cleave toward the cursor, enemies chase you
 cargo run -p game
 ```
 
-The hub's TUI action monitor shows the published events and the scheduled
-`/midi/play` actions. On Windows, REAPER needs a virtual MIDI loopback
-(e.g. loopMIDI) to receive notes from the Ensemble MIDI bridge.
+The hub's TUI action monitor shows the published events (`/subit/game/event/*`
+combat moments, `/subit/game/telemetry/*` streams) and the scheduled
+`/midi/play` notes and `/midi/cc` mod-wheel output. On Windows, REAPER needs a
+virtual MIDI loopback (e.g. loopMIDI) to receive notes from the Ensemble MIDI
+bridge.

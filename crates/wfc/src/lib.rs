@@ -12,6 +12,7 @@ mod socket;
 mod solver;
 mod tiles;
 
+pub use reachability::walkable_distances;
 pub use socket::{Direction, Socket};
 pub use tiles::{TileClass, TilePrototype, WeightedPrototype, prototype_set, tiles_are_compatible};
 

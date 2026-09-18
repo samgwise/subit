@@ -2811,6 +2811,7 @@ dependencies = [
  "bevy_ecs_tilemap",
  "ensemble-client",
  "ensemble-core",
+ "rand",
  "tokio",
  "tracing",
  "wfc",

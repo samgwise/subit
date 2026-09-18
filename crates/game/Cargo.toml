@@ -13,3 +13,5 @@ ensemble-core.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 wfc.workspace = true
+# Deterministic enemy spawn placement
+rand.workspace = true
