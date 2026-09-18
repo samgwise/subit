@@ -1,41 +1,41 @@
-//! subit game client: a minimal Bevy app with a movable placeholder player
-//! and the Ensemble bridge that publishes game events to the hub.
+//! subit game client: boots the generated world, moves the player with
+//! physics-driven movement, and publishes game events to the Ensemble hub.
 
 mod bridge;
+mod world;
 
+use avian2d::prelude::LinearVelocity;
 use bevy::prelude::*;
-use bevy_ecs_tilemap::prelude::TilemapPlugin;
 
 fn main() {
     App::new()
         .add_plugins((
-            DefaultPlugins,
-            TilemapPlugin,
+            DefaultPlugins.set(ImagePlugin::default_nearest()),
+            bevy_ecs_tilemap::prelude::TilemapPlugin,
             avian2d::PhysicsPlugins::default(),
             bridge::EnsembleBridgePlugin,
+            world::WorldMapPlugin,
         ))
         .add_systems(Startup, setup)
-        .add_systems(Update, (player_movement, bridge::send_test_pulse))
+        .add_systems(
+            Update,
+            (player_movement, camera_follow, bridge::send_test_pulse),
+        )
         .run();
 }
 
 #[derive(Component)]
-struct Player;
+pub struct Player;
 
 fn setup(mut commands: Commands) {
     commands.spawn(Camera2d);
-    // Placeholder player: a plain white square until proper art lands.
-    commands.spawn((
-        Sprite::default(),
-        Transform::from_scale(Vec3::splat(50.0)),
-        Player,
-    ));
 }
 
+/// Physics-driven WASD movement: write the desired velocity and let the
+/// solver resolve wall collisions.
 fn player_movement(
-    time: Res<Time>,
     input: Res<ButtonInput<KeyCode>>,
-    mut player: Single<&mut Transform, With<Player>>,
+    mut player: Single<&mut LinearVelocity, With<Player>>,
 ) {
     let mut direction = Vec2::ZERO;
     if input.pressed(KeyCode::KeyW) {
@@ -51,6 +51,14 @@ fn player_movement(
         direction.x += 1.0;
     }
     if direction != Vec2::ZERO {
-        player.translation += direction.normalize().extend(0.0) * 300.0 * time.delta_secs();
+        direction = direction.normalize();
     }
+    player.0 = direction * world::PLAYER_SPEED;
+}
+
+fn camera_follow(
+    player: Single<&Transform, With<Player>>,
+    mut camera: Single<&mut Transform, (With<Camera2d>, Without<Player>)>,
+) {
+    camera.translation = player.translation.with_z(camera.translation.z);
 }

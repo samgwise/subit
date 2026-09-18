@@ -12,3 +12,4 @@ ensemble-client.workspace = true
 ensemble-core.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+wfc.workspace = true

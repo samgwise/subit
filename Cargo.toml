@@ -18,6 +18,8 @@ ensemble-core = { path = "../ensemble/ensemble-core" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
 # Procgen RNG (used by crates/wfc only)
 rand = "0.10"
+# Internal crates
+wfc = { path = "crates/wfc" }
 tracing = "0.1"
 tracing-subscriber = "0.3"
 

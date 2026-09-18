@@ -2813,6 +2813,7 @@ dependencies = [
  "ensemble-core",
  "tokio",
  "tracing",
+ "wfc",
 ]
 
 [[package]]
