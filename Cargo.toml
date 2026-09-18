@@ -16,6 +16,8 @@ ensemble-client = { path = "../ensemble/ensemble-client" }
 ensemble-core = { path = "../ensemble/ensemble-core" }
 # Async runtime for the Ensemble bridge tasks
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
+# Procgen RNG (used by crates/wfc only)
+rand = "0.10"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 

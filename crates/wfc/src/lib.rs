@@ -1,74 +1,25 @@
-//! Pure-Rust Wave Function Collapse (WFC) solver for the subit prototype.
+//! Pure-Rust Wave Function Collapse (WFC) map generation for the subit
+//! prototype.
 //!
-//! This crate is deliberately engine-free (no Bevy dependencies) so the
-//! collapse can run off the ECS thread and be unit tested in isolation,
-//! per the GDD pipeline (phase 1: abstract WFC execution).
+//! Engine-free by design: generation runs on plain Rust data so it can
+//! execute off the ECS thread (GDD phase 1) and be unit tested in isolation.
+//! [`generate`] performs the abstract WFC collapse, then a flood-fill
+//! reachability pass that guarantees a spawn-to-exit route (GDD phase 2);
+//! Bevy instantiation of the result happens later, in Milestone 3.
 
-/// Edge sockets describe how tiles connect to their neighbours. The GDD's
-/// three tile classes each expose a distinct socket so adjacency rules can
-/// guarantee sensible corridor layouts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Socket {
-    /// High traversal speed, high enemy spawn capacity.
-    OpenGround,
-    /// Blocking physics, high visual light emitter density.
-    WallConduit,
-    /// Interactive objective points that trigger audio mode shifts.
-    TerminalNode,
-}
+mod reachability;
+mod socket;
+mod solver;
+mod tiles;
 
-impl Socket {
-    /// Socket compatibility is symmetrical: a socket only accepts a matching
-    /// socket on the neighbouring edge.
-    pub fn accepts(self, other: Socket) -> bool {
-        self == other
-    }
-}
+pub use socket::{Direction, Socket};
+pub use tiles::{TileClass, TilePrototype, WeightedPrototype, prototype_set, tiles_are_compatible};
 
-/// The four cardinal directions, used to name a tile's edges.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Direction {
-    North,
-    East,
-    South,
-    West,
-}
+use rand::SeedableRng;
+use rand::rngs::SmallRng;
 
-impl Direction {
-    /// The opposing direction, i.e. the edge on the neighbouring tile that
-    /// touches this one.
-    pub fn opposite(self) -> Direction {
-        match self {
-            Direction::North => Direction::South,
-            Direction::East => Direction::West,
-            Direction::South => Direction::North,
-            Direction::West => Direction::East,
-        }
-    }
-}
-
-/// A tile prototype with a socket on each edge, indexed by `Direction`
-/// (north, east, south, west — declaration order).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TilePrototype {
-    pub sockets: [Socket; 4],
-}
-
-impl TilePrototype {
-    /// Look up the socket on the given edge.
-    pub fn socket(&self, direction: Direction) -> Socket {
-        self.sockets[direction as usize]
-    }
-}
-
-/// Check whether tile `a` may be placed in `direction` of tile `b`. The edges
-/// that touch are `a`'s opposing socket and `b`'s socket on `direction`.
-pub fn tiles_are_compatible(a: &TilePrototype, b: &TilePrototype, direction: Direction) -> bool {
-    a.socket(direction.opposite()).accepts(b.socket(direction))
-}
-
-/// A collapsed grid of tile indices (`None` whilst a cell is still in
-/// superposition).
+/// A collapsed grid of tile indices into the prototype set ([`None`] whilst a
+/// cell is still in superposition).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Grid {
     width: u32,
@@ -107,112 +58,137 @@ impl Grid {
     }
 }
 
-/// Behaviour for a WFC solver: collapse a `width x height` region to indices
-/// into `tiles`, honouring the adjacency constraints the socket model implies.
-pub trait Solver {
-    fn collapse(&self, width: u32, height: u32, tiles: &[TilePrototype]) -> Grid;
+/// Configuration for [`generate`].
+///
+/// `wall_weight` and `terminal_weight` are probability shares: the expected
+/// fraction of the map those classes occupy, with the floor variants taking
+/// the remainder weighted by open-edge count.
+#[derive(Debug, Clone)]
+pub struct GeneratorConfig {
+    pub width: u32,
+    pub height: u32,
+    pub seed: u64,
+    pub wall_weight: f32,
+    pub terminal_weight: f32,
+    /// Minimum fraction of interior cells the largest walkable region must
+    /// cover before the map is accepted.
+    pub min_walkable_ratio: f32,
+    /// How many collapse attempts may fail before giving up.
+    pub max_restarts: u32,
 }
 
-/// Placeholder solver used until Milestone 2 lands the real algorithm: it
-/// fills every cell with the first tile prototype so downstream wiring has
-/// something deterministic to consume.
-pub struct TrivialSolver;
-
-impl Solver for TrivialSolver {
-    fn collapse(&self, width: u32, height: u32, tiles: &[TilePrototype]) -> Grid {
-        let mut grid = Grid::new(width, height);
-        if !tiles.is_empty() {
-            for y in 0..height {
-                for x in 0..width {
-                    grid.set(x, y, 0);
-                }
-            }
+impl Default for GeneratorConfig {
+    fn default() -> Self {
+        Self {
+            width: 48,
+            height: 48,
+            seed: 0,
+            // Measured ceiling: shares at or above ~0.3 let wall adjacency
+            // escalate (each wall neighbour eliminates open floor variants),
+            // fragmenting the walkable space below the ratio threshold.
+            // Robust at the default 48x48; lower to ~0.15 for 64x64+ grids.
+            wall_weight: 0.25,
+            terminal_weight: 0.02,
+            min_walkable_ratio: 0.3,
+            max_restarts: 100,
         }
-        grid
     }
+}
+
+/// Why generation failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GenerationError {
+    /// Dimensions too small to hold a sealed border plus an interior.
+    GridTooSmall,
+    /// No valid map was found within the restart budget.
+    ExhaustedRestarts { attempts: u32 },
+}
+
+/// A fully collapsed map plus its chosen spawn and exit cells.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GeneratedMap {
+    pub grid: Grid,
+    pub spawn: (u32, u32),
+    pub exit: (u32, u32),
+}
+
+/// Mix a base seed and attempt index into an unrelated RNG seed. Plain
+/// addition would make neighbouring config seeds cycle overlapping derived
+/// seeds, so once attempts start failing, different seeds collapse to the
+/// same first-viable map.
+fn attempt_seed(base: u64, attempt: u32) -> u64 {
+    // SplitMix64 finaliser over a uniquely-combined input.
+    let mut z = base ^ (attempt as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+/// Generate a map per the GDD pipeline: abstract WFC collapse (phase 1),
+/// then the flood-fill reachability pass with spawn/exit selection (phase
+/// 2). Contradictions and undersized walkable regions restart the collapse
+/// with a derived seed until a valid map is produced or the restart budget
+/// is spent.
+pub fn generate(config: &GeneratorConfig) -> Result<GeneratedMap, GenerationError> {
+    if config.width < 5 || config.height < 5 {
+        return Err(GenerationError::GridTooSmall);
+    }
+    let prototypes = tiles::prototype_set(config.wall_weight, config.terminal_weight);
+    for attempt in 0..config.max_restarts {
+        let mut rng = SmallRng::seed_from_u64(attempt_seed(config.seed, attempt));
+        let Some(grid) = solver::solve_once(config.width, config.height, &prototypes, &mut rng)
+        else {
+            continue; // contradiction — restart with the next derived seed
+        };
+        let Some(region) = reachability::largest_walkable_region(&grid, &prototypes) else {
+            continue; // nothing walkable at all
+        };
+        let interior_cells = ((config.width - 2) * (config.height - 2)) as f32;
+        if region.len() as f32 / interior_cells < config.min_walkable_ratio {
+            continue; // too cramped for play — restart
+        }
+        let (spawn, exit) =
+            reachability::choose_spawn_and_exit(&grid, &prototypes, &region, &mut rng);
+        return Ok(GeneratedMap { grid, spawn, exit });
+    }
+    Err(GenerationError::ExhaustedRestarts {
+        attempts: config.max_restarts,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn tile(north: Socket, east: Socket, south: Socket, west: Socket) -> TilePrototype {
-        TilePrototype {
-            sockets: [north, east, south, west],
-        }
+    #[test]
+    fn different_seeds_generate_differently() {
+        let first = generate(&GeneratorConfig {
+            width: 24,
+            height: 24,
+            seed: 1,
+            ..Default::default()
+        })
+        .unwrap();
+        let second = generate(&GeneratorConfig {
+            width: 24,
+            height: 24,
+            seed: 2,
+            ..Default::default()
+        })
+        .unwrap();
+        assert_ne!(
+            first.grid, second.grid,
+            "distinct seeds must generate distinct maps"
+        );
     }
 
     #[test]
-    fn sockets_only_accept_matching_sockets() {
-        assert!(Socket::OpenGround.accepts(Socket::OpenGround));
-        assert!(Socket::WallConduit.accepts(Socket::WallConduit));
-        assert!(!Socket::OpenGround.accepts(Socket::WallConduit));
-        assert!(!Socket::WallConduit.accepts(Socket::OpenGround));
-    }
-
-    #[test]
-    fn opposite_directions_pair_up() {
-        assert_eq!(Direction::North.opposite(), Direction::South);
-        assert_eq!(Direction::East.opposite(), Direction::West);
-        assert_eq!(Direction::South.opposite(), Direction::North);
-        assert_eq!(Direction::West.opposite(), Direction::East);
-    }
-
-    #[test]
-    fn clashing_edges_are_incompatible() {
-        let open = tile(
-            Socket::OpenGround,
-            Socket::OpenGround,
-            Socket::OpenGround,
-            Socket::OpenGround,
-        );
-        let wall = tile(
-            Socket::WallConduit,
-            Socket::WallConduit,
-            Socket::WallConduit,
-            Socket::WallConduit,
-        );
-        assert!(!tiles_are_compatible(&open, &wall, Direction::East));
-        assert!(tiles_are_compatible(&wall, &wall, Direction::East));
-
-        // Only the touching edges matter: an open tile cannot sit east of a
-        // tile whose eastern edge is a wall socket, even though both are
-        // otherwise open.
-        let open_with_wall_east = tile(
-            Socket::OpenGround,
-            Socket::WallConduit,
-            Socket::OpenGround,
-            Socket::OpenGround,
-        );
-        assert!(!tiles_are_compatible(
-            &open,
-            &open_with_wall_east,
-            Direction::East
-        ));
-    }
-
-    #[test]
-    fn trivial_solver_fills_grid_with_first_tile() {
-        let open = tile(
-            Socket::OpenGround,
-            Socket::OpenGround,
-            Socket::OpenGround,
-            Socket::OpenGround,
-        );
-        let tiles = vec![open, open];
-        let grid = TrivialSolver.collapse(3, 2, &tiles);
+    fn grid_tracks_dimensions_and_cells() {
+        let mut grid = Grid::new(3, 2);
         assert_eq!((grid.width(), grid.height()), (3, 2));
-        for y in 0..grid.height() {
-            for x in 0..grid.width() {
-                assert_eq!(grid.get(x, y), Some(0));
-            }
-        }
-    }
-
-    #[test]
-    fn trivial_solver_without_tiles_leaves_grid_uncollapsed() {
-        let grid = TrivialSolver.collapse(2, 2, &[]);
         assert_eq!(grid.get(0, 0), None);
+        grid.set(2, 1, 7);
+        assert_eq!(grid.get(2, 1), Some(7));
         assert_eq!(grid.get(1, 1), None);
     }
 }

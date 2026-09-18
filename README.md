@@ -29,6 +29,14 @@ cargo test --workspace
 cargo clippy --workspace -- -D warnings
 ```
 
+## Eyeballing generated maps
+
+Print an ASCII rendering of a generated map for a given seed:
+
+```sh
+cargo run -p wfc --example ascii_map 42
+```
+
 ## Running the audio chain (Milestone 1 verification)
 
 ```sh
