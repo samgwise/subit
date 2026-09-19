@@ -7,14 +7,16 @@
 use std::time::Duration;
 
 use avian2d::prelude::{CollidingEntities, LinearVelocity, Position};
+use bevy::math::{Isometry2d, Rot2};
 use bevy::prelude::*;
 
 use crate::bridge::{BridgeTx, GameAudioEvent};
 use crate::enemies::Enemy;
 use crate::world::{SpawnPoint, TILE_SIZE};
+// (player sprite colour lives in main as PLAYER_COLOUR)
 
 /// Player hit points at full health.
-const MAX_HP: i32 = 100;
+pub(crate) const MAX_HP: i32 = 100;
 
 /// Damage dealt by one enemy contact.
 const CONTACT_DAMAGE: i32 = 30;
@@ -38,6 +40,9 @@ const COMBO_WINDOW_SECS: f64 = 2.0;
 /// How long the cleave flash stays on screen.
 const ATTACK_FX_SECS: f32 = 0.1;
 
+/// How long the player sprite tints red immediately after taking a hit.
+const HIT_FLASH_SECS: f32 = 0.15;
+
 /// Player health state plus the contact-damage invulnerability window.
 #[derive(Resource, Debug)]
 pub struct PlayerVitals {
@@ -57,13 +62,14 @@ pub struct ComboState {
     last_kill: Option<Duration>,
 }
 
-/// Transient cleave visual: a ring flash around the swing origin.
+/// Transient cleave visual: a cone flash matching the actual hit area.
 #[derive(Resource, Debug, Default)]
 struct CleaveFx(Option<CleaveFxActive>);
 
 #[derive(Debug)]
 struct CleaveFxActive {
     origin: Vec2,
+    aim: Vec2,
     timer: Timer,
 }
 
@@ -86,6 +92,7 @@ impl Plugin for CombatPlugin {
             (
                 player_attack,
                 cleave_fx,
+                player_vitals_fx,
                 contact_damage,
                 player_speed_telemetry,
             ),
@@ -152,6 +159,7 @@ fn player_attack(
         bridge.send(GameAudioEvent::AttackPrimary);
         *fx = CleaveFx(Some(CleaveFxActive {
             origin,
+            aim,
             timer: Timer::from_seconds(ATTACK_FX_SECS, TimerMode::Once),
         }));
 
@@ -182,7 +190,15 @@ fn player_attack(
     }
 }
 
-/// Draw the cleave flash while it is active.
+/// Rotation that centres a `GizmoBuffer::arc_2d` arc on `aim`. Gizmo arcs
+/// sweep counter-clockwise starting from `Vec2::Y`, so the arc covers
+/// [aim − half, aim + half] when rotated by aim − π/2 − half.
+fn cone_rotation(aim: Vec2, half_angle: f32) -> f32 {
+    aim.y.atan2(aim.x) - core::f32::consts::FRAC_PI_2 - half_angle
+}
+
+/// Draw the cleave flash while it is active — the wedge outline of the
+/// actual hit area, not a circle.
 fn cleave_fx(mut fx: ResMut<CleaveFx>, time: Res<Time>, mut gizmos: Gizmos) {
     let Some(active) = fx.0.as_mut() else {
         return;
@@ -190,12 +206,44 @@ fn cleave_fx(mut fx: ResMut<CleaveFx>, time: Res<Time>, mut gizmos: Gizmos) {
     active.timer.tick(time.delta());
     if active.timer.is_finished() {
         *fx = CleaveFx(None);
-    } else {
-        gizmos.circle_2d(
+        return;
+    }
+
+    let colour = Color::srgba(0.4, 0.9, 1.0, 0.8);
+    let aim_angle = active.aim.y.atan2(active.aim.x);
+    if active.aim == Vec2::ZERO {
+        // Degenerate aim: the hit test treats it as radial, so flash radial.
+        gizmos.circle_2d(active.origin, CLEAVE_RADIUS, colour);
+        return;
+    }
+    let isometry = Isometry2d::new(
+        active.origin,
+        Rot2::radians(cone_rotation(active.aim, CLEAVE_HALF_ANGLE)),
+    );
+    gizmos.arc_2d(isometry, CLEAVE_HALF_ANGLE * 2.0, CLEAVE_RADIUS, colour);
+    for edge_angle in [aim_angle - CLEAVE_HALF_ANGLE, aim_angle + CLEAVE_HALF_ANGLE] {
+        gizmos.line_2d(
             active.origin,
-            CLEAVE_RADIUS,
-            Color::srgba(0.4, 0.9, 1.0, 0.8),
+            active.origin + Vec2::from_angle(edge_angle) * CLEAVE_RADIUS,
+            colour,
         );
+    }
+}
+
+/// Make the player's state legible: red flash on the frame of a hit, then a
+/// dim blink for the rest of the invulnerability window.
+fn player_vitals_fx(
+    mut player: Single<&mut Sprite, With<crate::Player>>,
+    vitals: Res<PlayerVitals>,
+    time: Res<Time>,
+) {
+    if vitals.invuln.is_finished() {
+        player.color = crate::PLAYER_COLOUR;
+    } else if INVULN_SECS - vitals.invuln.elapsed_secs() < HIT_FLASH_SECS {
+        player.color = Color::srgba(1.0, 0.25, 0.25, 0.9);
+    } else {
+        let lit = ((time.elapsed_secs() * 12.0) as i64) % 2 == 0;
+        player.color = Color::srgba(0.9, 0.9, 0.95, if lit { 0.9 } else { 0.35 });
     }
 }
 
@@ -353,6 +401,29 @@ mod tests {
         assert_eq!(
             advance_combo(5, Some(Duration::from_secs_f64(2.1)), window),
             1
+        );
+    }
+
+    #[test]
+    fn cone_rotation_centres_the_arc_on_the_aim() {
+        let half = CLEAVE_HALF_ANGLE;
+        // Arc angles covered by an arc rotated by `cone_rotation`: the arc
+        // sweeps CCW from Vec2::Y (π/2) plus the rotation.
+        let span = |rotation: f32| {
+            (core::f32::consts::FRAC_PI_2 + rotation).rem_euclid(core::f32::consts::TAU)
+        };
+        // Aiming +X: the span must start at −half (i.e. TAU − half).
+        assert!(
+            (span(cone_rotation(Vec2::X, half)) - (core::f32::consts::TAU - half)).abs() < 1e-6
+        );
+        // Aiming +Y: the span starts at π/2 − half.
+        assert!(
+            (span(cone_rotation(Vec2::Y, half)) - (core::f32::consts::FRAC_PI_2 - half)).abs()
+                < 1e-6
+        );
+        // Aiming −X: the span starts at π − half.
+        assert!(
+            (span(cone_rotation(Vec2::NEG_X, half)) - (core::f32::consts::PI - half)).abs() < 1e-6
         );
     }
 }

@@ -5,6 +5,7 @@
 mod bridge;
 mod combat;
 mod enemies;
+mod hud;
 mod world;
 
 use avian2d::prelude::LinearVelocity;
@@ -20,6 +21,7 @@ fn main() {
             world::WorldMapPlugin,
             enemies::EnemyPlugin,
             combat::CombatPlugin,
+            hud::HudPlugin,
         ))
         .add_systems(Startup, setup)
         .add_systems(Update, (player_movement, camera_follow))
@@ -28,6 +30,9 @@ fn main() {
 
 #[derive(Component)]
 pub struct Player;
+
+/// The player sprite's resting tint (also the flash/blink reset colour).
+pub const PLAYER_COLOUR: Color = Color::srgb(0.9, 0.9, 0.95);
 
 fn setup(mut commands: Commands) {
     commands.spawn(Camera2d);
