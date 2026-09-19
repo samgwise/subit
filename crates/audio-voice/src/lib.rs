@@ -64,6 +64,10 @@ pub enum GameEvent {
     /// Enemy kill / AoE mob sweep — melodic run based on hit count, with the
     /// combo chain lifting the performance intensity.
     MobSweep { kill_count: u32, combo: u32 },
+    /// A thrower enemy lobbed a projectile — low quiet blip.
+    ProjectileThrow,
+    /// The shield reflected a projectile — bright stab.
+    ShieldReflect,
 }
 
 /// A MIDI-ready note event.
@@ -96,6 +100,18 @@ pub fn perform_event(event: GameEvent) -> NoteEvent {
                 duration_secs: 0.5,
             }
         }
+        GameEvent::ProjectileThrow => NoteEvent {
+            channel: 0,
+            note: 45,
+            velocity: 60,
+            duration_secs: 0.1,
+        },
+        GameEvent::ShieldReflect => NoteEvent {
+            channel: 0,
+            note: 79,
+            velocity: 110,
+            duration_secs: 0.15,
+        },
     }
 }
 
@@ -162,6 +178,14 @@ mod tests {
             combo: 100,
         });
         assert_eq!(huge.velocity, 127);
+    }
+
+    #[test]
+    fn throws_blip_low_and_reflects_stab_bright() {
+        let throw = perform_event(GameEvent::ProjectileThrow);
+        let reflect = perform_event(GameEvent::ShieldReflect);
+        assert!(reflect.note > throw.note);
+        assert!(reflect.velocity > throw.velocity);
     }
 
     #[test]

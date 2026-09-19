@@ -4,8 +4,8 @@
 //! open arenas, exit marked with a beacon).
 
 use avian2d::prelude::{
-    Collider, CollidingEntities, Gravity, LockedAxes, Position, RigidBody, Rotation,
-    SleepingDisabled,
+    Collider, CollidingEntities, CollisionLayers, Gravity, LockedAxes, Position, RigidBody,
+    Rotation, SleepingDisabled,
 };
 use bevy::asset::RenderAssetUsages;
 use bevy::image::Image;
@@ -51,6 +51,20 @@ pub struct SpawnPoint(pub Vec2);
 /// Marker for the pulsing glow pillar marking the exit.
 #[derive(Component)]
 struct ExitBeacon;
+
+/// Collision layer bits (avian `CollisionLayers::from_bits` memberships and
+/// filters). Allegiance filtering keeps enemy shots off enemies and reflected
+/// shots off the player.
+pub const LAYER_WALL: u32 = 1 << 0;
+pub const LAYER_PLAYER: u32 = 1 << 1;
+pub const LAYER_ENEMY: u32 = 1 << 2;
+pub const LAYER_ENEMY_SHOT: u32 = 1 << 3;
+pub const LAYER_PLAYER_SHOT: u32 = 1 << 4;
+
+/// Marker for the compound static wall body, so collision events can
+/// distinguish wall bounces from gameplay hits.
+#[derive(Component)]
+pub struct WallBody;
 
 /// Atlas layout: 1 grid floor, 16 wall autotile masks, 1 terminal.
 const FLOOR_ATLAS_INDEX: u32 = 0;
@@ -197,7 +211,12 @@ pub(crate) fn generate_world(
             )
         })
         .collect();
-    commands.spawn((RigidBody::Static, Collider::compound(wall_rectangles)));
+    commands.spawn((
+        WallBody,
+        RigidBody::Static,
+        Collider::compound(wall_rectangles),
+        CollisionLayers::from_bits(LAYER_WALL, u32::MAX),
+    ));
 
     // Player at the generated spawn point, above the tiles.
     // CollidingEntities is populated by avian and read by the contact-damage
@@ -213,6 +232,7 @@ pub(crate) fn generate_world(
         LockedAxes::ROTATION_LOCKED,
         SleepingDisabled,
         CollidingEntities::default(),
+        CollisionLayers::from_bits(LAYER_PLAYER, LAYER_WALL | LAYER_ENEMY | LAYER_ENEMY_SHOT),
     ));
 
     // Wayfinding: a translucent glow pillar over the exit, visible from

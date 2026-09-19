@@ -6,6 +6,7 @@ mod bridge;
 mod combat;
 mod enemies;
 mod hud;
+mod projectiles;
 mod world;
 
 use avian2d::prelude::LinearVelocity;
@@ -21,6 +22,7 @@ fn main() {
             world::WorldMapPlugin,
             enemies::EnemyPlugin,
             combat::CombatPlugin,
+            projectiles::ProjectilePlugin,
             hud::HudPlugin,
         ))
         .add_systems(Startup, setup)

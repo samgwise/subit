@@ -21,6 +21,10 @@ pub enum GameAudioEvent {
     AttackPrimary,
     /// Batched result of one cleave swing.
     MobSweep { kill_count: u32, combo: u32 },
+    /// A thrower enemy lobbed a projectile.
+    ProjectileThrow,
+    /// The shield reflected a projectile.
+    ShieldReflect,
     /// Streaming player speed for audio modulation.
     PlayerTelemetry { speed: f32, max_speed: f32 },
     /// World-integrity ratio of the generated map (walkable fraction).
@@ -31,7 +35,9 @@ impl GameAudioEvent {
     /// The hub address the event is published on.
     fn address(&self) -> &'static str {
         match self {
-            GameAudioEvent::AttackPrimary => "/subit/game/event/action",
+            GameAudioEvent::AttackPrimary
+            | GameAudioEvent::ProjectileThrow
+            | GameAudioEvent::ShieldReflect => "/subit/game/event/action",
             GameAudioEvent::MobSweep { .. } => "/subit/game/event/combat",
             GameAudioEvent::PlayerTelemetry { .. } => "/subit/game/telemetry/player",
             GameAudioEvent::WorldTelemetry { .. } => "/subit/game/telemetry/world",
@@ -41,7 +47,10 @@ impl GameAudioEvent {
     /// The hub signal semantics for the event's address.
     fn signal_type(&self) -> SignalType {
         match self {
-            GameAudioEvent::AttackPrimary | GameAudioEvent::MobSweep { .. } => SignalType::Event,
+            GameAudioEvent::AttackPrimary
+            | GameAudioEvent::ProjectileThrow
+            | GameAudioEvent::ShieldReflect
+            | GameAudioEvent::MobSweep { .. } => SignalType::Event,
             GameAudioEvent::PlayerTelemetry { .. } => SignalType::Stream,
             GameAudioEvent::WorldTelemetry { .. } => SignalType::Param,
         }
@@ -58,6 +67,12 @@ impl GameAudioEvent {
                 fields.insert("type".into(), Value::String("mob_sweep".into()));
                 fields.insert("kill_count".into(), Value::Integer(*kill_count as i64));
                 fields.insert("combo".into(), Value::Integer(*combo as i64));
+            }
+            GameAudioEvent::ProjectileThrow => {
+                fields.insert("type".into(), Value::String("projectile_throw".into()));
+            }
+            GameAudioEvent::ShieldReflect => {
+                fields.insert("type".into(), Value::String("shield_reflect".into()));
             }
             GameAudioEvent::PlayerTelemetry { speed, max_speed } => {
                 fields.insert("type".into(), Value::String("player_speed".into()));

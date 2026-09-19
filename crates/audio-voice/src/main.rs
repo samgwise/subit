@@ -123,6 +123,8 @@ fn parse_event(payload: &BTreeMap<String, Value>) -> Option<GameEvent> {
             kill_count: get_integer(payload, "kill_count").unwrap_or(0).max(0) as u32,
             combo: get_integer(payload, "combo").unwrap_or(1).max(1) as u32,
         }),
+        "projectile_throw" => Some(GameEvent::ProjectileThrow),
+        "shield_reflect" => Some(GameEvent::ShieldReflect),
         _ => None,
     }
 }

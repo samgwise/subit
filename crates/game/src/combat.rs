@@ -43,11 +43,55 @@ const ATTACK_FX_SECS: f32 = 0.1;
 /// How long the player sprite tints red immediately after taking a hit.
 const HIT_FLASH_SECS: f32 = 0.15;
 
+/// How long the shield stays up after activation.
+const SHIELD_ACTIVE_SECS: f32 = 0.6;
+
+/// Cooldown before the shield can be raised again.
+const SHIELD_COOLDOWN_SECS: f32 = 3.0;
+
+/// Radius of the shield ring (and its projectile-reflection reach).
+const SHIELD_RADIUS: f32 = TILE_SIZE * 1.2;
+
+/// A once-off timer that starts already expired (no grace period).
+fn expired(secs: f32) -> Timer {
+    let mut timer = Timer::from_seconds(secs, TimerMode::Once);
+    timer.tick(Duration::from_secs_f64(secs as f64 + 1.0));
+    timer
+}
+
 /// Player health state plus the contact-damage invulnerability window.
 #[derive(Resource, Debug)]
 pub struct PlayerVitals {
     pub hp: i32,
     invuln: Timer,
+}
+
+impl PlayerVitals {
+    /// Apply damage, respecting the invulnerability window. Returns whether
+    /// the hit landed (false while invulnerable).
+    pub fn damage(&mut self, amount: i32) -> bool {
+        if !self.invuln.is_finished() {
+            return false;
+        }
+        self.invuln.reset();
+        self.hp -= amount;
+        true
+    }
+}
+
+/// Shield state: a short reflection window on activation, then a cooldown
+/// before it can be raised again.
+#[derive(Resource, Debug)]
+pub struct PlayerShield {
+    pub active: Timer,
+    cooldown: Timer,
+}
+
+impl PlayerShield {
+    /// True while the shield is up (blocking damage, reflecting shots).
+    pub fn is_active(&self) -> bool {
+        !self.active.is_finished()
+    }
 }
 
 /// Cooldown gating consecutive cleave swings.
@@ -60,6 +104,22 @@ struct CleaveCooldown(Timer);
 pub struct ComboState {
     pub count: u32,
     last_kill: Option<Duration>,
+}
+
+impl ComboState {
+    /// Register a kill at `now`, extending or starting the chain.
+    pub fn register_kill(&mut self, now: Duration) {
+        // Compare against the time SINCE the last kill, not the raw
+        // timestamp — the timestamp would only chain kills inside the first
+        // window's worth of game time.
+        let since_last_kill = self.last_kill.map(|last| now.saturating_sub(last));
+        self.count = advance_combo(
+            self.count,
+            since_last_kill,
+            Duration::from_secs_f64(COMBO_WINDOW_SECS),
+        );
+        self.last_kill = Some(now);
+    }
 }
 
 /// Transient cleave visual: a cone flash matching the actual hit area.
@@ -77,14 +137,18 @@ pub struct CombatPlugin;
 
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
+        // Timers that gate availability start expired: no grace period on
+        // spawn (the first hit lands, the shield starts down, the first
+        // click works).
         app.insert_resource(PlayerVitals {
             hp: MAX_HP,
-            invuln: Timer::from_seconds(INVULN_SECS, TimerMode::Once),
+            invuln: expired(INVULN_SECS),
         })
-        .insert_resource(CleaveCooldown(Timer::from_seconds(
-            ATTACK_COOLDOWN_SECS,
-            TimerMode::Once,
-        )))
+        .insert_resource(CleaveCooldown(expired(ATTACK_COOLDOWN_SECS)))
+        .insert_resource(PlayerShield {
+            active: expired(SHIELD_ACTIVE_SECS),
+            cooldown: expired(SHIELD_COOLDOWN_SECS),
+        })
         .init_resource::<ComboState>()
         .init_resource::<CleaveFx>()
         .add_systems(
@@ -92,6 +156,7 @@ impl Plugin for CombatPlugin {
             (
                 player_attack,
                 cleave_fx,
+                update_shield,
                 player_vitals_fx,
                 contact_damage,
                 player_speed_telemetry,
@@ -175,12 +240,7 @@ fn player_attack(
         }
 
         if !killed.is_empty() {
-            combo.count = advance_combo(
-                combo.count,
-                combo.last_kill,
-                Duration::from_secs_f64(COMBO_WINDOW_SECS),
-            );
-            combo.last_kill = Some(time.elapsed());
+            combo.register_kill(time.elapsed());
             bridge.send(GameAudioEvent::MobSweep {
                 kill_count: killed.len() as u32,
                 combo: combo.count,
@@ -247,11 +307,33 @@ fn player_vitals_fx(
     }
 }
 
-/// Enemies touching the player hurt it, subject to the invulnerability
-/// window; death respawns the player at the map spawn with full health.
+/// Raise the shield on right-mouse while off cooldown, and draw its ring
+/// while it is up.
+fn update_shield(
+    time: Res<Time>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    mut shield: ResMut<PlayerShield>,
+    player: Single<&Position, With<crate::Player>>,
+    mut gizmos: Gizmos,
+) {
+    shield.active.tick(time.delta());
+    shield.cooldown.tick(time.delta());
+    if mouse.just_pressed(MouseButton::Right) && shield.cooldown.is_finished() {
+        shield.active.reset();
+        shield.cooldown.reset();
+    }
+    if shield.is_active() {
+        gizmos.circle_2d(player.0, SHIELD_RADIUS, Color::srgba(0.4, 0.9, 1.0, 0.5));
+    }
+}
+
+/// Enemies touching the player hurt it, subject to the shield and the
+/// invulnerability window; death respawns the player at the map spawn with
+/// full health.
 fn contact_damage(
     time: Res<Time>,
     mut vitals: ResMut<PlayerVitals>,
+    shield: Res<PlayerShield>,
     mut combo: ResMut<ComboState>,
     spawn_point: Res<SpawnPoint>,
     player: Single<(&CollidingEntities, &mut Position, &mut LinearVelocity), With<crate::Player>>,
@@ -261,12 +343,9 @@ fn contact_damage(
     let (colliding, mut position, mut velocity) = player.into_inner();
 
     let touching_enemy = colliding.iter().any(|entity| enemies.contains(*entity));
-    if !touching_enemy || !vitals.invuln.is_finished() {
+    if !touching_enemy || shield.is_active() || !vitals.damage(CONTACT_DAMAGE) {
         return;
     }
-
-    vitals.invuln.reset();
-    vitals.hp -= CONTACT_DAMAGE;
     tracing::info!(hp = vitals.hp, "player hit by enemy contact");
 
     if vitals.hp <= 0 {
@@ -402,6 +481,60 @@ mod tests {
             advance_combo(5, Some(Duration::from_secs_f64(2.1)), window),
             1
         );
+    }
+
+    #[test]
+    fn damage_respects_the_invulnerability_window() {
+        let mut vitals = PlayerVitals {
+            hp: MAX_HP,
+            invuln: Timer::from_seconds(INVULN_SECS, TimerMode::Once),
+        };
+        // The window starts unexpired: the first hit is blocked...
+        assert!(!vitals.damage(CONTACT_DAMAGE));
+        // ...until it runs out.
+        vitals
+            .invuln
+            .tick(Duration::from_secs_f64(INVULN_SECS as f64 + 0.01));
+        assert!(vitals.damage(CONTACT_DAMAGE));
+        assert_eq!(vitals.hp, MAX_HP - CONTACT_DAMAGE);
+        // A second hit inside the new window is blocked too.
+        assert!(!vitals.damage(CONTACT_DAMAGE));
+    }
+
+    #[test]
+    fn shield_blocks_and_then_recovers() {
+        let mut shield = PlayerShield {
+            active: expired(SHIELD_ACTIVE_SECS),
+            cooldown: expired(SHIELD_COOLDOWN_SECS),
+        };
+        // Fresh state: shield down, cooldown ready.
+        assert!(!shield.is_active());
+        assert!(shield.cooldown.is_finished());
+        // Raise: active, and stays active through the window.
+        shield.active.reset();
+        shield.cooldown.reset();
+        assert!(shield.is_active());
+        shield
+            .active
+            .tick(Duration::from_secs_f64(SHIELD_ACTIVE_SECS as f64 + 0.01));
+        assert!(!shield.is_active());
+        // Cooldown still running: not ready again.
+        shield
+            .cooldown
+            .tick(Duration::from_secs_f64(SHIELD_COOLDOWN_SECS as f64 + 0.01));
+        assert!(shield.cooldown.is_finished());
+    }
+
+    #[test]
+    fn register_kill_extends_and_restarts_the_chain() {
+        let mut combo = ComboState::default();
+        combo.register_kill(Duration::ZERO);
+        assert_eq!(combo.count, 1);
+        combo.register_kill(Duration::from_secs_f64(1.0));
+        assert_eq!(combo.count, 2);
+        // Past the window: fresh chain.
+        combo.register_kill(Duration::from_secs_f64(5.0));
+        assert_eq!(combo.count, 1);
     }
 
     #[test]

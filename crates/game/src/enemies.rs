@@ -3,7 +3,7 @@
 //! wall and enemy-to-enemy collisions.
 
 use avian2d::prelude::{
-    Collider, LinearVelocity, LockedAxes, Position, RigidBody, SleepingDisabled,
+    Collider, CollisionLayers, LinearVelocity, LockedAxes, Position, RigidBody, SleepingDisabled,
 };
 use bevy::prelude::*;
 use rand::RngExt;
@@ -11,7 +11,7 @@ use rand::SeedableRng;
 use rand::rngs::SmallRng;
 use wfc::{prototype_set, walkable_distances};
 
-use crate::world::{MapConfig, WorldMapRes, tile_world_pos};
+use crate::world::{MapConfig, TILE_SIZE, WorldMapRes, tile_world_pos};
 
 /// How many enemies to seed the map with.
 const ENEMY_COUNT: usize = 40;
@@ -27,15 +27,36 @@ const MIN_SPAWN_DISTANCE: u32 = 8;
 /// Enemy collider footprint as a fraction of a tile.
 const ENEMY_SIZE_TILES: f32 = 0.6;
 
+/// Every Nth spawned enemy is a thrower.
+const THROWER_EVERY: usize = 4;
+
+/// Thrower chase speed (noticeably slower than the chasers).
+const THROWER_SPEED: f32 = 70.0;
+
+/// Throwers hold this distance from the player and lob from there.
+const THROW_RANGE: f32 = TILE_SIZE * 6.0;
+
+/// Seconds between throws.
+const THROW_COOLDOWN_SECS: f32 = 2.0;
+
 #[derive(Component)]
 pub struct Enemy;
+
+/// Ranged enemy: slower, holds at a distance and throws bouncing
+/// projectiles.
+#[derive(Component)]
+pub struct Thrower;
+
+/// Per-thrower throw cooldown.
+#[derive(Component, Debug)]
+struct ThrowTimer(Timer);
 
 pub struct EnemyPlugin;
 
 impl Plugin for EnemyPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn_enemies.after(crate::world::generate_world))
-            .add_systems(Update, enemy_seek);
+            .add_systems(Update, (enemy_seek, thrower_seek, thrower_attack));
     }
 }
 
@@ -70,9 +91,9 @@ fn spawn_enemies(mut commands: Commands, map: Res<WorldMapRes>, config: Res<MapC
     }
 
     let size = config.tile_size * ENEMY_SIZE_TILES;
-    for &cell in &picked {
+    for (i, &cell) in picked.iter().enumerate() {
         let pos = tile_world_pos((width, height), cell, config.tile_size);
-        commands.spawn((
+        let mut enemy = commands.spawn((
             Enemy,
             Sprite::from_color(Color::srgb(0.95, 0.2, 0.2), Vec2::splat(size)),
             Transform::from_xyz(pos.x, pos.y, 1.0),
@@ -80,15 +101,33 @@ fn spawn_enemies(mut commands: Commands, map: Res<WorldMapRes>, config: Res<MapC
             Collider::rectangle(size, size),
             LockedAxes::ROTATION_LOCKED,
             SleepingDisabled,
+            CollisionLayers::from_bits(
+                crate::world::LAYER_ENEMY,
+                crate::world::LAYER_WALL
+                    | crate::world::LAYER_ENEMY
+                    | crate::world::LAYER_PLAYER
+                    | crate::world::LAYER_PLAYER_SHOT,
+            ),
         ));
+        if i % THROWER_EVERY == THROWER_EVERY - 1 {
+            enemy
+                .insert(Thrower)
+                // Stagger the first throws so the mob does not fire in
+                // lockstep; deterministic per seed.
+                .insert(ThrowTimer(Timer::from_seconds(
+                    THROW_COOLDOWN_SECS * ((i % THROWER_EVERY) as f32 / THROWER_EVERY as f32),
+                    TimerMode::Once,
+                )));
+        }
     }
     tracing::info!("spawned {} enemies", picked.len());
 }
 
-/// Steer every enemy toward the player; collision resolution does the rest.
+/// Steer chasers toward the player; collision resolution does the rest.
+#[allow(clippy::type_complexity)] // Bevy query tuples read worse split up.
 fn enemy_seek(
     player: Single<&Position, With<crate::Player>>,
-    mut enemies: Query<(&Position, &mut LinearVelocity), With<Enemy>>,
+    mut enemies: Query<(&Position, &mut LinearVelocity), (With<Enemy>, Without<Thrower>)>,
 ) {
     let player_pos = player.0;
     for (pos, mut velocity) in &mut enemies {
@@ -98,6 +137,56 @@ fn enemy_seek(
         } else {
             Vec2::ZERO
         };
+    }
+}
+
+/// Velocity for a thrower given the vector to the player: chase while
+/// farther than throw range, then hold position.
+fn thrower_velocity(to_player: Vec2) -> Vec2 {
+    if to_player.length() > THROW_RANGE {
+        to_player.normalize_or_zero() * THROWER_SPEED
+    } else {
+        Vec2::ZERO
+    }
+}
+
+/// Throwers keep their distance instead of swarming.
+fn thrower_seek(
+    player: Single<&Position, With<crate::Player>>,
+    mut throwers: Query<(&Position, &mut LinearVelocity), With<Thrower>>,
+) {
+    let player_pos = player.0;
+    for (pos, mut velocity) in &mut throwers {
+        velocity.0 = thrower_velocity(player_pos - pos.0);
+    }
+}
+
+/// Lob a bouncing projectile at the player's current position on cooldown.
+fn thrower_attack(
+    mut commands: Commands,
+    time: Res<Time>,
+    player: Single<&Position, With<crate::Player>>,
+    mut throwers: Query<(&Position, &mut ThrowTimer), With<Thrower>>,
+    bridge: Res<crate::bridge::BridgeTx>,
+) {
+    let player_pos = player.0;
+    for (pos, mut timer) in &mut throwers {
+        timer.0.tick(time.delta());
+        if !timer.0.is_finished() {
+            continue;
+        }
+        let to_player = player_pos - pos.0;
+        if to_player == Vec2::ZERO || to_player.length() > THROW_RANGE {
+            continue;
+        }
+        timer.0.reset();
+        crate::projectiles::spawn_projectile(
+            &mut commands,
+            pos.0,
+            to_player.normalize_or_zero() * crate::projectiles::PROJECTILE_SPEED,
+            crate::projectiles::ProjectileAllegiance::Enemy,
+        );
+        bridge.send(crate::bridge::GameAudioEvent::ProjectileThrow);
     }
 }
 
@@ -147,6 +236,21 @@ mod tests {
         let cells = far_reachable_cells(&distances, 3, 1);
         assert_eq!(cells.len(), 8);
         assert!(!cells.contains(&(1, 1)));
+    }
+
+    #[test]
+    fn throwers_chase_until_range_then_hold() {
+        let far = Vec2::new(THROW_RANGE * 2.0, 0.0);
+        let velocity = thrower_velocity(far);
+        assert!(velocity.x > 0.0);
+        assert!((velocity.length() - THROWER_SPEED).abs() < 1e-5);
+        // Inside throw range: hold.
+        assert_eq!(
+            thrower_velocity(Vec2::new(THROW_RANGE * 0.5, 0.0)),
+            Vec2::ZERO
+        );
+        // Boundary is exclusive: exactly at range means hold.
+        assert_eq!(thrower_velocity(Vec2::new(THROW_RANGE, 0.0)), Vec2::ZERO);
     }
 
     #[test]
