@@ -26,7 +26,7 @@ pub const PROJECTILE_SPEED: f32 = 240.0;
 pub const MAX_BOUNCES: u32 = 3;
 
 /// Safety net so reflected pinballs can never live forever.
-const LIFETIME_SECS: f32 = 8.0;
+const LIFETIME_SECS: f32 = 16.0;
 
 /// Projectile collider radius.
 const RADIUS: f32 = 5.0;

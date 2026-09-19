@@ -12,7 +12,9 @@ use bevy::image::Image;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy_ecs_tilemap::prelude::*;
-use wfc::{GeneratedMap, GeneratorConfig, Socket, TileClass, generate, prototype_set};
+use wfc::{
+    GeneratedMap, GeneratorConfig, Socket, TileClass, WeightedPrototype, generate, prototype_set,
+};
 
 /// Size of a single tile in world units (pixels).
 pub const TILE_SIZE: f32 = 32.0;
@@ -39,10 +41,14 @@ impl Default for MapConfig {
     }
 }
 
-/// The generated map data (grid, spawn, exit) as an ECS resource, for
-/// systems that need the raw tile data (enemy placement, wayfinding).
+/// The generated map data plus the prototype set its tile indices refer to,
+/// as an ECS resource for systems that need the raw tile data (enemy
+/// placement, combat sight, wayfinding).
 #[derive(Resource)]
-pub struct WorldMapRes(pub GeneratedMap);
+pub struct WorldMapRes {
+    pub map: GeneratedMap,
+    pub prototypes: Vec<WeightedPrototype>,
+}
 
 /// World-space position the player respawns at.
 #[derive(Resource, Debug, Clone, Copy)]
@@ -247,8 +253,12 @@ pub(crate) fn generate_world(
         Transform::from_xyz(exit_pos.x, exit_pos.y + config.tile_size * 1.5, 1.5),
     ));
 
-    // Resources other systems build on: the raw map data and respawn point.
-    commands.insert_resource(WorldMapRes(generated.clone()));
+    // Resources other systems build on: the raw map data (plus the prototype
+    // set its tile indices refer to) and the respawn point.
+    commands.insert_resource(WorldMapRes {
+        map: generated.clone(),
+        prototypes,
+    });
     commands.insert_resource(SpawnPoint(spawn_pos));
     bridge.send(crate::bridge::GameAudioEvent::WorldTelemetry { integrity });
     tracing::info!(integrity, "world integrity published");
@@ -290,6 +300,15 @@ fn destabilise(base: Color, integrity: f32) -> Color {
         c.green * (1.0 - t) + 0.85 * t,
         c.blue * (1.0 - t) + 1.0 * t,
         c.alpha,
+    )
+}
+
+/// Continuous tile-space position of a world position — the exact inverse of
+/// [`tile_world_pos`]. Tile (x, y) centres on (x + 0.5, y + 0.5).
+pub fn tile_units(map_size: (u32, u32), tile_size: f32, world_pos: Vec2) -> Vec2 {
+    Vec2::new(
+        world_pos.x / tile_size + map_size.0 as f32 / 2.0,
+        world_pos.y / tile_size + map_size.1 as f32 / 2.0,
     )
 }
 
@@ -363,6 +382,21 @@ mod tests {
         // ±10 (one tile width from the centre tile).
         assert_eq!(tile_world_pos((3, 3), (1, 1), 10.0), Vec2::ZERO);
         assert_eq!(tile_world_pos((3, 3), (0, 2), 10.0), Vec2::new(-10.0, 10.0));
+    }
+
+    #[test]
+    fn tile_units_inverts_tile_world_pos() {
+        let size = (48u32, 48u32);
+        for tile in [(0u32, 0u32), (47, 0), (23, 24), (10, 33), (47, 47)] {
+            let world = tile_world_pos(size, tile, TILE_SIZE);
+            let back = tile_units(size, TILE_SIZE, world);
+            assert!((back.x - (tile.0 as f32 + 0.5)).abs() < 1e-4);
+            assert!((back.y - (tile.1 as f32 + 0.5)).abs() < 1e-4);
+        }
+        // The map centre sits between tiles 23 and 24.
+        let centre = tile_units(size, TILE_SIZE, Vec2::ZERO);
+        assert!((centre.x - 24.0).abs() < 1e-6);
+        assert!((centre.y - 24.0).abs() < 1e-6);
     }
 
     #[test]

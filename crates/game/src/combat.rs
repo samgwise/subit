@@ -12,8 +12,8 @@ use bevy::prelude::*;
 
 use crate::bridge::{BridgeTx, GameAudioEvent};
 use crate::enemies::Enemy;
-use crate::world::{SpawnPoint, TILE_SIZE};
-// (player sprite colour lives in main as PLAYER_COLOUR)
+use crate::world::{MapConfig, SpawnPoint, TILE_SIZE, WorldMapRes, tile_units};
+use wfc::line_of_sight;
 
 /// Player hit points at full health.
 pub(crate) const MAX_HP: i32 = 100;
@@ -205,6 +205,8 @@ fn player_attack(
     camera: Single<(&Camera, &GlobalTransform), With<Camera2d>>,
     player: Single<&Position, With<crate::Player>>,
     enemies: Query<(Entity, &Position), With<Enemy>>,
+    map: Res<WorldMapRes>,
+    config: Res<MapConfig>,
 ) {
     cooldown.0.tick(time.delta());
     if !mouse.just_pressed(MouseButton::Left) || !cooldown.0.is_finished() {
@@ -228,9 +230,18 @@ fn player_attack(
             timer: Timer::from_seconds(ATTACK_FX_SECS, TimerMode::Once),
         }));
 
+        let (width, height) = (map.map.grid.width(), map.map.grid.height());
+        let origin_units = tile_units((width, height), config.tile_size, origin);
+        let origin_units = (origin_units.x, origin_units.y);
         let killed: Vec<Entity> = enemies
             .iter()
-            .filter(|(_, pos)| in_cleave_arc(origin, aim, pos.0, CLEAVE_RADIUS, CLEAVE_HALF_ANGLE))
+            .filter(|(_, pos)| {
+                in_cleave_arc(origin, aim, pos.0, CLEAVE_RADIUS, CLEAVE_HALF_ANGLE)
+                    && line_of_sight(&map.map.grid, &map.prototypes, origin_units, {
+                        let units = tile_units((width, height), config.tile_size, pos.0);
+                        (units.x, units.y)
+                    })
+            })
             .map(|(entity, _)| entity)
             .collect();
         for entity in &killed {

@@ -154,8 +154,8 @@ fn update_exit_arrow(
     camera: Single<(&Camera, &GlobalTransform), With<Camera2d>>,
     arrow: Single<(&mut Node, &mut UiTransform, &mut Visibility), With<ExitArrow>>,
 ) {
-    let (width, height) = (map.0.grid.width(), map.0.grid.height());
-    let exit_world = crate::world::tile_world_pos((width, height), map.0.exit, config.tile_size);
+    let (width, height) = (map.map.grid.width(), map.map.grid.height());
+    let exit_world = crate::world::tile_world_pos((width, height), map.map.exit, config.tile_size);
 
     let (Some(bounds), Ok(exit_vp), Ok(player_vp)) = (
         camera.0.logical_viewport_size(),

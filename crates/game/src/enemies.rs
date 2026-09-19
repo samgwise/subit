@@ -9,7 +9,7 @@ use bevy::prelude::*;
 use rand::RngExt;
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
-use wfc::{prototype_set, walkable_distances};
+use wfc::walkable_distances;
 
 use crate::world::{MapConfig, TILE_SIZE, WorldMapRes, tile_world_pos};
 
@@ -62,13 +62,9 @@ impl Plugin for EnemyPlugin {
 
 /// Spawn the swarm on far, BFS-reachable walkable tiles of the generated map.
 fn spawn_enemies(mut commands: Commands, map: Res<WorldMapRes>, config: Res<MapConfig>) {
-    let generated = &map.0;
+    let generated = &map.map;
     let (width, height) = (generated.grid.width(), generated.grid.height());
-    let prototypes = prototype_set(
-        config.generator.wall_weight,
-        config.generator.terminal_weight,
-    );
-    let distances = walkable_distances(&generated.grid, &prototypes, generated.spawn);
+    let distances = walkable_distances(&generated.grid, &map.prototypes, generated.spawn);
     let candidates = far_reachable_cells(&distances, width, MIN_SPAWN_DISTANCE);
 
     // Deterministic per-seed placement: same seed, same mob layout. The salt

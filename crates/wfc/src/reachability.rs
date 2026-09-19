@@ -72,6 +72,126 @@ pub(crate) fn largest_walkable_region(
     }
 }
 
+/// Whether the sight line between two points is unobstructed by non-walkable
+/// cells. Both points are in continuous tile-space coordinates, where tile
+/// (x, y) centres on (x + 0.5, y + 0.5).
+///
+/// Walks the exact sequence of cells the segment passes through
+/// (Amanatides–Woo grid traversal); only cells strictly between the
+/// endpoints can block — you stand on your tile and hit the enemy on
+/// theirs. Out-of-bounds cells block. A segment crossing a cell corner
+/// exactly is blocked when either orthogonal neighbour around that corner
+/// is unwalkable — sight can't squeeze through the crack between two
+/// diagonal walls.
+pub fn line_of_sight(
+    grid: &Grid,
+    prototypes: &[WeightedPrototype],
+    from: (f32, f32),
+    to: (f32, f32),
+) -> bool {
+    let width = grid.width() as i32;
+    let height = grid.height() as i32;
+    let walkable = |x: i32, y: i32| -> bool {
+        if x < 0 || y < 0 || x >= width || y >= height {
+            return false;
+        }
+        let tile = grid.get(x as u32, y as u32).expect("fully collapsed");
+        prototypes[tile as usize].prototype.class.walkable()
+    };
+
+    let (mut x, mut y) = (from.0.floor() as i32, from.1.floor() as i32);
+    let end = (to.0.floor() as i32, to.1.floor() as i32);
+    let delta = (to.0 - from.0, to.1 - from.1);
+    let step_x = delta.0.partial_sign();
+    let step_y = delta.1.partial_sign();
+
+    // Parametric distance t along the segment to the next cell boundary in
+    // each axis, and the t-spacing between boundaries. Flat axes never
+    // advance (t_max stays infinite).
+    let next_boundary_x = if step_x == 1 {
+        (x + 1) as f32
+    } else {
+        x as f32
+    };
+    let next_boundary_y = if step_y == 1 {
+        (y + 1) as f32
+    } else {
+        y as f32
+    };
+    let mut t_max_x = if step_x == 0 {
+        f32::INFINITY
+    } else {
+        (next_boundary_x - from.0) / delta.0
+    };
+    let mut t_max_y = if step_y == 0 {
+        f32::INFINITY
+    } else {
+        (next_boundary_y - from.1) / delta.1
+    };
+    let t_delta_x = if step_x == 0 {
+        f32::INFINITY
+    } else {
+        1.0 / delta.0.abs()
+    };
+    let t_delta_y = if step_y == 0 {
+        f32::INFINITY
+    } else {
+        1.0 / delta.1.abs()
+    };
+
+    // Hard cap: a segment can never cross more cells than the full grid
+    // twice over; the cap only guards against float pathology.
+    for _ in 0..=(width + height) * 2 {
+        if (x, y) == end {
+            return true;
+        }
+        if t_max_x < t_max_y {
+            x += step_x;
+            t_max_x += t_delta_x;
+        } else if t_max_y < t_max_x {
+            y += step_y;
+            t_max_y += t_delta_y;
+        } else {
+            // Corner crossing: conservative sight — the segment passes
+            // through the shared corner, and we refuse to let sight squeeze
+            // between two diagonal walls.
+            if !walkable(x + step_x, y) || !walkable(x, y + step_y) {
+                return false;
+            }
+            x += step_x;
+            y += step_y;
+            t_max_x += t_delta_x;
+            t_max_y += t_delta_y;
+        }
+        if (x, y) == end {
+            return true;
+        }
+        if !walkable(x, y) {
+            return false;
+        }
+    }
+    // Cap exhausted (should not happen): fall back to the end cell's own
+    // walkability.
+    walkable(end.0, end.1)
+}
+
+/// Sign for grid stepping: +1, -1, or 0 for (near enough) zero.
+trait PartialSign {
+    fn partial_sign(self) -> i32;
+}
+
+impl PartialSign for f32 {
+    fn partial_sign(self) -> i32 {
+        if self > 0.0 {
+            1
+        } else if self < 0.0 {
+            -1
+        } else {
+            0
+        }
+    }
+}
+
 /// BFS distances from `from` across the walkable cells of a collapsed grid.
 ///
 /// Row-major over `grid.width()`; `None` means the cell is unreachable (a
@@ -208,6 +328,118 @@ mod tests {
         assert_ne!(spawn, exit);
         assert!(region.contains(&spawn));
         assert!(region.contains(&exit));
+    }
+
+    #[test]
+    fn sight_passes_through_open_cells_and_blocks_at_walls() {
+        let (prototypes, wall, floor) = test_setup();
+        let mut grid = Grid::new(5, 5);
+        for y in 0..5 {
+            for x in 0..5 {
+                grid.set(x, y, floor as u32);
+            }
+        }
+        let centre = |x: u32, y: u32| (x as f32 + 0.5, y as f32 + 0.5);
+
+        // Open adjacent and same-tile sight lines.
+        assert!(line_of_sight(
+            &grid,
+            &prototypes,
+            centre(1, 1),
+            centre(2, 1)
+        ));
+        assert!(line_of_sight(
+            &grid,
+            &prototypes,
+            centre(1, 1),
+            centre(1, 1)
+        ));
+        assert!(line_of_sight(
+            &grid,
+            &prototypes,
+            centre(1, 1),
+            centre(3, 3)
+        ));
+
+        // A wall directly between blocks...
+        grid.set(2, 1, wall as u32);
+        assert!(!line_of_sight(
+            &grid,
+            &prototypes,
+            centre(1, 1),
+            centre(3, 1)
+        ));
+        // A centre-to-centre diagonal that clips the wall tile's corner is
+        // blocked too (conservative corner rule).
+        assert!(!line_of_sight(
+            &grid,
+            &prototypes,
+            centre(1, 1),
+            centre(2, 2)
+        ));
+        // Walkable cells beside the wall stay sighted.
+        assert!(line_of_sight(
+            &grid,
+            &prototypes,
+            centre(1, 1),
+            centre(1, 2)
+        ));
+        assert!(line_of_sight(
+            &grid,
+            &prototypes,
+            centre(1, 2),
+            centre(2, 2)
+        ));
+        // The blocked cell's own centre: endpoints never block.
+        assert!(line_of_sight(
+            &grid,
+            &prototypes,
+            centre(2, 1),
+            centre(2, 1)
+        ));
+    }
+
+    #[test]
+    fn diagonal_sight_that_clips_a_wall_corner_blocks() {
+        let (prototypes, wall, floor) = test_setup();
+        let mut grid = Grid::new(5, 5);
+        for y in 0..5 {
+            for x in 0..5 {
+                grid.set(x, y, floor as u32);
+            }
+        }
+        let centre = |x: u32, y: u32| (x as f32 + 0.5, y as f32 + 0.5);
+
+        // Diagonal across an open corner passes.
+        assert!(line_of_sight(
+            &grid,
+            &prototypes,
+            centre(0, 0),
+            centre(1, 1)
+        ));
+        // Put walls on BOTH orthogonal neighbours of the corner: the
+        // diagonal must pass through the wall corner cell itself.
+        grid.set(1, 0, wall as u32);
+        grid.set(0, 1, wall as u32);
+        assert!(!line_of_sight(
+            &grid,
+            &prototypes,
+            centre(0, 0),
+            centre(1, 1)
+        ));
+    }
+
+    #[test]
+    fn sight_leaves_the_grid_blocked() {
+        let (prototypes, _wall, floor) = test_setup();
+        let mut grid = Grid::new(4, 4);
+        for y in 0..4 {
+            for x in 0..4 {
+                grid.set(x, y, floor as u32);
+            }
+        }
+        // A segment running off the edge and back is obstructed.
+        assert!(!line_of_sight(&grid, &prototypes, (2.5, 2.5), (-1.5, 2.5)));
     }
 
     #[test]
