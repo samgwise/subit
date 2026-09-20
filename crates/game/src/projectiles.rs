@@ -1,7 +1,8 @@
 //! Projectiles: thrown by thrower enemies, bouncing off walls. A shielded
-//! player reflects them along the cursor direction with a fresh bounce
-//! budget, turning them back into weapons; an unshielded player takes the
-//! hit instead.
+//! player catches any enemy projectile that enters the shield ring and
+//! reflects it along the cursor direction with a fresh bounce budget,
+//! turning it back into a weapon; an unshielded player takes the hit
+//! instead.
 //!
 //! Allegiance is physical: enemy shots and player shots live on separate
 //! collision layers, so a reflected shot can never hit the player again and
@@ -14,7 +15,7 @@ use avian2d::prelude::{
 use bevy::prelude::*;
 
 use crate::bridge::{BridgeTx, GameAudioEvent};
-use crate::combat::{ComboState, PlayerShield, PlayerVitals};
+use crate::combat::{ComboState, PlayerShield, PlayerVitals, SHIELD_RADIUS};
 use crate::world::{LAYER_ENEMY, LAYER_ENEMY_SHOT, LAYER_PLAYER, LAYER_PLAYER_SHOT, LAYER_WALL};
 
 /// Projectile travel speed in world units per second (~4 px/frame, so no
@@ -54,7 +55,10 @@ pub struct ProjectilePlugin;
 
 impl Plugin for ProjectilePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (projectile_impacts, projectile_lifetime));
+        app.add_systems(
+            Update,
+            (projectile_impacts, shield_reflection, projectile_lifetime),
+        );
     }
 }
 
@@ -125,13 +129,16 @@ fn reflected_velocity(incoming: Vec2, aim: Vec2) -> Vec2 {
 }
 
 /// Handle every projectile collision this frame: wall bounces, player hits
-/// and shield reflections, and reflected kills.
+/// and reflected kills. Shield reflection itself is proximity-based (see
+/// `shield_reflection`) — a shot touching a shielded player simply doesn't
+/// hurt.
 #[allow(clippy::too_many_arguments)]
 fn projectile_impacts(
     mut commands: Commands,
     mut collisions: MessageReader<CollisionStart>,
     mut projectiles: Query<(
         Entity,
+        &Position,
         &mut Projectile,
         &mut LinearVelocity,
         &mut Sprite,
@@ -145,10 +152,8 @@ fn projectile_impacts(
     mut combo: ResMut<ComboState>,
     bridge: Res<BridgeTx>,
     time: Res<Time>,
-    window: Single<&Window>,
-    camera: Single<(&Camera, &GlobalTransform), With<Camera2d>>,
 ) {
-    let (player_entity, player_pos) = *player;
+    let (player_entity, _) = *player;
     let mut despawned: Vec<Entity> = Vec::new();
 
     for event in collisions.read() {
@@ -166,7 +171,7 @@ fn projectile_impacts(
 
         if walls.contains(other) {
             // Wall bounce: count down, fail after the budget is spent.
-            let Ok((_, mut projectile, ..)) = projectiles.get_mut(projectile_entity) else {
+            let Ok((_, _, mut projectile, ..)) = projectiles.get_mut(projectile_entity) else {
                 continue;
             };
             match bounce_result(projectile.bounces) {
@@ -179,19 +184,13 @@ fn projectile_impacts(
                 }
             }
         } else if other == player_entity {
+            // Shield up: the projectile passes through untouched — the
+            // proximity reflect (ring radius) re-aims it before it can land.
+            // Unshielded: it lands, if the invulnerability window allows.
             if shield.is_active() {
-                reflect_projectile(
-                    &mut commands,
-                    &mut projectiles,
-                    projectile_entity,
-                    player_pos.0,
-                    *window,
-                    camera.0,
-                    camera.1,
-                );
-                bridge.send(GameAudioEvent::ShieldReflect);
-                tracing::info!("shield reflected a projectile");
-            } else if vitals.damage(PROJECTILE_DAMAGE) {
+                continue;
+            }
+            if vitals.damage(PROJECTILE_DAMAGE) {
                 tracing::info!(hp = vitals.hp, "player hit by projectile");
                 if let Ok(mut entity_commands) = commands.get_entity(projectile_entity) {
                     entity_commands.despawn();
@@ -204,7 +203,7 @@ fn projectile_impacts(
             // stay defensive about it.
             let is_player_shot = projectiles
                 .get(projectile_entity)
-                .is_ok_and(|(_, p, ..)| p.allegiance == ProjectileAllegiance::Player);
+                .is_ok_and(|(_, _, p, ..)| p.allegiance == ProjectileAllegiance::Player);
             if !is_player_shot {
                 continue;
             }
@@ -225,18 +224,69 @@ fn projectile_impacts(
     }
 }
 
-/// Reflect a projectile off the shield: re-aim along the cursor, restore the
-/// bounce budget, refresh the lifetime, and flip allegiance.
-fn reflect_projectile(
-    commands: &mut Commands,
-    projectiles: &mut Query<(
+/// True while the projectile is inside the shield's catch radius (the drawn
+/// ring). Boundary counts as caught.
+fn within_shield_range(player_pos: Vec2, projectile_pos: Vec2) -> bool {
+    player_pos.distance(projectile_pos) <= SHIELD_RADIUS
+}
+
+/// While the shield is up, catch every enemy projectile inside the ring and
+/// reflect it along the cursor with a fresh bounce budget — the drawn ring
+/// is the actual catch zone, not a decoration.
+#[allow(clippy::too_many_arguments)]
+fn shield_reflection(
+    mut commands: Commands,
+    mut projectiles: Query<(
         Entity,
+        &Position,
         &mut Projectile,
         &mut LinearVelocity,
         &mut Sprite,
         &mut Lifetime,
     )>,
+    player: Single<&Position, With<crate::Player>>,
+    shield: Res<PlayerShield>,
+    bridge: Res<BridgeTx>,
+    window: Single<&Window>,
+    camera: Single<(&Camera, &GlobalTransform), With<Camera2d>>,
+) {
+    if !shield.is_active() {
+        return;
+    }
+    let player_pos = player.0;
+    for (entity, pos, mut projectile, mut velocity, mut sprite, mut lifetime) in &mut projectiles {
+        if projectile.allegiance != ProjectileAllegiance::Enemy
+            || !within_shield_range(player_pos, pos.0)
+        {
+            continue;
+        }
+        apply_reflection(
+            &mut commands,
+            entity,
+            &mut projectile,
+            &mut velocity,
+            &mut sprite,
+            &mut lifetime,
+            player_pos,
+            *window,
+            camera.0,
+            camera.1,
+        );
+        bridge.send(GameAudioEvent::ShieldReflect);
+        tracing::info!("shield reflected a projectile");
+    }
+}
+
+/// Reflect a projectile off the shield: re-aim along the cursor, restore the
+/// bounce budget, refresh the lifetime, and flip allegiance.
+#[allow(clippy::too_many_arguments)]
+fn apply_reflection(
+    commands: &mut Commands,
     entity: Entity,
+    projectile: &mut Projectile,
+    velocity: &mut LinearVelocity,
+    sprite: &mut Sprite,
+    lifetime: &mut Lifetime,
     player_pos: Vec2,
     window: &Window,
     camera: &Camera,
@@ -248,11 +298,6 @@ fn reflect_projectile(
         .map(|cursor_world| cursor_world - player_pos)
         .unwrap_or(Vec2::ZERO);
 
-    let Ok((_, mut projectile, mut velocity, mut sprite, mut lifetime)) =
-        projectiles.get_mut(entity)
-    else {
-        return;
-    };
     velocity.0 = reflected_velocity(velocity.0, aim);
     projectile.bounces = MAX_BOUNCES;
     projectile.allegiance = ProjectileAllegiance::Player;
@@ -292,6 +337,18 @@ mod tests {
         assert_eq!(bounce_result(1), Some(0));
         // The contact after the last budgeted bounce fails the projectile.
         assert_eq!(bounce_result(0), None);
+    }
+
+    #[test]
+    fn shield_ring_boundary_counts_as_caught() {
+        let player = Vec2::ZERO;
+        // Just inside, exactly on, and just outside the ring.
+        let inside = Vec2::new(SHIELD_RADIUS * 0.99, 0.0);
+        let on_edge = Vec2::new(SHIELD_RADIUS, 0.0);
+        let outside = Vec2::new(SHIELD_RADIUS * 1.01, 0.0);
+        assert!(within_shield_range(player, inside));
+        assert!(within_shield_range(player, on_edge));
+        assert!(!within_shield_range(player, outside));
     }
 
     #[test]

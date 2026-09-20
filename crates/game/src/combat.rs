@@ -49,8 +49,8 @@ const SHIELD_ACTIVE_SECS: f32 = 0.6;
 /// Cooldown before the shield can be raised again.
 const SHIELD_COOLDOWN_SECS: f32 = 3.0;
 
-/// Radius of the shield ring (and its projectile-reflection reach).
-const SHIELD_RADIUS: f32 = TILE_SIZE * 1.2;
+/// Radius of the shield ring — the full reflect reach while active.
+pub(crate) const SHIELD_RADIUS: f32 = TILE_SIZE * 1.2;
 
 /// A once-off timer that starts already expired (no grace period).
 fn expired(secs: f32) -> Timer {
