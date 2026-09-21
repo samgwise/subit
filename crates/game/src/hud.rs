@@ -7,7 +7,7 @@ use bevy::math::Rot2;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
-use crate::combat::{MAX_HP, PlayerVitals};
+use crate::combat::{BARRIER_PLATES, Barrier, PlayerVitals};
 use crate::progression::{Experience, SkillPoints, xp_for_level};
 use crate::world::WorldMapRes;
 
@@ -17,18 +17,36 @@ const ARROW_MARGIN: f32 = 24.0;
 /// On-screen size of the exit arrow, in pixels.
 const ARROW_SIZE: f32 = 28.0;
 
+/// Barrier fill tint — violet, distinct from HP white-red and XP cyan.
+const BARRIER_COLOUR: Color = Color::srgb(0.55, 0.4, 1.0);
+
 pub struct HudPlugin;
 
 impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_hud)
-            .add_systems(Update, (update_hp_bar, update_xp_bar, update_exit_arrow));
+        app.add_systems(Startup, spawn_hud).add_systems(
+            Update,
+            (
+                update_hp_bar,
+                update_barrier_bar,
+                update_xp_bar,
+                update_exit_arrow,
+            ),
+        );
     }
 }
 
 /// Marker for the HP bar's fill node.
 #[derive(Component)]
 struct HpFill;
+
+/// Marker for the barrier bar's root (hidden until unlocked).
+#[derive(Component)]
+struct BarrierBar;
+
+/// Marker for the barrier bar's fill node.
+#[derive(Component)]
+struct BarrierFill;
 
 /// Marker for the XP bar's fill node.
 #[derive(Component)]
@@ -67,13 +85,41 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
             ));
         });
 
-    // XP bar above the HP bar, with a level/points label.
+    // Barrier bar between HP and XP — hidden until the barrier unlock is
+    // purchased, since an inert pool is noise.
+    commands
+        .spawn((
+            BarrierBar,
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(16.0),
+                bottom: Val::Px(32.0),
+                width: Val::Px(220.0),
+                height: Val::Px(4.0),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.6)),
+            Visibility::Hidden,
+        ))
+        .with_children(|bar| {
+            bar.spawn((
+                BarrierFill,
+                Node {
+                    width: Val::Percent(100.0),
+                    height: Val::Percent(100.0),
+                    ..default()
+                },
+                BackgroundColor(BARRIER_COLOUR),
+            ));
+        });
+
+    // XP bar above the barrier, with a level/points label.
     commands
         .spawn((
             Node {
                 position_type: PositionType::Absolute,
                 left: Val::Px(16.0),
-                bottom: Val::Px(34.0),
+                bottom: Val::Px(38.0),
                 width: Val::Px(220.0),
                 height: Val::Px(6.0),
                 ..default()
@@ -96,7 +142,7 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
         Node {
             position_type: PositionType::Absolute,
             left: Val::Px(16.0),
-            bottom: Val::Px(44.0),
+            bottom: Val::Px(48.0),
             ..default()
         },
         Text::new("LV 1"),
@@ -176,9 +222,33 @@ fn update_hp_bar(
     vitals: Res<PlayerVitals>,
     mut fill: Single<(&mut Node, &mut BackgroundColor), With<HpFill>>,
 ) {
-    let fraction = hp_fill_fraction(vitals.hp, MAX_HP);
+    let fraction = hp_fill_fraction(vitals.hp, vitals.max_hp);
     fill.0.width = Val::Percent(fraction * 100.0);
     fill.1.0 = hp_fill_colour(fraction);
+}
+
+/// Clamped barrier fraction (0..=1) for the bar fill.
+fn barrier_fill_fraction(plates: u32, max_plates: u32) -> f32 {
+    if max_plates == 0 {
+        return 0.0;
+    }
+    plates.min(max_plates) as f32 / max_plates as f32
+}
+
+/// Bind the barrier bar to the barrier state; invisible until unlocked.
+fn update_barrier_bar(
+    unlocks: Res<crate::skills::AbilityUnlocks>,
+    barrier: Res<Barrier>,
+    mut bar: Single<&mut Visibility, With<BarrierBar>>,
+    mut fill: Single<(&mut Node, &mut BackgroundColor), With<BarrierFill>>,
+) {
+    bar.set_if_neq(if unlocks.barrier {
+        Visibility::Visible
+    } else {
+        Visibility::Hidden
+    });
+    let fraction = barrier_fill_fraction(barrier.plates, BARRIER_PLATES);
+    fill.0.width = Val::Percent(fraction * 100.0);
 }
 
 /// Pin a viewport position to inside the window border.
@@ -277,6 +347,15 @@ mod tests {
         assert_eq!(hp_fill_fraction(-10, 100), 0.0);
         assert_eq!(hp_fill_fraction(150, 100), 1.0);
         assert_eq!(hp_fill_fraction(50, 0), 0.0);
+    }
+
+    #[test]
+    fn barrier_fraction_clamps() {
+        assert_eq!(barrier_fill_fraction(10, 10), 1.0);
+        assert_eq!(barrier_fill_fraction(5, 10), 0.5);
+        assert_eq!(barrier_fill_fraction(0, 10), 0.0);
+        assert_eq!(barrier_fill_fraction(15, 10), 1.0);
+        assert_eq!(barrier_fill_fraction(1, 0), 0.0);
     }
 
     #[test]

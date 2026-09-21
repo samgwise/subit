@@ -55,8 +55,14 @@ depth, where the mob grows and the run continues with all progression intact.
 
 - Dynamic physics body, 0.6-tile square collider, rotation locked. WASD moves
   at 240 u/s; walls resolve collisions. The camera follows.
-- 100 HP. Damage sources: enemy contact (30), enemy projectile (20). Damage
-  opens a 0.5 s invulnerability window — red flash for 0.15 s, then a blink.
+- Base 100 HP, raised 25 per vitality point (the upgrade heals the same
+  amount it raises the ceiling). Damage sources: enemy contact (30), enemy
+  projectile (20). Damage opens a 0.5 s invulnerability window — red flash
+  for 0.15 s, then a blink.
+- Barrier (unlock: 3 points): a regenerating 10-plate pool (5 HP per plate)
+  that soaks damage before health — the player's version of the enemy
+  shields. Regrows one plate per 2.5 s without damage; shown as a violet HUD
+  bar while owned.
 - Death: respawn at the map spawn with full HP; the combo resets.
 
 ## Combat
@@ -84,14 +90,21 @@ depth, where the mob grows and the run continues with all progression intact.
 - **Dash (Space, unlock: 2 points):** 2 s cooldown, 0.15 s at 600 u/s along
   the current WASD direction (falling back to the cursor). The dash grants
   i-frames by opening the invulnerability window.
+- Every hit routes through plate pools first: enemy shields soak their
+  plates before an enemy's health, the barrier before player HP — one shared
+  absorption helper for cleaves, reflected shots, projectiles and blasts.
 
 ## Enemies
 
-- 40 enemies per map, spawned on tiles that are BFS-reachable and at least 8
-  steps from the player spawn; layout is deterministic per seed. Every 4th
-  spawn is a thrower.
+- 40 enemies per map (more with depth), spawned on tiles that are
+  BFS-reachable and at least 8 steps from the player spawn; layout is
+  deterministic per seed. Every 4th spawn is a thrower (every 3rd from depth
+  2) and every 8th from depth 1 is a tank; the roles shuffle so the specials
+  scatter through the mob instead of clustering.
 - **Chaser:** red, 100 HP (one base cleave), 120 u/s, steers straight at the
   player; wall and enemy-to-enemy collisions come from physics.
+- **Tank:** red-brown, 400 HP, 60 u/s, a chunky 0.9-tile body — an unhurried
+  wall of muscle that soaks the cleaves that delete lesser enemies.
 - **Thrower:** amber, 200 HP (two base cleaves), 70 u/s, holds 6 tiles away
   and lobs
   a bouncing projectile at the player's current position every 2 s (no
@@ -100,6 +113,10 @@ depth, where the mob grows and the run continues with all progression intact.
   then fail, and despawn on an unshielded player hit. They pass through other
   enemies, and a reflected one can never re-hit the player (collision
   layers).
+- **Shields:** each spawn rolls for a regenerating shield — chance 5% + 5%
+  per depth, capped at 40%. Eight plates of 5 HP: each plate soaks 5 damage
+  (a lighter hit still cracks the plate whole), regrowing one plate per
+  2.5 s without damage. A cyan ring shows while plates remain.
 - Enemies darken with damage — sprite brightness scales with their HP
   fraction (floor 45%) — so remaining hits read at a glance.
 
@@ -113,8 +130,9 @@ depth, where the mob grows and the run continues with all progression intact.
 - Each level-up grants 1 skill point. Tab pauses the world (all simulation
   systems gate on the game state) and opens the skills menu.
 - Skills: cleave damage +25 (1 point), shield cooldown −0.25 s (1 point,
-  floor 1 s), dash unlock (2 points), grenade unlock (3 points). Purchases
-  apply immediately; rows grey out when unaffordable or owned.
+  floor 1 s), max health +25 (1 point, repeatable), dash unlock (2 points),
+  grenade unlock (3 points), barrier unlock (3 points). Purchases apply
+  immediately; rows grey out when unaffordable or owned.
 
 ## Ensemble audio
 
@@ -139,16 +157,19 @@ until the hub clock protocol lands); telemetry bypasses quantisation.
 
 | Constant | Value |
 | --- | --- |
-| Player speed / max HP | 240 u/s / 100 |
+| Player speed / base max HP / vitality per point | 240 u/s / 100 / +25 |
 | Camera zoom | 2× (ortho scale 0.5, ~64 px tiles) |
 | Cleave: radius / cone / cooldown / base damage / per point | 3 tiles / 90° / 0.25 s / 100 / +25 |
 | Combo window | 2 s |
 | Shield: active / cooldown / ring | 0.6 s / 3 s (−0.25/pt, floor 1 s) / 1.2 tiles |
 | Dash: speed / duration / cooldown / unlock cost | 600 u/s / 0.15 s / 2 s / 2 pts |
 | Grenade: speed / fuse / cooldown / blast / damage / bounces / unlock cost | 400 u/s / 0.5 s / 5 s / 2.5 tiles / 200 / 2 / 3 pts |
-| Enemy: count / chaser HP / thrower HP / min spawn distance | 40 + 10×depth (cap 80) / 100 / 200 / 8 BFS steps |
-| Chaser speed / thrower speed / throw range / throw cooldown | 120 / 70 / 6 tiles / 2 s |
-| Thrower frequency | every 4th spawn (every 3rd from depth 2) |
+| Enemy: count / chaser HP / thrower HP / tank HP / min spawn distance | 40 + 10×depth (cap 80) / 100 / 200 / 400 / 8 BFS steps |
+| Chaser / thrower / tank speed, throw range, throw cooldown | 120 / 70 / 60 / 6 tiles / 2 s |
+| Thrower / tank frequency | every 4th spawn (every 3rd from depth 2) / every 8th from depth 1 |
+| Enemy shield: plates / plate HP / regen / spawn chance | 8 / 5 / one plate per 2.5 s / 5% + 5%×depth (cap 40%) |
+| Player barrier: plates / regen / unlock cost | 10 / one plate per 2.5 s / 3 pts |
+| Vitality: max HP per point | +25 (heals the same) |
 | Projectile: speed / bounces / lifetime / player damage | 240 u/s / 3 / 16 s / 20 |
 | Drops: XP chaser/thrower, heal chance/amount | 10 / 25, 15% / 25 HP |
 | XP curve / magnet / collect radius | 40 + 30×level / 2 tiles / 0.5 tiles |

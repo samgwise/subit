@@ -15,8 +15,8 @@ use avian2d::prelude::{
 use bevy::prelude::*;
 
 use crate::bridge::{BridgeTx, GameAudioEvent};
-use crate::combat::{ComboState, PlayerShield, PlayerVitals, SHIELD_RADIUS};
-use crate::enemies::{Health, kill_enemy};
+use crate::combat::{ComboState, PlayerShield, PlayerVitals, SHIELD_RADIUS, damage_player};
+use crate::enemies::{Health, Shield, absorb_damage, kill_enemy};
 use crate::skills::{AbilityUnlocks, GameState, SkillLevels, cleave_damage};
 use crate::world::{
     LAYER_ENEMY, LAYER_ENEMY_SHOT, LAYER_GRENADE, LAYER_PLAYER, LAYER_PLAYER_SHOT, LAYER_WALL,
@@ -187,7 +187,7 @@ fn reflected_velocity(incoming: Vec2, aim: Vec2) -> Vec2 {
 /// and reflected kills. Shield reflection itself is proximity-based (see
 /// `shield_reflection`) — a shot touching a shielded player simply doesn't
 /// hurt.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn projectile_impacts(
     mut commands: Commands,
     mut collisions: MessageReader<CollisionStart>,
@@ -207,10 +207,12 @@ fn projectile_impacts(
             &Position,
             Option<&crate::enemies::Thrower>,
             &mut Health,
+            Option<&mut Shield>,
         ),
         With<crate::enemies::Enemy>,
     >,
     mut vitals: ResMut<PlayerVitals>,
+    mut barrier: ResMut<crate::combat::Barrier>,
     shield: Res<PlayerShield>,
     mut combo: ResMut<ComboState>,
     levels: Res<SkillLevels>,
@@ -251,11 +253,12 @@ fn projectile_impacts(
         } else if other == player_entity {
             // Shield up: the projectile passes through untouched — the
             // proximity reflect (ring radius) re-aims it before it can land.
-            // Unshielded: it lands, if the invulnerability window allows.
+            // Unshielded: it lands, if the invulnerability window allows;
+            // the barrier soaks what it can first.
             if shield.is_active() {
                 continue;
             }
-            if vitals.damage(PROJECTILE_DAMAGE) {
+            if damage_player(&mut vitals, &mut barrier, PROJECTILE_DAMAGE) {
                 tracing::info!(hp = vitals.hp, "player hit by projectile");
                 if let Ok(mut entity_commands) = commands.get_entity(projectile_entity) {
                     entity_commands.despawn();
@@ -272,10 +275,19 @@ fn projectile_impacts(
             if !is_player_shot {
                 continue;
             }
-            let Ok((_, enemy_pos, thrower, mut health)) = enemies.get_mut(other) else {
+            let Ok((_, enemy_pos, thrower, mut health, mut shield)) = enemies.get_mut(other) else {
                 continue;
             };
-            health.hp -= cleave_damage(&levels);
+            let damage = cleave_damage(&levels);
+            // Shields soak their plates first; the leak lands on health.
+            let to_health = match shield.as_mut() {
+                Some(shield) => {
+                    let Shield { plates, regen } = &mut **shield;
+                    absorb_damage(plates, regen, damage)
+                }
+                None => damage,
+            };
+            health.hp -= to_health;
             if health.hp <= 0 {
                 kill_enemy(
                     &mut commands,
@@ -438,7 +450,7 @@ fn grenade_throw(
 /// Detonate grenades whose fuse expired or whose wall-bounce budget ran
 /// out: flash, damage every enemy in the blast radius, batch the kills,
 /// then despawn.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn grenade_detonate(
     mut commands: Commands,
     mut collisions: MessageReader<CollisionStart>,
@@ -451,6 +463,7 @@ fn grenade_detonate(
             &Position,
             Option<&crate::enemies::Thrower>,
             &mut Health,
+            Option<&mut Shield>,
         ),
         With<crate::enemies::Enemy>,
     >,
@@ -515,11 +528,19 @@ fn grenade_detonate(
         bridge.send(GameAudioEvent::GrenadeBlast);
 
         let mut killed = 0usize;
-        for (enemy_entity, pos, thrower, mut health) in &mut enemies {
+        for (enemy_entity, pos, thrower, mut health, mut shield) in &mut enemies {
             if pos.0.distance(centre) > GRENADE_RADIUS {
                 continue;
             }
-            health.hp -= GRENADE_DAMAGE;
+            // Shields soak their plates first; the leak lands on health.
+            let to_health = match shield.as_mut() {
+                Some(shield) => {
+                    let Shield { plates, regen } = &mut **shield;
+                    absorb_damage(plates, regen, GRENADE_DAMAGE)
+                }
+                None => GRENADE_DAMAGE,
+            };
+            health.hp -= to_health;
             if health.hp <= 0 {
                 killed += 1;
                 kill_enemy(

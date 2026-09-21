@@ -2,6 +2,8 @@
 //! steer each enemy straight at the player and let the physics solver handle
 //! wall and enemy-to-enemy collisions.
 
+use std::time::Duration;
+
 use avian2d::prelude::{
     Collider, CollisionLayers, LinearVelocity, LockedAxes, Position, RigidBody, SleepingDisabled,
 };
@@ -40,6 +42,14 @@ const THROW_RANGE: f32 = TILE_SIZE * 6.0;
 /// Seconds between throws.
 const THROW_COOLDOWN_SECS: f32 = 2.0;
 
+/// Initial throw stagger for the thrower at spawn index `index`: a strictly
+/// positive slice of the cooldown so first throws don't fire in lockstep.
+/// Never zero — `Timer::reset` restores the timer's own duration, so a
+/// zero-length stagger would leave that thrower firing every frame forever.
+fn throw_stagger_secs(index: usize) -> f32 {
+    THROW_COOLDOWN_SECS * ((index % 4) as f32 + 1.0) / 4.0
+}
+
 /// The mob never grows past this, however deep the run goes.
 const ENEMY_COUNT_CAP: usize = 80;
 
@@ -58,11 +68,29 @@ fn thrower_every_for(depth: u32) -> usize {
 const CHASER_HP: i32 = 100;
 /// Thrower hit points; two base cleaves.
 const THROWER_HP: i32 = 200;
+/// Tank hit points; a serious soak even before a shield.
+const TANK_HP: i32 = 400;
 
 /// Chaser tint.
 const CHASER_COLOUR: Color = Color::srgb(0.95, 0.2, 0.2);
 /// Thrower tint — amber, distinct from the chaser at a glance.
 const THROWER_COLOUR: Color = Color::srgb(1.0, 0.62, 0.15);
+/// Tank tint — red-brown, distinct from chaser red and thrower amber.
+const TANK_COLOUR: Color = Color::srgb(0.62, 0.26, 0.18);
+
+/// Tank chase speed — half a chaser, an unhurried wall of muscle.
+const TANK_SPEED: f32 = 60.0;
+/// Tank collider footprint as a fraction of a tile.
+const TANK_SIZE_TILES: f32 = 0.9;
+/// Every Nth spawn is a tank, from depth 1 onward.
+const TANK_EVERY: usize = 8;
+
+/// Hit points soaked by one shield plate.
+pub const PLATE_HP: i32 = 5;
+/// Seconds a shield must go without damage before it regrows a plate.
+pub const PLATE_REGEN_SECS: f32 = 2.5;
+/// Plates on a freshly spawned enemy shield.
+pub const ENEMY_SHIELD_PLATES: u32 = 8;
 
 /// Sprite brightness for an enemy at `hp/max`: healthy is full, and damage
 /// darkens the enemy so its state reads at a glance.
@@ -107,6 +135,96 @@ pub struct Enemy;
 #[derive(Component)]
 pub struct Thrower;
 
+/// Slow, tough bruiser: soaks cleaves that would delete lesser enemies.
+#[derive(Component)]
+pub struct Tank;
+
+/// Per-entity chase speed in world units per second (chasers and tanks;
+/// throwers' stand-off logic carries its own speed).
+#[derive(Component)]
+struct Speed(f32);
+
+/// An enemy's undamaged tint, kept so the damage darkening re-derives from
+/// the same colour every frame.
+#[derive(Component)]
+struct BaseColour(Color);
+
+/// What an enemy does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Role {
+    Chaser,
+    Thrower,
+    Tank,
+}
+
+/// Roles for a swarm: throwers and tanks take fixed quotas of the slots and
+/// the list is shuffled so they scatter through the mob instead of
+/// clustering at the end. Deterministic per (seed, depth) via the swarm RNG.
+fn roles_for(count: usize, depth: u32, rng: &mut SmallRng) -> Vec<Role> {
+    let throwers = count / thrower_every_for(depth);
+    let tanks = if depth >= 1 { count / TANK_EVERY } else { 0 };
+    let mut roles = vec![Role::Chaser; count];
+    for role in roles.iter_mut().take(throwers) {
+        *role = Role::Thrower;
+    }
+    for role in roles.iter_mut().skip(throwers).take(tanks) {
+        *role = Role::Tank;
+    }
+    // Fisher–Yates with the same RNG primitive the site picker uses.
+    for i in (1..roles.len()).rev() {
+        roles.swap(i, rng.random_range(0..=i));
+    }
+    roles
+}
+
+/// Regenerating energy shield: a pool of plates that soak damage before
+/// health, regrowing one plate at a time after a quiet spell.
+#[derive(Component, Debug)]
+pub struct Shield {
+    pub plates: u32,
+    pub regen: Timer,
+}
+
+/// Chance an enemy spawns shielded, rising with depth and capping.
+fn shielded_chance(depth: u32) -> f32 {
+    (0.05 + 0.05 * depth as f32).min(0.4)
+}
+
+/// Roll whether this spawn gets a shield.
+fn shielded_roll(rng: &mut SmallRng, depth: u32) -> bool {
+    rng.random::<f32>() < shielded_chance(depth)
+}
+
+/// Route `damage` through a plate pool: each plate soaks [`PLATE_HP`], and a
+/// hit that cracks a plate consumes it whole. Returns the damage that gets
+/// through to whatever sits behind the shield (and restarts the regen clock
+/// whenever a plate is spent).
+pub fn absorb_damage(plates: &mut u32, regen: &mut Timer, damage: i32) -> i32 {
+    if damage <= 0 || *plates == 0 {
+        return damage.max(0);
+    }
+    // Manual ceil for the positive damage this branch guarantees.
+    let needed = ((damage + PLATE_HP - 1) / PLATE_HP) as u32;
+    let spent = needed.min(*plates);
+    *plates -= spent;
+    regen.reset();
+    // A hit lighter than a plate cracks it without leaking anything.
+    (damage - spent as i32 * PLATE_HP).max(0)
+}
+
+/// Regrow one plate per [`PLATE_REGEN_SECS`] of uninterrupted quiet, up to
+/// `max_plates`.
+pub fn regrow_plate(plates: &mut u32, regen: &mut Timer, max_plates: u32, delta: Duration) {
+    if *plates >= max_plates {
+        return;
+    }
+    regen.tick(delta);
+    if regen.is_finished() {
+        *plates += 1;
+        regen.reset();
+    }
+}
+
 /// Per-thrower throw cooldown.
 #[derive(Component, Debug)]
 struct ThrowTimer(Timer);
@@ -119,7 +237,13 @@ impl Plugin for EnemyPlugin {
         // there is no Startup system here.
         app.add_systems(
             Update,
-            (enemy_seek, thrower_seek, thrower_attack)
+            (
+                enemy_seek,
+                thrower_seek,
+                thrower_attack,
+                shield_regen,
+                shield_rings,
+            )
                 .run_if(in_state(crate::skills::GameState::Playing)),
         );
     }
@@ -141,7 +265,6 @@ pub fn spawn_swarm(
     let distances = walkable_distances(&generated.grid, &prototypes, generated.spawn);
     let candidates = far_reachable_cells(&distances, width, MIN_SPAWN_DISTANCE);
     let enemy_count = enemy_count_for(depth);
-    let thrower_every = thrower_every_for(depth);
 
     // Deterministic per-seed placement: same seed and depth, same mob
     // layout. The salt keeps enemy placement uncorrelated with the
@@ -166,24 +289,20 @@ pub fn spawn_swarm(
         );
     }
 
-    let size = config.tile_size * ENEMY_SIZE_TILES;
-    for (i, &cell) in picked.iter().enumerate() {
+    let roles = roles_for(picked.len(), depth, &mut rng);
+    for (i, (&cell, &role)) in picked.iter().zip(roles.iter()).enumerate() {
+        let (hp, colour, size_tiles) = match role {
+            Role::Chaser => (CHASER_HP, CHASER_COLOUR, ENEMY_SIZE_TILES),
+            Role::Thrower => (THROWER_HP, THROWER_COLOUR, ENEMY_SIZE_TILES),
+            Role::Tank => (TANK_HP, TANK_COLOUR, TANK_SIZE_TILES),
+        };
         let pos = tile_world_pos((width, height), cell, config.tile_size);
-        let thrower = i % thrower_every == thrower_every - 1;
+        let size = config.tile_size * size_tiles;
         let mut enemy = commands.spawn((
             Enemy,
-            Health {
-                hp: if thrower { THROWER_HP } else { CHASER_HP },
-                max: if thrower { THROWER_HP } else { CHASER_HP },
-            },
-            Sprite::from_color(
-                if thrower {
-                    THROWER_COLOUR
-                } else {
-                    CHASER_COLOUR
-                },
-                Vec2::splat(size),
-            ),
+            Health { hp, max: hp },
+            BaseColour(colour),
+            Sprite::from_color(colour, Vec2::splat(size)),
             Transform::from_xyz(pos.x, pos.y, 1.0),
             RigidBody::Dynamic,
             Collider::rectangle(size, size),
@@ -197,38 +316,59 @@ pub fn spawn_swarm(
                     | crate::world::LAYER_PLAYER_SHOT,
             ),
         ));
-        if thrower {
-            enemy
-                .insert(Thrower)
-                // Stagger the first throws so the mob does not fire in
-                // lockstep; deterministic per seed.
-                .insert(ThrowTimer(Timer::from_seconds(
-                    THROW_COOLDOWN_SECS * ((i % thrower_every) as f32 / thrower_every as f32),
-                    TimerMode::Once,
-                )));
+        match role {
+            Role::Chaser => {
+                enemy.insert(Speed(ENEMY_SPEED));
+            }
+            Role::Tank => {
+                enemy.insert(Tank).insert(Speed(TANK_SPEED));
+            }
+            Role::Thrower => {
+                enemy
+                    .insert(Thrower)
+                    // Stagger the first throws so the mob does not fire in
+                    // lockstep; deterministic per seed.
+                    .insert(ThrowTimer(Timer::from_seconds(
+                        throw_stagger_secs(i),
+                        TimerMode::Once,
+                    )));
+            }
+        }
+        if shielded_roll(&mut rng, depth) {
+            enemy.insert(Shield {
+                plates: ENEMY_SHIELD_PLATES,
+                regen: Timer::from_seconds(PLATE_REGEN_SECS, TimerMode::Once),
+            });
         }
     }
     tracing::info!("spawned {} enemies", picked.len());
 }
 
-/// Steer chasers toward the player and show their damage state.
+/// Steer chasers and tanks toward the player and show their damage state.
 #[allow(clippy::type_complexity)] // Bevy query tuples read worse split up.
 fn enemy_seek(
     player: Single<&Position, With<crate::Player>>,
     mut enemies: Query<
-        (&Position, &mut LinearVelocity, &Health, &mut Sprite),
+        (
+            &Position,
+            &mut LinearVelocity,
+            &Health,
+            &Speed,
+            &BaseColour,
+            &mut Sprite,
+        ),
         (With<Enemy>, Without<Thrower>),
     >,
 ) {
     let player_pos = player.0;
-    for (pos, mut velocity, health, mut sprite) in &mut enemies {
+    for (pos, mut velocity, health, speed, base, mut sprite) in &mut enemies {
         let to_player = player_pos - pos.0;
         velocity.0 = if to_player != Vec2::ZERO {
-            to_player.normalize() * ENEMY_SPEED
+            to_player.normalize() * speed.0
         } else {
             Vec2::ZERO
         };
-        sprite.color = damage_tint(CHASER_COLOUR, health.hp, health.max);
+        sprite.color = damage_tint(base.0, health.hp, health.max);
     }
 }
 
@@ -243,14 +383,44 @@ fn thrower_velocity(to_player: Vec2) -> Vec2 {
 }
 
 /// Throwers keep their distance instead of swarming, tinted by damage.
+#[allow(clippy::type_complexity)]
 fn thrower_seek(
     player: Single<&Position, With<crate::Player>>,
-    mut throwers: Query<(&Position, &mut LinearVelocity, &Health, &mut Sprite), With<Thrower>>,
+    mut throwers: Query<
+        (
+            &Position,
+            &mut LinearVelocity,
+            &Health,
+            &BaseColour,
+            &mut Sprite,
+        ),
+        With<Thrower>,
+    >,
 ) {
     let player_pos = player.0;
-    for (pos, mut velocity, health, mut sprite) in &mut throwers {
+    for (pos, mut velocity, health, base, mut sprite) in &mut throwers {
         velocity.0 = thrower_velocity(player_pos - pos.0);
-        sprite.color = damage_tint(THROWER_COLOUR, health.hp, health.max);
+        sprite.color = damage_tint(base.0, health.hp, health.max);
+    }
+}
+
+/// Regrow shield plates after a quiet spell.
+fn shield_regen(time: Res<Time>, mut shields: Query<&mut Shield>) {
+    for shield in &mut shields {
+        let Shield { plates, regen } = shield.into_inner();
+        regrow_plate(plates, regen, ENEMY_SHIELD_PLATES, time.delta());
+    }
+}
+
+/// Draw a cyan ring around every enemy whose shield still has plates —
+/// the same shield language as the player's reflect ring.
+fn shield_rings(shields: Query<(&Position, &Sprite, &Shield)>, mut gizmos: Gizmos) {
+    for (pos, sprite, shield) in &shields {
+        if shield.plates == 0 {
+            continue;
+        }
+        let radius = sprite.custom_size.unwrap_or_default().x * 0.5 + 4.0;
+        gizmos.circle_2d(pos.0, radius, Color::srgba(0.4, 0.9, 1.0, 0.5));
     }
 }
 
@@ -342,6 +512,21 @@ mod tests {
     }
 
     #[test]
+    fn throw_stagger_never_zeros_the_cooldown() {
+        for i in 0..64 {
+            let secs = throw_stagger_secs(i);
+            assert!(secs > 0.0, "index {i}: a zero stagger machineguns");
+            assert!(secs <= THROW_COOLDOWN_SECS);
+        }
+        // Four distinct phases cycle rather than bunching at one value.
+        let mut phases: Vec<f32> = (0..4).map(throw_stagger_secs).collect();
+        phases.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        for pair in phases.windows(2) {
+            assert_ne!(pair[0], pair[1]);
+        }
+    }
+
+    #[test]
     fn throwers_chase_until_range_then_hold() {
         let far = Vec2::new(THROW_RANGE * 2.0, 0.0);
         let velocity = thrower_velocity(far);
@@ -354,6 +539,127 @@ mod tests {
         );
         // Boundary is exclusive: exactly at range means hold.
         assert_eq!(thrower_velocity(Vec2::new(THROW_RANGE, 0.0)), Vec2::ZERO);
+    }
+
+    #[test]
+    fn roles_fill_quotas_deterministically_and_add_tanks_with_depth() {
+        let mut rng = SmallRng::seed_from_u64(7);
+        let roles = roles_for(40, 0, &mut rng);
+        assert_eq!(roles.len(), 40);
+        assert_eq!(
+            roles.iter().filter(|r| **r == Role::Thrower).count(),
+            40 / 4
+        );
+        assert_eq!(roles.iter().filter(|r| **r == Role::Tank).count(), 0);
+        // Same seed, same shuffle.
+        let mut rng = SmallRng::seed_from_u64(7);
+        assert_eq!(roles, roles_for(40, 0, &mut rng));
+        // From depth 1 the swarm carries tanks too.
+        let mut rng = SmallRng::seed_from_u64(7);
+        let deep = roles_for(40, 1, &mut rng);
+        assert_eq!(deep.iter().filter(|r| **r == Role::Tank).count(), 40 / 8);
+    }
+
+    #[test]
+    fn shielded_chance_rises_with_depth_and_caps() {
+        assert!((shielded_chance(0) - 0.05).abs() < 1e-6);
+        assert!(shielded_chance(3) > shielded_chance(1));
+        assert!((shielded_chance(100) - 0.4).abs() < 1e-6);
+    }
+
+    #[test]
+    fn shields_absorb_in_plates_and_leak_the_rest() {
+        let mut regen = Timer::from_seconds(PLATE_REGEN_SECS, TimerMode::Once);
+        let mut plates = 8u32;
+        // A light hit still costs a whole plate.
+        assert_eq!(absorb_damage(&mut plates, &mut regen, 3), 0);
+        assert_eq!(plates, 7);
+        // A big hit soaks every plate and leaks the remainder.
+        assert_eq!(
+            absorb_damage(&mut plates, &mut regen, 100),
+            100 - 7 * PLATE_HP
+        );
+        assert_eq!(plates, 0);
+        // An empty shield passes everything through.
+        assert_eq!(absorb_damage(&mut plates, &mut regen, 20), 20);
+        assert_eq!(absorb_damage(&mut plates, &mut regen, 0), 0);
+    }
+
+    #[test]
+    fn spending_a_plate_restarts_the_regen_clock() {
+        let mut plates = 2u32;
+        let mut regen = Timer::from_seconds(PLATE_REGEN_SECS, TimerMode::Once);
+        regen.tick(Duration::from_secs_f64(PLATE_REGEN_SECS as f64));
+        absorb_damage(&mut plates, &mut regen, 5);
+        assert_eq!(plates, 1);
+        assert!(!regen.is_finished());
+    }
+
+    #[test]
+    fn shields_regrow_one_plate_per_quiet_interval() {
+        let mut plates = 0u32;
+        let mut regen = Timer::from_seconds(PLATE_REGEN_SECS, TimerMode::Once);
+        let delta = Duration::from_secs_f64(1.0);
+        // Not enough quiet time yet.
+        for _ in 0..2 {
+            regrow_plate(&mut plates, &mut regen, 3, delta);
+        }
+        assert_eq!(plates, 0);
+        // The third second regrows one plate and restarts the clock.
+        regrow_plate(&mut plates, &mut regen, 3, delta);
+        assert_eq!(plates, 1);
+        // Full shields stop regrowing.
+        for _ in 0..10 {
+            regrow_plate(&mut plates, &mut regen, 3, delta);
+        }
+        assert_eq!(plates, 3);
+    }
+
+    #[test]
+    fn spawned_swarm_carries_roles_speeds_and_shields() {
+        let config = crate::world::MapConfig {
+            generator: wfc::GeneratorConfig {
+                width: 24,
+                height: 24,
+                seed: 99,
+                ..Default::default()
+            },
+            tile_size: TILE_SIZE,
+        };
+        let generated = wfc::generate(&config.generator).expect("generation succeeds");
+        let mut world = World::new();
+        let mut commands = world.commands();
+        spawn_swarm(&mut commands, &generated, &config, 1);
+        drop(commands);
+        world.flush();
+
+        // Throwers carry no Speed (their stand-off logic is separate), so
+        // query it optionally and account for every role.
+        let mut enemies = world.query::<(&Enemy, Option<&Speed>, Option<&Tank>)>();
+        let mut total = 0;
+        let mut tanks = 0;
+        let mut speeded = 0;
+        for (_, speed, tank) in enemies.iter(&world) {
+            total += 1;
+            if tank.is_some() {
+                tanks += 1;
+                assert_eq!(speed.expect("tanks carry speed").0, TANK_SPEED);
+            } else if let Some(speed) = speed {
+                speeded += 1;
+                assert_eq!(speed.0, ENEMY_SPEED);
+            }
+        }
+        assert_eq!(total, enemy_count_for(1));
+        // The tank quota is a slice of the actual spawn count; the chasers
+        // and tanks carry Speed, throwers are the remaining quota.
+        assert_eq!(tanks, total / TANK_EVERY);
+        assert_eq!(total - tanks - speeded, total / thrower_every_for(1));
+
+        // Every shield that rolled in starts with a full plate stack.
+        let mut shields = world.query::<&Shield>();
+        for shield in shields.iter(&world) {
+            assert_eq!(shield.plates, ENEMY_SHIELD_PLATES);
+        }
     }
 
     #[test]

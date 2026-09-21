@@ -69,3 +69,14 @@ transposed grey smear, making floors and walls indistinguishable — with a
 row-major rewrite and a regression test. Added a 2× camera zoom, larger
 projectile/pickup sprites with an alpha pulse, amber throwers distinct from
 red chasers, and an enemy damage tint darkening with HP fraction.
+
+## Milestone 10 — Shields, tanks and health upgrades
+
+Second enemy-diversity pass plus defensive depth for the player. Enemies can
+spawn with regenerating shields — eight plates of 5 HP, one plate regrown per
+2.5 s of quiet, depth-scaled spawn chance, cyan ring while plates remain —
+that soak cleaves, reflected shots and grenade blasts through one shared
+absorption helper. Slow red-brown tanks (400 HP, 0.9-tile bodies) join the
+mob from depth 1 via shuffled role quotas. Two new skills: the barrier unlock
+(a player-side plate pool with its own violet HUD bar, soaking damage before
+health) and repeatable max health +25 that heals as it raises the ceiling.

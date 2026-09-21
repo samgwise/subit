@@ -4,7 +4,7 @@
 
 use bevy::prelude::*;
 
-use crate::combat::PlayerShield;
+use crate::combat::{BARRIER_PLATES, BASE_MAX_HP, Barrier, PlayerShield};
 use crate::progression::SkillPoints;
 
 /// How the app divides its time: the live game, or the paused skills menu.
@@ -20,6 +20,7 @@ pub enum GameState {
 pub struct SkillLevels {
     pub cleave: u32,
     pub shield: u32,
+    pub vitality: u32,
 }
 
 /// Purchased ability unlocks.
@@ -27,6 +28,7 @@ pub struct SkillLevels {
 pub struct AbilityUnlocks {
     pub dash: bool,
     pub grenade: bool,
+    pub barrier: bool,
 }
 
 // --- Skill parameters -----------------------------------------------------
@@ -54,11 +56,20 @@ pub fn shield_cooldown(levels: &SkillLevels) -> f32 {
         .max(SHIELD_COOLDOWN_MIN)
 }
 
+/// Max health added per purchased vitality point.
+const VITALITY_HP_PER_POINT: i32 = 25;
+
+/// Current max health for the player's vitality investment.
+pub fn max_hp_for(levels: &SkillLevels) -> i32 {
+    BASE_MAX_HP + VITALITY_HP_PER_POINT * levels.vitality as i32
+}
+
 // --- Costs -----------------------------------------------------------------
 
 pub const SKILL_COST: u32 = 1;
 pub const DASH_UNLOCK_COST: u32 = 2;
 pub const GRENADE_UNLOCK_COST: u32 = 3;
+pub const BARRIER_UNLOCK_COST: u32 = 3;
 
 // --- Dash state (the ability itself lives with movement) -------------------
 
@@ -116,8 +127,10 @@ struct MenuRoot;
 enum SkillRow {
     Cleave,
     Shield,
+    Vitality,
     Dash,
     Grenade,
+    Barrier,
 }
 
 impl SkillRow {
@@ -129,17 +142,22 @@ impl SkillRow {
             SkillRow::Shield => {
                 format!("Shield cooldown -{SHIELD_COOLDOWN_PER_POINT}s  (cost {SKILL_COST})")
             }
+            SkillRow::Vitality => {
+                format!("Max health +{VITALITY_HP_PER_POINT}  (cost {SKILL_COST})")
+            }
             SkillRow::Dash => format!("Unlock dash  [Space]  (cost {DASH_UNLOCK_COST})"),
             SkillRow::Grenade => format!("Unlock grenade  [G]  (cost {GRENADE_UNLOCK_COST})"),
+            SkillRow::Barrier => format!("Unlock barrier  (cost {BARRIER_UNLOCK_COST})"),
         }
     }
 
     /// Whether the row can be bought right now.
     fn available(&self, points: u32, _levels: &SkillLevels, unlocks: &AbilityUnlocks) -> bool {
         match self {
-            SkillRow::Cleave | SkillRow::Shield => points >= SKILL_COST,
+            SkillRow::Cleave | SkillRow::Shield | SkillRow::Vitality => points >= SKILL_COST,
             SkillRow::Dash => !unlocks.dash && points >= DASH_UNLOCK_COST,
             SkillRow::Grenade => !unlocks.grenade && points >= GRENADE_UNLOCK_COST,
+            SkillRow::Barrier => !unlocks.barrier && points >= BARRIER_UNLOCK_COST,
         }
     }
 }
@@ -175,8 +193,10 @@ fn spawn_menu(mut commands: Commands) {
                 for row in [
                     SkillRow::Cleave,
                     SkillRow::Shield,
+                    SkillRow::Vitality,
                     SkillRow::Dash,
                     SkillRow::Grenade,
+                    SkillRow::Barrier,
                 ] {
                     panel
                         .spawn((
@@ -197,12 +217,15 @@ fn spawn_menu(mut commands: Commands) {
 }
 
 /// Buy a skill when its row is pressed and affordable.
+#[allow(clippy::too_many_arguments)]
 fn handle_purchases(
     rows: Query<(&Interaction, &SkillRow), Changed<Interaction>>,
     mut points: ResMut<SkillPoints>,
     mut levels: ResMut<SkillLevels>,
     mut unlocks: ResMut<AbilityUnlocks>,
     mut shield: ResMut<PlayerShield>,
+    mut vitals: ResMut<crate::combat::PlayerVitals>,
+    mut barrier: ResMut<Barrier>,
 ) {
     for (interaction, row) in &rows {
         if *interaction != Interaction::Pressed || !row.available(points.0, &levels, &unlocks) {
@@ -221,6 +244,14 @@ fn handle_purchases(
                 shield.set_cooldown_secs(shield_cooldown(&levels));
                 tracing::info!(shield = levels.shield, "purchased shield cooldown");
             }
+            SkillRow::Vitality => {
+                points.0 -= SKILL_COST;
+                levels.vitality += 1;
+                vitals.max_hp = max_hp_for(&levels);
+                // The upgrade heals by the same amount it raises the ceiling.
+                vitals.hp = (vitals.hp + VITALITY_HP_PER_POINT).min(vitals.max_hp);
+                tracing::info!(vitality = levels.vitality, "purchased max health");
+            }
             SkillRow::Dash => {
                 points.0 -= DASH_UNLOCK_COST;
                 unlocks.dash = true;
@@ -230,6 +261,13 @@ fn handle_purchases(
                 points.0 -= GRENADE_UNLOCK_COST;
                 unlocks.grenade = true;
                 tracing::info!("unlocked grenade");
+            }
+            SkillRow::Barrier => {
+                points.0 -= BARRIER_UNLOCK_COST;
+                unlocks.barrier = true;
+                // The purchase fills the pool; regen keeps it topped up.
+                barrier.plates = BARRIER_PLATES;
+                tracing::info!("unlocked barrier");
             }
         }
     }
@@ -285,6 +323,14 @@ mod tests {
     }
 
     #[test]
+    fn max_health_grows_with_vitality() {
+        let mut levels = SkillLevels::default();
+        assert_eq!(max_hp_for(&levels), BASE_MAX_HP);
+        levels.vitality = 3;
+        assert_eq!(max_hp_for(&levels), BASE_MAX_HP + 3 * VITALITY_HP_PER_POINT);
+    }
+
+    #[test]
     fn rows_grey_out_on_cost_and_ownership() {
         let levels = SkillLevels::default();
         let mut unlocks = AbilityUnlocks::default();
@@ -296,5 +342,10 @@ mod tests {
         unlocks.dash = true;
         assert!(!SkillRow::Dash.available(99, &levels, &unlocks));
         assert!(SkillRow::Grenade.available(3, &levels, &unlocks));
+        assert!(SkillRow::Vitality.available(1, &levels, &unlocks));
+        assert!(!SkillRow::Barrier.available(2, &levels, &unlocks));
+        assert!(SkillRow::Barrier.available(3, &levels, &unlocks));
+        unlocks.barrier = true;
+        assert!(!SkillRow::Barrier.available(99, &levels, &unlocks));
     }
 }

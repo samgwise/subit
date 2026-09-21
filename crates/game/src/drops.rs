@@ -8,7 +8,6 @@ use rand::RngExt;
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
 
-use crate::combat::MAX_HP;
 use crate::progression::Experience;
 use crate::world::TILE_SIZE;
 
@@ -122,7 +121,7 @@ fn pickup_collect(
         match pickup.0 {
             PickupKind::Xp(amount) => experience.xp += amount,
             PickupKind::Heal(amount) => {
-                vitals.hp = (vitals.hp + amount).min(MAX_HP);
+                vitals.hp = (vitals.hp + amount).min(vitals.max_hp);
                 tracing::info!(hp = vitals.hp, "healed by drop");
             }
         }

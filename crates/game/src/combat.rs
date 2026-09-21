@@ -11,13 +11,13 @@ use bevy::math::{Isometry2d, Rot2};
 use bevy::prelude::*;
 
 use crate::bridge::{BridgeTx, GameAudioEvent};
-use crate::enemies::{Enemy, Health, Thrower, kill_enemy};
+use crate::enemies::{Enemy, Health, Shield, Thrower, absorb_damage, kill_enemy, regrow_plate};
 use crate::skills::{DashState, cleave_damage};
 use crate::world::{MapConfig, SpawnPoint, TILE_SIZE, WorldMapRes, tile_units};
 use wfc::line_of_sight;
 
-/// Player hit points at full health.
-pub(crate) const MAX_HP: i32 = 100;
+/// Player hit points at full health, before vitality upgrades.
+pub(crate) const BASE_MAX_HP: i32 = 100;
 
 /// Damage dealt by one enemy contact.
 const CONTACT_DAMAGE: i32 = 30;
@@ -64,26 +64,42 @@ fn expired(secs: f32) -> Timer {
 #[derive(Resource, Debug)]
 pub struct PlayerVitals {
     pub hp: i32,
+    pub max_hp: i32,
     invuln: Timer,
 }
 
 impl PlayerVitals {
-    /// Apply damage, respecting the invulnerability window. Returns whether
-    /// the hit landed (false while invulnerable).
-    pub fn damage(&mut self, amount: i32) -> bool {
-        if !self.invuln.is_finished() {
-            return false;
-        }
-        self.invuln.reset();
-        self.hp -= amount;
-        true
-    }
-
     /// Open the invulnerability window now (dash i-frames, respawn and
     /// depth-descent grace).
     pub fn reset_invuln(&mut self) {
         self.invuln.reset();
     }
+}
+
+/// Plates on the unlockable barrier once purchased.
+pub(crate) const BARRIER_PLATES: u32 = 10;
+
+/// Unlockable regenerating barrier: a plate pool that soaks damage before
+/// health — the player's version of the enemy shields. The pool stays
+/// empty (inert) until the skill is purchased.
+#[derive(Resource, Debug)]
+pub struct Barrier {
+    pub plates: u32,
+    pub regen: Timer,
+}
+
+/// Route a player hit through the barrier then health: the barrier soaks
+/// what it can, the rest lands on HP. The invulnerability window gates the
+/// whole hit either way. Returns whether the hit landed.
+pub fn damage_player(vitals: &mut PlayerVitals, barrier: &mut Barrier, amount: i32) -> bool {
+    if !vitals.invuln.is_finished() {
+        return false;
+    }
+    vitals.invuln.reset();
+    let Barrier { plates, regen } = barrier;
+    let leaked = absorb_damage(plates, regen, amount);
+    vitals.hp -= leaked;
+    true
 }
 
 /// Shield state: a short reflection window on activation, then a cooldown
@@ -154,13 +170,18 @@ impl Plugin for CombatPlugin {
         // spawn (the first hit lands, the shield starts down, the first
         // click works).
         app.insert_resource(PlayerVitals {
-            hp: MAX_HP,
+            hp: BASE_MAX_HP,
+            max_hp: BASE_MAX_HP,
             invuln: expired(INVULN_SECS),
         })
         .insert_resource(CleaveCooldown(expired(ATTACK_COOLDOWN_SECS)))
         .insert_resource(PlayerShield {
             active: expired(SHIELD_ACTIVE_SECS),
             cooldown: expired(SHIELD_COOLDOWN_SECS),
+        })
+        .insert_resource(Barrier {
+            plates: 0,
+            regen: expired(crate::enemies::PLATE_REGEN_SECS),
         })
         .init_resource::<ComboState>()
         .init_resource::<CleaveFx>()
@@ -172,6 +193,7 @@ impl Plugin for CombatPlugin {
                 update_shield,
                 dash_trigger,
                 player_vitals_fx,
+                barrier_regen,
                 contact_damage,
                 player_speed_telemetry,
             )
@@ -207,7 +229,7 @@ fn advance_combo(current: u32, since_last_kill: Option<Duration>, window: Durati
 /// Left-click cleave: aim from the player to the cursor, kill every enemy in
 /// the arc, batch the kills into one mob-sweep event.
 // Bevy systems routinely carry more than clippy's default parameter budget.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn player_attack(
     mut commands: Commands,
     mut cooldown: ResMut<CleaveCooldown>,
@@ -219,7 +241,16 @@ fn player_attack(
     window: Single<&Window>,
     camera: Single<(&Camera, &GlobalTransform), With<Camera2d>>,
     player: Single<&Position, With<crate::Player>>,
-    mut enemies: Query<(Entity, &Position, Option<&Thrower>, &mut Health), With<Enemy>>,
+    mut enemies: Query<
+        (
+            Entity,
+            &Position,
+            Option<&Thrower>,
+            &mut Health,
+            Option<&mut Shield>,
+        ),
+        With<Enemy>,
+    >,
     map: Res<WorldMapRes>,
     config: Res<MapConfig>,
     levels: Res<crate::skills::SkillLevels>,
@@ -252,7 +283,7 @@ fn player_attack(
         let origin_units = (origin_units.x, origin_units.y);
         let damage = cleave_damage(&levels);
         let mut killed = 0usize;
-        for (entity, pos, thrower, mut health) in &mut enemies {
+        for (entity, pos, thrower, mut health, mut shield) in &mut enemies {
             if !in_cleave_arc(origin, aim, pos.0, CLEAVE_RADIUS, CLEAVE_HALF_ANGLE)
                 || !line_of_sight(&map.map.grid, &map.prototypes, origin_units, {
                     let units = tile_units((width, height), config.tile_size, pos.0);
@@ -261,7 +292,15 @@ fn player_attack(
             {
                 continue;
             }
-            health.hp -= damage;
+            // Shields soak their plates first; the leak lands on health.
+            let to_health = match shield.as_mut() {
+                Some(shield) => {
+                    let Shield { plates, regen } = &mut **shield;
+                    absorb_damage(plates, regen, damage)
+                }
+                None => damage,
+            };
+            health.hp -= to_health;
             if health.hp <= 0 {
                 killed += 1;
                 kill_enemy(&mut commands, entity, pos.0, thrower.is_some(), &mut rng.0);
@@ -397,12 +436,27 @@ fn update_shield(
     }
 }
 
-/// Enemies touching the player hurt it, subject to the shield and the
-/// invulnerability window; death respawns the player at the map spawn with
-/// full health.
+/// Regrow barrier plates while the unlock is owned.
+fn barrier_regen(
+    time: Res<Time>,
+    unlocks: Res<crate::skills::AbilityUnlocks>,
+    barrier: ResMut<Barrier>,
+) {
+    if !unlocks.barrier {
+        return;
+    }
+    let Barrier { plates, regen } = barrier.into_inner();
+    regrow_plate(plates, regen, BARRIER_PLATES, time.delta());
+}
+
+/// Enemies touching the player hurt it, subject to the shield, the barrier
+/// and the invulnerability window; death respawns the player at the map
+/// spawn with full health.
+#[allow(clippy::too_many_arguments)]
 fn contact_damage(
     time: Res<Time>,
     mut vitals: ResMut<PlayerVitals>,
+    mut barrier: ResMut<Barrier>,
     shield: Res<PlayerShield>,
     mut combo: ResMut<ComboState>,
     spawn_point: Res<SpawnPoint>,
@@ -413,14 +467,17 @@ fn contact_damage(
     let (colliding, mut position, mut velocity) = player.into_inner();
 
     let touching_enemy = colliding.iter().any(|entity| enemies.contains(*entity));
-    if !touching_enemy || shield.is_active() || !vitals.damage(CONTACT_DAMAGE) {
+    if !touching_enemy
+        || shield.is_active()
+        || !damage_player(&mut vitals, &mut barrier, CONTACT_DAMAGE)
+    {
         return;
     }
     tracing::info!(hp = vitals.hp, "player hit by enemy contact");
 
     if vitals.hp <= 0 {
         // Respawn: back to the spawn tile, still and whole, combo lost.
-        vitals.hp = MAX_HP;
+        vitals.hp = vitals.max_hp;
         vitals.invuln.reset();
         position.0 = spawn_point.0;
         velocity.0 = Vec2::ZERO;
@@ -556,19 +613,84 @@ mod tests {
     #[test]
     fn damage_respects_the_invulnerability_window() {
         let mut vitals = PlayerVitals {
-            hp: MAX_HP,
+            hp: BASE_MAX_HP,
+            max_hp: BASE_MAX_HP,
             invuln: Timer::from_seconds(INVULN_SECS, TimerMode::Once),
         };
+        let mut barrier = Barrier {
+            plates: 0,
+            regen: expired(crate::enemies::PLATE_REGEN_SECS),
+        };
         // The window starts unexpired: the first hit is blocked...
-        assert!(!vitals.damage(CONTACT_DAMAGE));
+        assert!(!damage_player(&mut vitals, &mut barrier, CONTACT_DAMAGE));
         // ...until it runs out.
         vitals
             .invuln
             .tick(Duration::from_secs_f64(INVULN_SECS as f64 + 0.01));
-        assert!(vitals.damage(CONTACT_DAMAGE));
-        assert_eq!(vitals.hp, MAX_HP - CONTACT_DAMAGE);
+        assert!(damage_player(&mut vitals, &mut barrier, CONTACT_DAMAGE));
+        assert_eq!(vitals.hp, BASE_MAX_HP - CONTACT_DAMAGE);
         // A second hit inside the new window is blocked too.
-        assert!(!vitals.damage(CONTACT_DAMAGE));
+        assert!(!damage_player(&mut vitals, &mut barrier, CONTACT_DAMAGE));
+    }
+
+    #[test]
+    fn the_barrier_soaks_hits_before_health() {
+        let mut vitals = PlayerVitals {
+            hp: BASE_MAX_HP,
+            max_hp: BASE_MAX_HP,
+            invuln: expired(INVULN_SECS),
+        };
+        let mut barrier = Barrier {
+            plates: 10,
+            regen: expired(crate::enemies::PLATE_REGEN_SECS),
+        };
+        // A light hit never reaches health...
+        assert!(damage_player(&mut vitals, &mut barrier, 20));
+        assert_eq!(vitals.hp, BASE_MAX_HP);
+        assert_eq!(barrier.plates, 10 - 4);
+        // The first hit opened the invulnerability window; let it lapse.
+        vitals
+            .invuln
+            .tick(Duration::from_secs_f64(INVULN_SECS as f64 + 0.01));
+        // ...and a heavy one leaks the remainder.
+        assert!(damage_player(&mut vitals, &mut barrier, 100));
+        assert_eq!(
+            vitals.hp,
+            BASE_MAX_HP - (100 - 6 * crate::enemies::PLATE_HP)
+        );
+        assert_eq!(barrier.plates, 0);
+    }
+
+    #[test]
+    fn the_invulnerability_window_gates_barrier_hits_too() {
+        let mut vitals = PlayerVitals {
+            hp: BASE_MAX_HP,
+            max_hp: BASE_MAX_HP,
+            invuln: Timer::from_seconds(INVULN_SECS, TimerMode::Once),
+        };
+        let mut barrier = Barrier {
+            plates: 10,
+            regen: expired(crate::enemies::PLATE_REGEN_SECS),
+        };
+        assert!(!damage_player(&mut vitals, &mut barrier, 20));
+        assert_eq!(vitals.hp, BASE_MAX_HP);
+        // The untouched barrier keeps every plate.
+        assert_eq!(barrier.plates, 10);
+    }
+
+    #[test]
+    fn an_empty_barrier_passes_damage_straight_through() {
+        let mut vitals = PlayerVitals {
+            hp: BASE_MAX_HP,
+            max_hp: BASE_MAX_HP,
+            invuln: expired(INVULN_SECS),
+        };
+        let mut barrier = Barrier {
+            plates: 0,
+            regen: expired(crate::enemies::PLATE_REGEN_SECS),
+        };
+        assert!(damage_player(&mut vitals, &mut barrier, CONTACT_DAMAGE));
+        assert_eq!(vitals.hp, BASE_MAX_HP - CONTACT_DAMAGE);
     }
 
     #[test]
