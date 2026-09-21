@@ -59,10 +59,29 @@ const CHASER_HP: i32 = 100;
 /// Thrower hit points; two base cleaves.
 const THROWER_HP: i32 = 200;
 
+/// Chaser tint.
+const CHASER_COLOUR: Color = Color::srgb(0.95, 0.2, 0.2);
+/// Thrower tint — amber, distinct from the chaser at a glance.
+const THROWER_COLOUR: Color = Color::srgb(1.0, 0.62, 0.15);
+
+/// Sprite brightness for an enemy at `hp/max`: healthy is full, and damage
+/// darkens the enemy so its state reads at a glance.
+fn damage_tint(base: Color, hp: i32, max: i32) -> Color {
+    let fraction = if max > 0 {
+        hp.clamp(0, max) as f32 / max as f32
+    } else {
+        1.0
+    };
+    let factor = 0.45 + 0.55 * fraction;
+    let c = base.to_srgba();
+    Color::srgba(c.red * factor, c.green * factor, c.blue * factor, c.alpha)
+}
+
 /// Enemy hit points.
 #[derive(Component, Debug)]
 pub struct Health {
     pub hp: i32,
+    pub max: i32,
 }
 
 /// Kill an enemy: scatter its drops and despawn it. Combo and event batching
@@ -146,8 +165,16 @@ fn spawn_enemies(
             Enemy,
             Health {
                 hp: if thrower { THROWER_HP } else { CHASER_HP },
+                max: if thrower { THROWER_HP } else { CHASER_HP },
             },
-            Sprite::from_color(Color::srgb(0.95, 0.2, 0.2), Vec2::splat(size)),
+            Sprite::from_color(
+                if thrower {
+                    THROWER_COLOUR
+                } else {
+                    CHASER_COLOUR
+                },
+                Vec2::splat(size),
+            ),
             Transform::from_xyz(pos.x, pos.y, 1.0),
             RigidBody::Dynamic,
             Collider::rectangle(size, size),
@@ -175,20 +202,24 @@ fn spawn_enemies(
     tracing::info!("spawned {} enemies", picked.len());
 }
 
-/// Steer chasers toward the player; collision resolution does the rest.
+/// Steer chasers toward the player and show their damage state.
 #[allow(clippy::type_complexity)] // Bevy query tuples read worse split up.
 fn enemy_seek(
     player: Single<&Position, With<crate::Player>>,
-    mut enemies: Query<(&Position, &mut LinearVelocity), (With<Enemy>, Without<Thrower>)>,
+    mut enemies: Query<
+        (&Position, &mut LinearVelocity, &Health, &mut Sprite),
+        (With<Enemy>, Without<Thrower>),
+    >,
 ) {
     let player_pos = player.0;
-    for (pos, mut velocity) in &mut enemies {
+    for (pos, mut velocity, health, mut sprite) in &mut enemies {
         let to_player = player_pos - pos.0;
         velocity.0 = if to_player != Vec2::ZERO {
             to_player.normalize() * ENEMY_SPEED
         } else {
             Vec2::ZERO
         };
+        sprite.color = damage_tint(CHASER_COLOUR, health.hp, health.max);
     }
 }
 
@@ -202,14 +233,15 @@ fn thrower_velocity(to_player: Vec2) -> Vec2 {
     }
 }
 
-/// Throwers keep their distance instead of swarming.
+/// Throwers keep their distance instead of swarming, tinted by damage.
 fn thrower_seek(
     player: Single<&Position, With<crate::Player>>,
-    mut throwers: Query<(&Position, &mut LinearVelocity), With<Thrower>>,
+    mut throwers: Query<(&Position, &mut LinearVelocity, &Health, &mut Sprite), With<Thrower>>,
 ) {
     let player_pos = player.0;
-    for (pos, mut velocity) in &mut throwers {
+    for (pos, mut velocity, health, mut sprite) in &mut throwers {
         velocity.0 = thrower_velocity(player_pos - pos.0);
+        sprite.color = damage_tint(THROWER_COLOUR, health.hp, health.max);
     }
 }
 

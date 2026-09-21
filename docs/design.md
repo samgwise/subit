@@ -40,13 +40,16 @@ depth, where the mob grows and the run continues with all progression intact.
   forward; the combo and invulnerability reset. Depth scales the mob: +10
   enemies per layer (cap 80), and throwers tighten from every 4th spawn to
   every 3rd from depth 2.
-- Rendering is a code-generated 18-tile atlas: a grid-lined floor, 16 wall
-  autotile variants with lit edges where walls face floor, and a neon-green
-  terminal. Floor brightness scales with open-edge count (corridors read
-  darker than arenas) and drifts cooler as world integrity drops — the visual
-  twin of the audio mode shift. The exit tile is magenta, marked by a pulsing
-  beacon pillar; an off-screen HUD arrow points to it when it leaves the
-  viewport.
+- Rendering is a code-generated 18-tile atlas (row-major image data): a
+  grid-lined floor, 16 wall autotile variants with lit edges where walls face
+  floor, and a neon-green terminal. Floor brightness scales with open-edge
+  count (corridors read darker than arenas) and drifts cooler as world
+  integrity drops — the visual twin of the audio mode shift. The exit tile is
+  magenta, marked by a pulsing beacon pillar; an off-screen HUD arrow points
+  to it when it leaves the viewport.
+- The camera zooms 2× (ortho scale 0.5): tiles render ~64 px and roughly a
+  dozen tiles span the window — pathing and projectile avoidance read at a
+  glance, with the beacon and arrow covering what zoom leaves off-screen.
 
 ## The player
 
@@ -87,20 +90,24 @@ depth, where the mob grows and the run continues with all progression intact.
 - 40 enemies per map, spawned on tiles that are BFS-reachable and at least 8
   steps from the player spawn; layout is deterministic per seed. Every 4th
   spawn is a thrower.
-- **Chaser:** 100 HP (one base cleave), 120 u/s, steers straight at the
+- **Chaser:** red, 100 HP (one base cleave), 120 u/s, steers straight at the
   player; wall and enemy-to-enemy collisions come from physics.
-- **Thrower:** 200 HP (two base cleaves), 70 u/s, holds 6 tiles away and lobs
+- **Thrower:** amber, 200 HP (two base cleaves), 70 u/s, holds 6 tiles away
+  and lobs
   a bouncing projectile at the player's current position every 2 s (no
   leading, no line-of-sight check — blind lobs around corners are a feature).
-  Projectiles fly at 240 u/s, bounce off walls up to 3 times then fail, and
-  despawn on an unshielded player hit. They pass through other enemies, and a
-  reflected one can never re-hit the player (collision layers).
+  Projectiles fly at 240 u/s (12 px sprite), bounce off walls up to 3 times
+  then fail, and despawn on an unshielded player hit. They pass through other
+  enemies, and a reflected one can never re-hit the player (collision
+  layers).
+- Enemies darken with damage — sprite brightness scales with their HP
+  fraction (floor 45%) — so remaining hits read at a glance.
 
 ## Drops and progression
 
 - Kills always drop an XP shard (10 chaser, 25 thrower) and 15% of kills add
-  an HP cross (25 HP, clamped to max). Pickups drift to the player inside a
-  2-tile magnet radius and apply within half a tile.
+  an HP cross (25 HP, clamped to max). Pickups (10–12 px, alpha-pulsing) drift
+  to the player inside a 2-tile magnet radius and apply within half a tile.
 - `xp_for_level(level) = 40 + 30 × level` — linear, the single place the curve
   shape lives. A full 40-enemy clear (~550 XP) is about five levels.
 - Each level-up grants 1 skill point. Tab pauses the world (all simulation
@@ -133,6 +140,7 @@ until the hub clock protocol lands); telemetry bypasses quantisation.
 | Constant | Value |
 | --- | --- |
 | Player speed / max HP | 240 u/s / 100 |
+| Camera zoom | 2× (ortho scale 0.5, ~64 px tiles) |
 | Cleave: radius / cone / cooldown / base damage / per point | 3 tiles / 90° / 0.25 s / 100 / +25 |
 | Combo window | 2 s |
 | Shield: active / cooldown / ring | 0.6 s / 3 s (−0.25/pt, floor 1 s) / 1.2 tiles |

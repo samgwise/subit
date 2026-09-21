@@ -37,6 +37,10 @@ const LIFETIME_SECS: f32 = 16.0;
 /// Projectile collider radius.
 const RADIUS: f32 = 5.0;
 
+/// Projectile sprite size — a little larger than the collider so the shot
+/// reads clearly against the tiles.
+const PROJECTILE_SPRITE: f32 = 12.0;
+
 /// Damage an (unshielded) projectile hit deals.
 const PROJECTILE_DAMAGE: i32 = 20;
 
@@ -146,7 +150,7 @@ pub fn spawn_projectile(
             bounces: MAX_BOUNCES,
             allegiance,
         },
-        Sprite::from_color(colour_for(allegiance), Vec2::splat(RADIUS * 2.0)),
+        Sprite::from_color(colour_for(allegiance), Vec2::splat(PROJECTILE_SPRITE)),
         Transform::from_xyz(origin.x, origin.y, 2.0),
         RigidBody::Dynamic,
         Collider::circle(RADIUS),

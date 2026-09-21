@@ -72,8 +72,8 @@ pub fn spawn_drops(commands: &mut Commands, position: Vec2, thrower: bool, rng: 
         let angle = rng.random::<f32>() * std::f32::consts::TAU;
         let offset = Vec2::from_angle(angle) * rng.random_range(0.0..8.0);
         let (colour, size) = match kind {
-            PickupKind::Xp(_) => (Color::srgba(0.4, 0.9, 1.0, 0.95), 8.0),
-            PickupKind::Heal(_) => (Color::srgba(0.3, 1.0, 0.45, 0.95), 10.0),
+            PickupKind::Xp(_) => (Color::srgba(0.4, 0.9, 1.0, 0.95), 10.0),
+            PickupKind::Heal(_) => (Color::srgba(0.3, 1.0, 0.45, 0.95), 12.0),
         };
         commands.spawn((
             Pickup(kind),
@@ -83,19 +83,26 @@ pub fn spawn_drops(commands: &mut Commands, position: Vec2, thrower: bool, rng: 
     }
 }
 
-/// Drift pickups toward the player while they are inside the magnet radius.
+/// Drift pickups toward the player inside the magnet radius, pulsing
+/// gently so they pop against the tiles.
 fn pickup_drift(
     player: Single<&Position, With<crate::Player>>,
     time: Res<Time>,
-    mut pickups: Query<(&mut Transform, &Pickup)>,
+    mut pickups: Query<(&mut Transform, &mut Sprite, &Pickup)>,
 ) {
     let player_pos = player.0;
-    for (mut transform, _) in &mut pickups {
+    let elapsed = time.elapsed_secs();
+    for (mut transform, mut sprite, _) in &mut pickups {
         let to_player = player_pos - transform.translation.xy();
         if to_player.length() <= MAGNET_RADIUS && to_player != Vec2::ZERO {
             transform.translation +=
                 to_player.normalize().extend(0.0) * PULL_SPEED * time.delta_secs();
         }
+        // Phase varies per pickup so they don't blink in unison.
+        let phase = transform.translation.x * 0.07 + transform.translation.y * 0.05;
+        sprite
+            .color
+            .set_alpha(0.6 + 0.35 * (elapsed * 4.0 + phase).sin());
     }
 }
 

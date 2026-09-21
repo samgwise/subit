@@ -61,3 +61,11 @@ regenerates from a depth-derived seed while all progression (HP, XP, level,
 points, unlocks) carries forward. Depth scales the mob (+10 enemies per
 layer, capped; throwers tighten to every 3rd spawn from depth 2) and a
 descent tone plays through the audio chain.
+
+## Milestone 9 — Rendering fidelity and readability
+
+Fixed the atlas writing its data column-major — every tile rendered a
+transposed grey smear, making floors and walls indistinguishable — with a
+row-major rewrite and a regression test. Added a 2× camera zoom, larger
+projectile/pickup sprites with an alpha pulse, amber throwers distinct from
+red chasers, and an enemy damage tint darkening with HP fraction.

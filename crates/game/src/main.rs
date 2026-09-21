@@ -45,8 +45,18 @@ pub struct Player;
 /// The player sprite's resting tint (also the flash/blink reset colour).
 pub const PLAYER_COLOUR: Color = Color::srgb(0.9, 0.9, 0.95);
 
+/// Camera zoom: ortho scale 0.5 renders tiles at 2× their pixel size —
+/// roughly a dozen tiles across the window.
+const CAMERA_ZOOM: f32 = 0.5;
+
 fn setup(mut commands: Commands) {
-    commands.spawn(Camera2d);
+    commands.spawn((
+        Camera2d,
+        Projection::Orthographic(OrthographicProjection {
+            scale: CAMERA_ZOOM,
+            ..OrthographicProjection::default_2d()
+        }),
+    ));
 }
 
 /// WASD movement direction, normalised; zero when idle.

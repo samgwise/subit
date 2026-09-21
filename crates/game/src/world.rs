@@ -437,15 +437,17 @@ fn atlas_pixel(column: u32, px: u32, py: u32, tile_px: u32) -> [u8; 4] {
     if lit { WALL_EDGE } else { WALL }
 }
 
-/// Build the atlas image: one column per tile variant.
+/// Build the atlas image: one column per tile variant. Image data is
+/// row-major across the FULL atlas width — row 0 of every column first, then
+/// the next row — so the loops must walk rows, then x.
 fn build_atlas(tile_size: f32) -> Image {
     let tile_px = tile_size as u32;
     let mut data = Vec::with_capacity((tile_px * ATLAS_TILES * tile_px * 4) as usize);
-    for column in 0..ATLAS_TILES {
-        for py in 0..tile_px {
-            for px in 0..tile_px {
-                data.extend_from_slice(&atlas_pixel(column, px, py, tile_px));
-            }
+    for py in 0..tile_px {
+        for x in 0..tile_px * ATLAS_TILES {
+            let column = x / tile_px;
+            let px = x % tile_px;
+            data.extend_from_slice(&atlas_pixel(column, px, py, tile_px));
         }
     }
     Image::new(
@@ -525,6 +527,26 @@ mod tests {
         assert!(shifted.red < base.red);
         assert!((base.red - shifted.red) > (base.blue - shifted.blue));
         assert!(shifted.red >= 0.75 * 0.5);
+    }
+
+    #[test]
+    fn atlas_data_is_row_major() {
+        // Regression: the atlas was once written column-major (whole tile
+        // blocks), scrambling every rendered tile into a grey smear.
+        let tile_px = 8u32;
+        let image = build_atlas(tile_px as f32);
+        let data = image
+            .data
+            .as_deref()
+            .expect("the atlas keeps its data on the main world");
+        let width = (tile_px * ATLAS_TILES) as usize;
+        for py in [0u32, 3, 7] {
+            for x in 0..width as u32 {
+                let expected = atlas_pixel(x / tile_px, x % tile_px, py, tile_px);
+                let i = ((py as usize) * width + x as usize) * 4;
+                assert_eq!(&data[i..i + 4], &expected[..]);
+            }
+        }
     }
 
     #[test]
