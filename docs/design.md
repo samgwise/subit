@@ -50,6 +50,11 @@ depth, where the mob grows and the run continues with all progression intact.
 - The camera zooms 2× (ortho scale 0.5): tiles render ~64 px and roughly a
   dozen tiles span the window — pathing and projectile avoidance read at a
   glance, with the beacon and arrow covering what zoom leaves off-screen.
+- Neon bloom: an HDR camera post-process (Bevy's built-in `Bloom`, additive
+  composite, ~0.6 luminance threshold) makes the bright pixels bleed glow —
+  lit wall edges, the beacon pillar, terminals, the cleave flash, shots and
+  pickups — while the dark floor and wall bodies stay matte. No custom
+  shaders; the look is tuned through palette brightness and this threshold.
 
 ## The player
 
@@ -159,6 +164,7 @@ until the hub clock protocol lands); telemetry bypasses quantisation.
 | --- | --- |
 | Player speed / base max HP / vitality per point | 240 u/s / 100 / +25 |
 | Camera zoom | 2× (ortho scale 0.5, ~64 px tiles) |
+| Bloom | OLD_SCHOOL preset, intensity 0.15 (additive, ~0.6 threshold) |
 | Cleave: radius / cone / cooldown / base damage / per point | 3 tiles / 90° / 0.25 s / 100 / +25 |
 | Combo window | 2 s |
 | Shield: active / cooldown / ring | 0.6 s / 3 s (−0.25/pt, floor 1 s) / 1.2 tiles |

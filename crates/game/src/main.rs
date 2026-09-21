@@ -13,6 +13,7 @@ mod skills;
 mod world;
 
 use avian2d::prelude::LinearVelocity;
+use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 use skills::GameState;
 
@@ -56,6 +57,16 @@ fn setup(mut commands: Commands) {
             scale: CAMERA_ZOOM,
             ..OrthographicProjection::default_2d()
         }),
+        // Neon pass: bright pixels (lit wall edges, beacon, terminals, the
+        // cleave flash, shots) bleed glow; the dark tiles stay dark. The
+        // OLD_SCHOOL preset is additive with a ~0.6 threshold — the stylised
+        // look; NATURAL would haze the whole scene. The preset's intensity
+        // (0.05) is too shy for Tron; 0.15 keeps the glow pronounced
+        // without washing out the dark tiles.
+        Bloom {
+            intensity: 0.15,
+            ..Bloom::OLD_SCHOOL
+        },
     ));
 }
 
