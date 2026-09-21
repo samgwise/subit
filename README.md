@@ -4,17 +4,25 @@ Prototype workspace for *Signal Breach* (see `initial-vision.md`): a top-down 2D
 cyberpunk ARPG with Wave Function Collapse level generation and Ensemble-driven
 generative audio.
 
+- `docs/design.md` — the as-built design: mechanics, tuning values, and the
+  audio event table. The living reference for future development.
+- `docs/milestones.md` — what each milestone shipped.
+- `initial-vision.md` — the founding vision, kept frozen as a record.
+
 ## Workspace
 
-- `crates/game` — Bevy client: WFC-generated tilemap with physics, WASD player,
-  enemy swarm, mouse-aimed cleave combat, and the Ensemble bridge that
-  publishes combat events and telemetry to the hub.
-- `crates/wfc` — pure-Rust Wave Function Collapse solver, deliberately
-  engine-free so it can run off the ECS thread and be tested in isolation.
+- `crates/game` — Bevy client: WFC-generated tilemap with physics, WASD player
+  with HP and respawn, enemy swarm (chasers and throwers), mouse-aimed cleave,
+  shield reflection, dash and grenade abilities, XP/level progression with a
+  pause-and-spend skills menu, and the Ensemble bridge publishing combat
+  events and telemetry to the hub.
+- `crates/wfc` — pure-Rust Wave Function Collapse solver with grid
+  reachability (BFS distances, line of sight), deliberately engine-free so it
+  can run off the ECS thread and be tested in isolation.
 - `crates/audio-voice` — generative audio voice as a library plus a thin
-  standalone binary. The library (quantiser, event→note mapping) can later be
-  woven directly into the game process; the binary provides the standalone
-  audio daemon role from the GDD.
+  standalone binary. The library (quantiser, event→note mapping, speed→CC)
+  can later be woven directly into the game process; the binary provides the
+  standalone audio daemon role from the GDD.
 
 ## Prerequisites
 
@@ -38,6 +46,17 @@ Print an ASCII rendering of a generated map for a given seed:
 cargo run -p wfc --example ascii_map 42
 ```
 
+## Controls
+
+| Input | Action |
+| --- | --- |
+| WASD | Move |
+| Left mouse | Cleave toward the cursor (kills in a 90° arc, wall-occluded) |
+| Right mouse | Raise the shield — blocks contact, reflects projectiles in the ring |
+| Space | Dash (once unlocked) — short burst with i-frames |
+| G | Grenade (once unlocked) — bouncing lob with a radial blast |
+| Tab | Pause and open the skills menu |
+
 ## Running the audio chain
 
 ```sh
@@ -48,7 +67,6 @@ cargo run --bin ensemble-bridge-midi
 # Terminal 3 — the audio voice
 cargo run -p audio-voice
 # Terminal 4 — the game
-#   WASD to move, left-click to cleave toward the cursor, enemies chase you
 cargo run -p game
 ```
 
