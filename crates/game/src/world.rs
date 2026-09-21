@@ -66,6 +66,7 @@ pub const LAYER_PLAYER: u32 = 1 << 1;
 pub const LAYER_ENEMY: u32 = 1 << 2;
 pub const LAYER_ENEMY_SHOT: u32 = 1 << 3;
 pub const LAYER_PLAYER_SHOT: u32 = 1 << 4;
+pub const LAYER_GRENADE: u32 = 1 << 5;
 
 /// Marker for the compound static wall body, so collision events can
 /// distinguish wall bounces from gameplay hits.
@@ -87,7 +88,10 @@ impl Plugin for WorldMapPlugin {
             // 9.81 units/s^2, so zero it out.
             .insert_resource(Gravity::ZERO)
             .add_systems(Startup, generate_world)
-            .add_systems(Update, pulse_exit_beacon);
+            .add_systems(
+                Update,
+                pulse_exit_beacon.run_if(in_state(crate::skills::GameState::Playing)),
+            );
     }
 }
 

@@ -68,6 +68,12 @@ pub enum GameEvent {
     ProjectileThrow,
     /// The shield reflected a projectile — bright stab.
     ShieldReflect,
+    /// The player levelled up — rising chime.
+    LevelUp,
+    /// The player dashed — short high whoosh.
+    Dash,
+    /// A grenade detonated — deep boom.
+    GrenadeBlast,
 }
 
 /// A MIDI-ready note event.
@@ -111,6 +117,24 @@ pub fn perform_event(event: GameEvent) -> NoteEvent {
             note: 79,
             velocity: 110,
             duration_secs: 0.15,
+        },
+        GameEvent::LevelUp => NoteEvent {
+            channel: 0,
+            note: 84,
+            velocity: 90,
+            duration_secs: 0.3,
+        },
+        GameEvent::Dash => NoteEvent {
+            channel: 0,
+            note: 91,
+            velocity: 70,
+            duration_secs: 0.08,
+        },
+        GameEvent::GrenadeBlast => NoteEvent {
+            channel: 0,
+            note: 36,
+            velocity: 127,
+            duration_secs: 0.4,
         },
     }
 }

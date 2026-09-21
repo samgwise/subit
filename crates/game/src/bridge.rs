@@ -25,6 +25,12 @@ pub enum GameAudioEvent {
     ProjectileThrow,
     /// The shield reflected a projectile.
     ShieldReflect,
+    /// The player levelled up.
+    LevelUp,
+    /// The player dashed.
+    Dash,
+    /// A grenade detonated.
+    GrenadeBlast,
     /// Streaming player speed for audio modulation.
     PlayerTelemetry { speed: f32, max_speed: f32 },
     /// World-integrity ratio of the generated map (walkable fraction).
@@ -37,7 +43,10 @@ impl GameAudioEvent {
         match self {
             GameAudioEvent::AttackPrimary
             | GameAudioEvent::ProjectileThrow
-            | GameAudioEvent::ShieldReflect => "/subit/game/event/action",
+            | GameAudioEvent::ShieldReflect
+            | GameAudioEvent::LevelUp
+            | GameAudioEvent::Dash
+            | GameAudioEvent::GrenadeBlast => "/subit/game/event/action",
             GameAudioEvent::MobSweep { .. } => "/subit/game/event/combat",
             GameAudioEvent::PlayerTelemetry { .. } => "/subit/game/telemetry/player",
             GameAudioEvent::WorldTelemetry { .. } => "/subit/game/telemetry/world",
@@ -50,6 +59,9 @@ impl GameAudioEvent {
             GameAudioEvent::AttackPrimary
             | GameAudioEvent::ProjectileThrow
             | GameAudioEvent::ShieldReflect
+            | GameAudioEvent::LevelUp
+            | GameAudioEvent::Dash
+            | GameAudioEvent::GrenadeBlast
             | GameAudioEvent::MobSweep { .. } => SignalType::Event,
             GameAudioEvent::PlayerTelemetry { .. } => SignalType::Stream,
             GameAudioEvent::WorldTelemetry { .. } => SignalType::Param,
@@ -73,6 +85,15 @@ impl GameAudioEvent {
             }
             GameAudioEvent::ShieldReflect => {
                 fields.insert("type".into(), Value::String("shield_reflect".into()));
+            }
+            GameAudioEvent::LevelUp => {
+                fields.insert("type".into(), Value::String("level_up".into()));
+            }
+            GameAudioEvent::Dash => {
+                fields.insert("type".into(), Value::String("dash".into()));
+            }
+            GameAudioEvent::GrenadeBlast => {
+                fields.insert("type".into(), Value::String("grenade_blast".into()));
             }
             GameAudioEvent::PlayerTelemetry { speed, max_speed } => {
                 fields.insert("type".into(), Value::String("player_speed".into()));

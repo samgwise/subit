@@ -11,6 +11,7 @@ use rand::SeedableRng;
 use rand::rngs::SmallRng;
 use wfc::walkable_distances;
 
+use crate::drops::spawn_drops;
 use crate::world::{MapConfig, TILE_SIZE, WorldMapRes, tile_world_pos};
 
 /// How many enemies to seed the map with.
@@ -39,6 +40,32 @@ const THROW_RANGE: f32 = TILE_SIZE * 6.0;
 /// Seconds between throws.
 const THROW_COOLDOWN_SECS: f32 = 2.0;
 
+/// Chaser hit points; the base cleave one-shots them.
+const CHASER_HP: i32 = 100;
+/// Thrower hit points; two base cleaves.
+const THROWER_HP: i32 = 200;
+
+/// Enemy hit points.
+#[derive(Component, Debug)]
+pub struct Health {
+    pub hp: i32,
+}
+
+/// Kill an enemy: scatter its drops and despawn it. Combo and event batching
+/// is the caller's concern (a cleave batches a whole swing).
+pub fn kill_enemy(
+    commands: &mut Commands,
+    entity: Entity,
+    position: Vec2,
+    thrower: bool,
+    rng: &mut SmallRng,
+) {
+    spawn_drops(commands, position, thrower, rng);
+    if let Ok(mut entity_commands) = commands.get_entity(entity) {
+        entity_commands.despawn();
+    }
+}
+
 #[derive(Component)]
 pub struct Enemy;
 
@@ -56,7 +83,11 @@ pub struct EnemyPlugin;
 impl Plugin for EnemyPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn_enemies.after(crate::world::generate_world))
-            .add_systems(Update, (enemy_seek, thrower_seek, thrower_attack));
+            .add_systems(
+                Update,
+                (enemy_seek, thrower_seek, thrower_attack)
+                    .run_if(in_state(crate::skills::GameState::Playing)),
+            );
     }
 }
 
@@ -89,8 +120,12 @@ fn spawn_enemies(mut commands: Commands, map: Res<WorldMapRes>, config: Res<MapC
     let size = config.tile_size * ENEMY_SIZE_TILES;
     for (i, &cell) in picked.iter().enumerate() {
         let pos = tile_world_pos((width, height), cell, config.tile_size);
+        let thrower = i % THROWER_EVERY == THROWER_EVERY - 1;
         let mut enemy = commands.spawn((
             Enemy,
+            Health {
+                hp: if thrower { THROWER_HP } else { CHASER_HP },
+            },
             Sprite::from_color(Color::srgb(0.95, 0.2, 0.2), Vec2::splat(size)),
             Transform::from_xyz(pos.x, pos.y, 1.0),
             RigidBody::Dynamic,
@@ -105,7 +140,7 @@ fn spawn_enemies(mut commands: Commands, map: Res<WorldMapRes>, config: Res<MapC
                     | crate::world::LAYER_PLAYER_SHOT,
             ),
         ));
-        if i % THROWER_EVERY == THROWER_EVERY - 1 {
+        if thrower {
             enemy
                 .insert(Thrower)
                 // Stagger the first throws so the mob does not fire in

@@ -8,6 +8,7 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
 use crate::combat::{MAX_HP, PlayerVitals};
+use crate::progression::{Experience, SkillPoints, xp_for_level};
 use crate::world::WorldMapRes;
 
 /// Screen-border margin for the exit arrow, in pixels.
@@ -21,13 +22,21 @@ pub struct HudPlugin;
 impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn_hud)
-            .add_systems(Update, (update_hp_bar, update_exit_arrow));
+            .add_systems(Update, (update_hp_bar, update_xp_bar, update_exit_arrow));
     }
 }
 
 /// Marker for the HP bar's fill node.
 #[derive(Component)]
 struct HpFill;
+
+/// Marker for the XP bar's fill node.
+#[derive(Component)]
+struct XpFill;
+
+/// Marker for the level/points label.
+#[derive(Component)]
+struct LevelLabel;
 
 /// Marker for the off-screen exit-direction arrow.
 #[derive(Component)]
@@ -57,6 +66,46 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
                 BackgroundColor(hp_fill_colour(1.0)),
             ));
         });
+
+    // XP bar above the HP bar, with a level/points label.
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(16.0),
+                bottom: Val::Px(34.0),
+                width: Val::Px(220.0),
+                height: Val::Px(6.0),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.6)),
+        ))
+        .with_children(|bar| {
+            bar.spawn((
+                XpFill,
+                Node {
+                    width: Val::Percent(0.0),
+                    height: Val::Percent(100.0),
+                    ..default()
+                },
+                BackgroundColor(Color::srgb(0.4, 0.9, 1.0)),
+            ));
+        });
+    commands.spawn((
+        LevelLabel,
+        Node {
+            position_type: PositionType::Absolute,
+            left: Val::Px(16.0),
+            bottom: Val::Px(44.0),
+            ..default()
+        },
+        Text::new("LV 1"),
+        TextFont {
+            font_size: FontSize::Px(14.0),
+            ..default()
+        },
+        TextColor(Color::srgba(0.8, 0.9, 1.0, 0.9)),
+    ));
 
     // Off-screen exit-direction arrow, hidden until the exit leaves the
     // viewport (the beacon pillar covers the on-screen case).
@@ -180,6 +229,27 @@ fn update_exit_arrow(
     // clamped point would flatten the angle along the border.
     transform.rotation = Rot2::radians(arrow_rotation(exit_vp - player_vp));
     visibility.set_if_neq(Visibility::Visible);
+}
+
+/// Bind the XP fill and level label to progression state.
+fn update_xp_bar(
+    experience: Res<Experience>,
+    points: Res<SkillPoints>,
+    mut fill: Single<&mut Node, With<XpFill>>,
+    mut label: Single<&mut Text, With<LevelLabel>>,
+) {
+    let needed = xp_for_level(experience.level);
+    fill.width = Val::Percent((experience.xp as f32 / needed as f32).min(1.0) * 100.0);
+    label.0 = if points.0 > 0 {
+        format!(
+            "LV {} — {} pt{} (Tab)",
+            experience.level,
+            points.0,
+            if points.0 > 1 { "s" } else { "" }
+        )
+    } else {
+        format!("LV {}", experience.level)
+    };
 }
 
 /// Clamped HP fraction (0..=1) for the bar fill.

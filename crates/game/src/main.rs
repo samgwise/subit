@@ -4,13 +4,17 @@
 
 mod bridge;
 mod combat;
+mod drops;
 mod enemies;
 mod hud;
+mod progression;
 mod projectiles;
+mod skills;
 mod world;
 
 use avian2d::prelude::LinearVelocity;
 use bevy::prelude::*;
+use skills::GameState;
 
 fn main() {
     App::new()
@@ -23,10 +27,15 @@ fn main() {
             enemies::EnemyPlugin,
             combat::CombatPlugin,
             projectiles::ProjectilePlugin,
+            progression::ProgressionPlugin,
+            drops::DropsPlugin,
+            skills::SkillsPlugin,
             hud::HudPlugin,
         ))
         .add_systems(Startup, setup)
-        .add_systems(Update, (player_movement, camera_follow))
+        .add_systems(Update, camera_follow)
+        // The player sim pauses while the skills menu is open.
+        .add_systems(Update, player_movement.run_if(in_state(GameState::Playing)))
         .run();
 }
 
@@ -40,12 +49,8 @@ fn setup(mut commands: Commands) {
     commands.spawn(Camera2d);
 }
 
-/// Physics-driven WASD movement: write the desired velocity and let the
-/// solver resolve wall collisions.
-fn player_movement(
-    input: Res<ButtonInput<KeyCode>>,
-    mut player: Single<&mut LinearVelocity, With<Player>>,
-) {
+/// WASD movement direction, normalised; zero when idle.
+pub(crate) fn move_direction(input: &ButtonInput<KeyCode>) -> Vec2 {
     let mut direction = Vec2::ZERO;
     if input.pressed(KeyCode::KeyW) {
         direction.y += 1.0;
@@ -62,7 +67,21 @@ fn player_movement(
     if direction != Vec2::ZERO {
         direction = direction.normalize();
     }
-    player.0 = direction * world::PLAYER_SPEED;
+    direction
+}
+
+/// Physics-driven WASD movement: write the desired velocity and let the
+/// solver resolve wall collisions. An active dash overrides input.
+fn player_movement(
+    input: Res<ButtonInput<KeyCode>>,
+    dash: Res<skills::DashState>,
+    mut player: Single<&mut LinearVelocity, With<Player>>,
+) {
+    if !dash.active.is_finished() {
+        player.0 = dash.dir * skills::DASH_SPEED;
+        return;
+    }
+    player.0 = move_direction(&input) * world::PLAYER_SPEED;
 }
 
 fn camera_follow(

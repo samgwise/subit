@@ -16,7 +16,12 @@ use bevy::prelude::*;
 
 use crate::bridge::{BridgeTx, GameAudioEvent};
 use crate::combat::{ComboState, PlayerShield, PlayerVitals, SHIELD_RADIUS};
-use crate::world::{LAYER_ENEMY, LAYER_ENEMY_SHOT, LAYER_PLAYER, LAYER_PLAYER_SHOT, LAYER_WALL};
+use crate::enemies::{Health, kill_enemy};
+use crate::skills::{AbilityUnlocks, GameState, SkillLevels, cleave_damage};
+use crate::world::{
+    LAYER_ENEMY, LAYER_ENEMY_SHOT, LAYER_GRENADE, LAYER_PLAYER, LAYER_PLAYER_SHOT, LAYER_WALL,
+    TILE_SIZE,
+};
 
 /// Projectile travel speed in world units per second (~4 px/frame, so no
 /// CCD is needed).
@@ -34,6 +39,40 @@ const RADIUS: f32 = 5.0;
 
 /// Damage an (unshielded) projectile hit deals.
 const PROJECTILE_DAMAGE: i32 = 20;
+
+/// Grenade lob speed in world units per second.
+const GRENADE_SPEED: f32 = 400.0;
+/// Seconds before the grenade detonates.
+const GRENADE_FUSE_SECS: f32 = 0.5;
+/// Seconds between grenade throws.
+const GRENADE_COOLDOWN_SECS: f32 = 5.0;
+/// Blast radius in world units (2.5 tiles).
+const GRENADE_RADIUS: f32 = TILE_SIZE * 2.5;
+/// Damage the blast deals within its radius.
+const GRENADE_DAMAGE: i32 = 200;
+
+/// Wall bounces a grenade can survive; the wall contact after the last one
+/// detonates it where it hits.
+const GRENADE_BOUNCES: u32 = 2;
+
+/// A thrown grenade awaiting detonation, with its remaining wall-bounce
+/// budget.
+#[derive(Component, Debug)]
+pub struct Grenade {
+    pub bounces: u32,
+}
+
+/// Per-grenade fuse timer.
+#[derive(Component, Debug)]
+struct Fuse(Timer);
+
+/// Grenade throw cooldown.
+#[derive(Resource, Debug)]
+struct GrenadeCooldown(Timer);
+
+/// Transient blast flash: an expanding circle at the detonation point.
+#[derive(Resource, Debug, Default)]
+struct BlastFx(Option<(Vec2, Timer)>);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProjectileAllegiance {
@@ -55,9 +94,21 @@ pub struct ProjectilePlugin;
 
 impl Plugin for ProjectilePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
+        app.insert_resource(GrenadeCooldown(Timer::from_seconds(
+            GRENADE_COOLDOWN_SECS,
+            TimerMode::Once,
+        )))
+        .init_resource::<BlastFx>()
+        .add_systems(
             Update,
-            (projectile_impacts, shield_reflection, projectile_lifetime),
+            (
+                projectile_impacts,
+                shield_reflection,
+                grenade_throw,
+                grenade_detonate,
+                projectile_lifetime,
+            )
+                .run_if(in_state(GameState::Playing)),
         );
     }
 }
@@ -146,12 +197,22 @@ fn projectile_impacts(
     )>,
     walls: Query<(), With<crate::world::WallBody>>,
     player: Single<(Entity, &Position), With<crate::Player>>,
-    enemies: Query<Entity, With<crate::enemies::Enemy>>,
+    mut enemies: Query<
+        (
+            Entity,
+            &Position,
+            Option<&crate::enemies::Thrower>,
+            &mut Health,
+        ),
+        With<crate::enemies::Enemy>,
+    >,
     mut vitals: ResMut<PlayerVitals>,
     shield: Res<PlayerShield>,
     mut combo: ResMut<ComboState>,
+    levels: Res<SkillLevels>,
     bridge: Res<BridgeTx>,
     time: Res<Time>,
+    mut rng: ResMut<crate::drops::DropRng>,
 ) {
     let (player_entity, _) = *player;
     let mut despawned: Vec<Entity> = Vec::new();
@@ -207,19 +268,30 @@ fn projectile_impacts(
             if !is_player_shot {
                 continue;
             }
-            if let Ok(mut entity_commands) = commands.get_entity(other) {
-                entity_commands.despawn();
+            let Ok((_, enemy_pos, thrower, mut health)) = enemies.get_mut(other) else {
+                continue;
+            };
+            health.hp -= cleave_damage(&levels);
+            if health.hp <= 0 {
+                kill_enemy(
+                    &mut commands,
+                    other,
+                    enemy_pos.0,
+                    thrower.is_some(),
+                    &mut rng.0,
+                );
+                combo.register_kill(time.elapsed());
+                bridge.send(GameAudioEvent::MobSweep {
+                    kill_count: 1,
+                    combo: combo.count,
+                });
+                tracing::info!(combo = combo.count, "projectile killed an enemy");
             }
+            // The projectile dies on impact either way.
             if let Ok(mut entity_commands) = commands.get_entity(projectile_entity) {
                 entity_commands.despawn();
                 despawned.push(projectile_entity);
             }
-            combo.register_kill(time.elapsed());
-            bridge.send(GameAudioEvent::MobSweep {
-                kill_count: 1,
-                combo: combo.count,
-            });
-            tracing::info!(combo = combo.count, "projectile killed an enemy");
         }
     }
 }
@@ -307,6 +379,165 @@ fn apply_reflection(
     if let Ok(mut entity_commands) = commands.get_entity(entity) {
         entity_commands.remove::<CollisionLayers>();
         entity_commands.insert(layers_for(ProjectileAllegiance::Player));
+    }
+}
+
+/// Throw a grenade on G: unlock-gated, off cooldown, aimed along the
+/// cursor. The lob bounces off walls and detonates on fuse — or when its
+/// bounce budget runs out.
+#[allow(clippy::too_many_arguments)]
+fn grenade_throw(
+    mut commands: Commands,
+    input: Res<ButtonInput<KeyCode>>,
+    unlocks: Res<AbilityUnlocks>,
+    mut cooldown: ResMut<GrenadeCooldown>,
+    time: Res<Time>,
+    window: Single<&Window>,
+    camera: Single<(&Camera, &GlobalTransform), With<Camera2d>>,
+    player: Single<&Position, With<crate::Player>>,
+) {
+    cooldown.0.tick(time.delta());
+    if !input.just_pressed(KeyCode::KeyG) || !unlocks.grenade || !cooldown.0.is_finished() {
+        return;
+    }
+    if let Some(cursor) = window.cursor_position()
+        && let Ok(cursor_world) = camera.0.viewport_to_world_2d(camera.1, cursor)
+    {
+        let dir = (cursor_world - player.0).normalize_or_zero();
+        if dir == Vec2::ZERO {
+            return;
+        }
+        cooldown.0.reset();
+        commands.spawn((
+            Grenade {
+                bounces: GRENADE_BOUNCES,
+            },
+            Sprite::from_color(Color::srgb(0.85, 0.55, 0.15), Vec2::splat(9.0)),
+            Transform::from_xyz(player.0.x, player.0.y, 2.0),
+            RigidBody::Dynamic,
+            Collider::circle(4.0),
+            // Walls block the lob — it bounces off them — while everything
+            // else is ignored.
+            CollisionLayers::from_bits(LAYER_GRENADE, LAYER_WALL),
+            Restitution::new(1.0),
+            Friction::ZERO,
+            LinearVelocity(dir * GRENADE_SPEED),
+            LockedAxes::ROTATION_LOCKED,
+            SleepingDisabled,
+            CollisionEventsEnabled,
+            Fuse(Timer::from_seconds(GRENADE_FUSE_SECS, TimerMode::Once)),
+        ));
+        tracing::info!(dir = ?dir, "grenade thrown");
+    }
+}
+
+/// Detonate grenades whose fuse expired or whose wall-bounce budget ran
+/// out: flash, damage every enemy in the blast radius, batch the kills,
+/// then despawn.
+#[allow(clippy::too_many_arguments)]
+fn grenade_detonate(
+    mut commands: Commands,
+    mut collisions: MessageReader<CollisionStart>,
+    time: Res<Time>,
+    mut grenades: Query<(Entity, &Position, &mut Grenade, &mut Fuse)>,
+    walls: Query<(), With<crate::world::WallBody>>,
+    mut enemies: Query<
+        (
+            Entity,
+            &Position,
+            Option<&crate::enemies::Thrower>,
+            &mut Health,
+        ),
+        With<crate::enemies::Enemy>,
+    >,
+    mut combo: ResMut<ComboState>,
+    mut fx: ResMut<BlastFx>,
+    bridge: Res<BridgeTx>,
+    mut rng: ResMut<crate::drops::DropRng>,
+    mut gizmos: Gizmos,
+) {
+    // Blast flash lingers briefly after the detonation.
+    if let Some((centre, flash)) = fx.0.as_mut() {
+        flash.tick(time.delta());
+        if flash.is_finished() {
+            *fx = BlastFx(None);
+        } else {
+            gizmos.circle_2d(*centre, GRENADE_RADIUS, Color::srgba(1.0, 0.6, 0.2, 0.7));
+        }
+    }
+
+    let mut detonated: Vec<(Entity, Vec2)> = Vec::new();
+    let already = |list: &[(Entity, Vec2)], entity: Entity| list.iter().any(|(e, _)| *e == entity);
+
+    // Wall contacts spend the bounce budget; the contact after the last
+    // bounce sets the grenade off where it hits.
+    for event in collisions.read() {
+        let (grenade_entity, other) = if grenades.contains(event.collider1) {
+            (event.collider1, event.collider2)
+        } else if grenades.contains(event.collider2) {
+            (event.collider2, event.collider1)
+        } else {
+            continue;
+        };
+        if !walls.contains(other) {
+            continue;
+        }
+        let Ok((_, pos, mut grenade, _)) = grenades.get_mut(grenade_entity) else {
+            continue;
+        };
+        match bounce_result(grenade.bounces) {
+            Some(remaining) => grenade.bounces = remaining,
+            None => {
+                if !already(&detonated, grenade_entity) {
+                    detonated.push((grenade_entity, pos.0));
+                }
+            }
+        }
+    }
+
+    // The fuse sets off anything still flying.
+    for (entity, pos, _, mut fuse) in &mut grenades {
+        if already(&detonated, entity) {
+            continue;
+        }
+        fuse.0.tick(time.delta());
+        if fuse.0.is_finished() {
+            detonated.push((entity, pos.0));
+        }
+    }
+
+    for (entity, centre) in detonated {
+        *fx = BlastFx(Some((centre, Timer::from_seconds(0.15, TimerMode::Once))));
+        bridge.send(GameAudioEvent::GrenadeBlast);
+
+        let mut killed = 0usize;
+        for (enemy_entity, pos, thrower, mut health) in &mut enemies {
+            if pos.0.distance(centre) > GRENADE_RADIUS {
+                continue;
+            }
+            health.hp -= GRENADE_DAMAGE;
+            if health.hp <= 0 {
+                killed += 1;
+                kill_enemy(
+                    &mut commands,
+                    enemy_entity,
+                    pos.0,
+                    thrower.is_some(),
+                    &mut rng.0,
+                );
+            }
+        }
+        if killed > 0 {
+            combo.register_kill(time.elapsed());
+            bridge.send(GameAudioEvent::MobSweep {
+                kill_count: killed as u32,
+                combo: combo.count,
+            });
+        }
+        tracing::info!(killed, "grenade detonated");
+        if let Ok(mut entity_commands) = commands.get_entity(entity) {
+            entity_commands.despawn();
+        }
     }
 }
 

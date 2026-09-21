@@ -11,7 +11,8 @@ use bevy::math::{Isometry2d, Rot2};
 use bevy::prelude::*;
 
 use crate::bridge::{BridgeTx, GameAudioEvent};
-use crate::enemies::Enemy;
+use crate::enemies::{Enemy, Health, Thrower, kill_enemy};
+use crate::skills::{DashState, cleave_damage};
 use crate::world::{MapConfig, SpawnPoint, TILE_SIZE, WorldMapRes, tile_units};
 use wfc::line_of_sight;
 
@@ -92,6 +93,12 @@ impl PlayerShield {
     pub fn is_active(&self) -> bool {
         !self.active.is_finished()
     }
+
+    /// Re-derive the cooldown timer after a menu purchase.
+    pub fn set_cooldown_secs(&mut self, secs: f32) {
+        self.cooldown
+            .set_duration(Duration::from_secs_f64(secs as f64));
+    }
 }
 
 /// Cooldown gating consecutive cleave swings.
@@ -157,10 +164,12 @@ impl Plugin for CombatPlugin {
                 player_attack,
                 cleave_fx,
                 update_shield,
+                dash_trigger,
                 player_vitals_fx,
                 contact_damage,
                 player_speed_telemetry,
-            ),
+            )
+                .run_if(in_state(crate::skills::GameState::Playing)),
         );
     }
 }
@@ -204,9 +213,11 @@ fn player_attack(
     window: Single<&Window>,
     camera: Single<(&Camera, &GlobalTransform), With<Camera2d>>,
     player: Single<&Position, With<crate::Player>>,
-    enemies: Query<(Entity, &Position), With<Enemy>>,
+    mut enemies: Query<(Entity, &Position, Option<&Thrower>, &mut Health), With<Enemy>>,
     map: Res<WorldMapRes>,
     config: Res<MapConfig>,
+    levels: Res<crate::skills::SkillLevels>,
+    mut rng: ResMut<crate::drops::DropRng>,
 ) {
     cooldown.0.tick(time.delta());
     if !mouse.just_pressed(MouseButton::Left) || !cooldown.0.is_finished() {
@@ -233,30 +244,31 @@ fn player_attack(
         let (width, height) = (map.map.grid.width(), map.map.grid.height());
         let origin_units = tile_units((width, height), config.tile_size, origin);
         let origin_units = (origin_units.x, origin_units.y);
-        let killed: Vec<Entity> = enemies
-            .iter()
-            .filter(|(_, pos)| {
-                in_cleave_arc(origin, aim, pos.0, CLEAVE_RADIUS, CLEAVE_HALF_ANGLE)
-                    && line_of_sight(&map.map.grid, &map.prototypes, origin_units, {
-                        let units = tile_units((width, height), config.tile_size, pos.0);
-                        (units.x, units.y)
-                    })
-            })
-            .map(|(entity, _)| entity)
-            .collect();
-        for entity in &killed {
-            if let Ok(mut entity_commands) = commands.get_entity(*entity) {
-                entity_commands.despawn();
+        let damage = cleave_damage(&levels);
+        let mut killed = 0usize;
+        for (entity, pos, thrower, mut health) in &mut enemies {
+            if !in_cleave_arc(origin, aim, pos.0, CLEAVE_RADIUS, CLEAVE_HALF_ANGLE)
+                || !line_of_sight(&map.map.grid, &map.prototypes, origin_units, {
+                    let units = tile_units((width, height), config.tile_size, pos.0);
+                    (units.x, units.y)
+                })
+            {
+                continue;
+            }
+            health.hp -= damage;
+            if health.hp <= 0 {
+                killed += 1;
+                kill_enemy(&mut commands, entity, pos.0, thrower.is_some(), &mut rng.0);
             }
         }
 
-        if !killed.is_empty() {
+        if killed > 0 {
             combo.register_kill(time.elapsed());
             bridge.send(GameAudioEvent::MobSweep {
-                kill_count: killed.len() as u32,
+                kill_count: killed as u32,
                 combo: combo.count,
             });
-            tracing::info!(kill_count = killed.len(), combo = combo.count, "mob swept");
+            tracing::info!(kill_count = killed, combo = combo.count, "mob swept");
         }
     }
 }
@@ -299,6 +311,47 @@ fn cleave_fx(mut fx: ResMut<CleaveFx>, time: Res<Time>, mut gizmos: Gizmos) {
             colour,
         );
     }
+}
+
+/// Trigger the dash on Space: unlocked, off cooldown, with a direction from
+/// the current WASD input falling back to the cursor. The dash doubles as
+/// i-frames — it resets the invulnerability window, so the blink shows it.
+#[allow(clippy::too_many_arguments)]
+fn dash_trigger(
+    input: Res<ButtonInput<KeyCode>>,
+    unlocks: Res<crate::skills::AbilityUnlocks>,
+    mut dash: ResMut<DashState>,
+    mut vitals: ResMut<PlayerVitals>,
+    bridge: Res<BridgeTx>,
+    time: Res<Time>,
+    window: Single<&Window>,
+    camera: Single<(&Camera, &GlobalTransform), With<Camera2d>>,
+    player: Single<&Position, With<crate::Player>>,
+) {
+    dash.active.tick(time.delta());
+    dash.cooldown.tick(time.delta());
+    if !input.just_pressed(KeyCode::Space) || !unlocks.dash || !dash.cooldown.is_finished() {
+        return;
+    }
+
+    // Direction: current WASD input, falling back to the cursor direction.
+    let mut dir = crate::move_direction(&input);
+    if dir == Vec2::ZERO
+        && let Some(cursor) = window.cursor_position()
+        && let Ok(cursor_world) = camera.0.viewport_to_world_2d(camera.1, cursor)
+    {
+        dir = (cursor_world - player.0).normalize_or_zero();
+    }
+    if dir == Vec2::ZERO {
+        return; // standing still with no cursor — nothing to dash along
+    }
+
+    dash.dir = dir;
+    dash.active.reset();
+    dash.cooldown.reset();
+    vitals.invuln.reset();
+    bridge.send(GameAudioEvent::Dash);
+    tracing::info!(dir = ?dash.dir, "dash");
 }
 
 /// Make the player's state legible: red flash on the frame of a hit, then a
