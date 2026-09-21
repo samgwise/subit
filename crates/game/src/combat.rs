@@ -78,6 +78,12 @@ impl PlayerVitals {
         self.hp -= amount;
         true
     }
+
+    /// Open the invulnerability window now (dash i-frames, respawn and
+    /// depth-descent grace).
+    pub fn reset_invuln(&mut self) {
+        self.invuln.reset();
+    }
 }
 
 /// Shield state: a short reflection window on activation, then a cooldown

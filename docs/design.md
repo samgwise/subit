@@ -13,8 +13,8 @@ happen without reading Rust.
 
 Enter a procedurally generated cyber-grid → sweep rogue programs with fast
 mouse-aimed AoE combat → collect the XP and HP they drop → level up and spend
-skill points in the Tab menu → survive until the exit; the exit itself is
-marked (beacon + arrow) but its gameplay behaviour is still pending.
+skill points in the Tab menu → reach the magenta exit and descend to the next
+depth, where the mob grows and the run continues with all progression intact.
 
 ## World and procedural generation
 
@@ -33,6 +33,13 @@ marked (beacon + arrow) but its gameplay behaviour is still pending.
   region (≥30% of interior cells), picks the spawn at random within it and the
   exit as the cell farthest from the spawn. `wfc::walkable_distances` exposes
   the same BFS for enemy placement.
+- Depth descent: walking onto the exit tile (within half a tile) clears the
+  world — tiles, colliders, enemies, projectiles, grenades, pickups — and
+  regenerates from a depth-derived seed (base seed + depth, still fully
+  deterministic). Progression (HP, XP, level, points, unlocks) carries
+  forward; the combo and invulnerability reset. Depth scales the mob: +10
+  enemies per layer (cap 80), and throwers tighten from every 4th spawn to
+  every 3rd from depth 2.
 - Rendering is a code-generated 18-tile atlas: a grid-lined floor, 16 wall
   autotile variants with lit edges where walls face floor, and a neon-green
   terminal. Floor brightness scales with open-edge count (corridors read
@@ -117,6 +124,7 @@ until the hub clock protocol lands); telemetry bypasses quantisation.
 | Level up | `/subit/game/event/action` `level_up` (event) | Chime — note 84, vel 90, 0.3 s |
 | Dash | `/subit/game/event/action` `dash` (event) | Whoosh — note 91, vel 70, 0.08 s |
 | Grenade blast | `/subit/game/event/action` `grenade_blast` (event) | Boom — note 36, vel 127, 0.4 s |
+| Depth descent | `/subit/game/event/action` `descent` (event) | Transition tone — note 43, vel 100, 0.4 s |
 | Player speed (≈10 Hz) | `/subit/game/telemetry/player` `player_speed` (stream) | Mod-wheel CC1, full scale at 240 u/s |
 | World integrity (per map) | `/subit/game/telemetry/world` `world_integrity` (param) | Logged only — harmonic mode shift pending |
 
@@ -130,8 +138,9 @@ until the hub clock protocol lands); telemetry bypasses quantisation.
 | Shield: active / cooldown / ring | 0.6 s / 3 s (−0.25/pt, floor 1 s) / 1.2 tiles |
 | Dash: speed / duration / cooldown / unlock cost | 600 u/s / 0.15 s / 2 s / 2 pts |
 | Grenade: speed / fuse / cooldown / blast / damage / bounces / unlock cost | 400 u/s / 0.5 s / 5 s / 2.5 tiles / 200 / 2 / 3 pts |
-| Enemy: count / chaser HP / thrower HP / min spawn distance | 40 / 100 / 200 / 8 BFS steps |
+| Enemy: count / chaser HP / thrower HP / min spawn distance | 40 + 10×depth (cap 80) / 100 / 200 / 8 BFS steps |
 | Chaser speed / thrower speed / throw range / throw cooldown | 120 / 70 / 6 tiles / 2 s |
+| Thrower frequency | every 4th spawn (every 3rd from depth 2) |
 | Projectile: speed / bounces / lifetime / player damage | 240 u/s / 3 / 16 s / 20 |
 | Drops: XP chaser/thrower, heal chance/amount | 10 / 25, 15% / 25 HP |
 | XP curve / magnet / collect radius | 40 + 30×level / 2 tiles / 0.5 tiles |
@@ -139,7 +148,6 @@ until the hub clock protocol lands); telemetry bypasses quantisation.
 
 ## Pending and known gaps
 
-- Exit tile has no gameplay behaviour (no depth transition yet).
 - World integrity does not shift the harmonic mode in the audio voice yet.
 - Throwers never check line of sight before lobbing.
-- No persistence, difficulty scaling, or rebinding UI.
+- No persistence or rebinding UI.

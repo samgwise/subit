@@ -40,6 +40,20 @@ const THROW_RANGE: f32 = TILE_SIZE * 6.0;
 /// Seconds between throws.
 const THROW_COOLDOWN_SECS: f32 = 2.0;
 
+/// The mob never grows past this, however deep the run goes.
+const ENEMY_COUNT_CAP: usize = 80;
+
+/// Enemy count for a depth: +10 per layer, capped.
+fn enemy_count_for(depth: u32) -> usize {
+    (ENEMY_COUNT + 10 * depth as usize).min(ENEMY_COUNT_CAP)
+}
+
+/// Thrower frequency for a depth: every 4th spawn, tightening to every 3rd
+/// from depth 2 down.
+fn thrower_every_for(depth: u32) -> usize {
+    if depth >= 2 { 3 } else { THROWER_EVERY }
+}
+
 /// Chaser hit points; the base cleave one-shots them.
 const CHASER_HP: i32 = 100;
 /// Thrower hit points; two base cleaves.
@@ -82,7 +96,7 @@ pub struct EnemyPlugin;
 
 impl Plugin for EnemyPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_enemies.after(crate::world::generate_world))
+        app.add_systems(Startup, spawn_enemies.after(crate::world::startup_world))
             .add_systems(
                 Update,
                 (enemy_seek, thrower_seek, thrower_attack)
@@ -92,27 +106,34 @@ impl Plugin for EnemyPlugin {
 }
 
 /// Spawn the swarm on far, BFS-reachable walkable tiles of the generated map.
-fn spawn_enemies(mut commands: Commands, map: Res<WorldMapRes>, config: Res<MapConfig>) {
+fn spawn_enemies(
+    mut commands: Commands,
+    map: Res<WorldMapRes>,
+    config: Res<MapConfig>,
+    depth: Res<crate::world::Depth>,
+) {
     let generated = &map.map;
     let (width, height) = (generated.grid.width(), generated.grid.height());
     let distances = walkable_distances(&generated.grid, &map.prototypes, generated.spawn);
     let candidates = far_reachable_cells(&distances, width, MIN_SPAWN_DISTANCE);
+    let enemy_count = enemy_count_for(depth.0);
+    let thrower_every = thrower_every_for(depth.0);
 
     // Deterministic per-seed placement: same seed, same mob layout. The salt
     // keeps enemy placement uncorrelated with the generator's own use of the
     // seed.
     let mut rng = SmallRng::seed_from_u64(config.generator.seed ^ 0x5EBEE_51A7D);
     let mut pool = candidates;
-    let mut picked = Vec::with_capacity(ENEMY_COUNT);
-    while picked.len() < ENEMY_COUNT && !pool.is_empty() {
+    let mut picked = Vec::with_capacity(enemy_count);
+    while picked.len() < enemy_count && !pool.is_empty() {
         let i = rng.random_range(0..pool.len());
         picked.push(pool.swap_remove(i));
     }
-    if picked.len() < ENEMY_COUNT {
+    if picked.len() < enemy_count {
         tracing::warn!(
             "only {}/{} enemy spawn sites reachable at {}+ tiles from spawn",
             picked.len(),
-            ENEMY_COUNT,
+            enemy_count,
             MIN_SPAWN_DISTANCE
         );
     }
@@ -120,7 +141,7 @@ fn spawn_enemies(mut commands: Commands, map: Res<WorldMapRes>, config: Res<MapC
     let size = config.tile_size * ENEMY_SIZE_TILES;
     for (i, &cell) in picked.iter().enumerate() {
         let pos = tile_world_pos((width, height), cell, config.tile_size);
-        let thrower = i % THROWER_EVERY == THROWER_EVERY - 1;
+        let thrower = i % thrower_every == thrower_every - 1;
         let mut enemy = commands.spawn((
             Enemy,
             Health {
@@ -146,7 +167,7 @@ fn spawn_enemies(mut commands: Commands, map: Res<WorldMapRes>, config: Res<MapC
                 // Stagger the first throws so the mob does not fire in
                 // lockstep; deterministic per seed.
                 .insert(ThrowTimer(Timer::from_seconds(
-                    THROW_COOLDOWN_SECS * ((i % THROWER_EVERY) as f32 / THROWER_EVERY as f32),
+                    THROW_COOLDOWN_SECS * ((i % thrower_every) as f32 / thrower_every as f32),
                     TimerMode::Once,
                 )));
         }
@@ -267,6 +288,16 @@ mod tests {
         let cells = far_reachable_cells(&distances, 3, 1);
         assert_eq!(cells.len(), 8);
         assert!(!cells.contains(&(1, 1)));
+    }
+
+    #[test]
+    fn depth_scales_the_swarm() {
+        assert_eq!(enemy_count_for(0), 40);
+        assert_eq!(enemy_count_for(2), 60);
+        assert_eq!(enemy_count_for(10), 80); // capped
+        assert_eq!(thrower_every_for(0), 4);
+        assert_eq!(thrower_every_for(2), 3);
+        assert_eq!(thrower_every_for(9), 3);
     }
 
     #[test]

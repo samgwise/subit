@@ -4,8 +4,8 @@
 //! open arenas, exit marked with a beacon).
 
 use avian2d::prelude::{
-    Collider, CollidingEntities, CollisionLayers, Gravity, LockedAxes, Position, RigidBody,
-    Rotation, SleepingDisabled,
+    Collider, CollidingEntities, CollisionLayers, Gravity, LinearVelocity, LockedAxes, Position,
+    RigidBody, Rotation, SleepingDisabled,
 };
 use bevy::asset::RenderAssetUsages;
 use bevy::image::Image;
@@ -54,6 +54,10 @@ pub struct WorldMapRes {
 #[derive(Resource, Debug, Clone, Copy)]
 pub struct SpawnPoint(pub Vec2);
 
+/// Current depth layer; increments each time the player reaches the exit.
+#[derive(Resource, Debug, Clone, Copy, Default)]
+pub struct Depth(pub u32);
+
 /// Marker for the pulsing glow pillar marking the exit.
 #[derive(Component)]
 struct ExitBeacon;
@@ -84,26 +88,124 @@ pub struct WorldMapPlugin;
 impl Plugin for WorldMapPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<MapConfig>()
+            .init_resource::<Depth>()
             // Top-down view: the physics default pulls everything down at
             // 9.81 units/s^2, so zero it out.
             .insert_resource(Gravity::ZERO)
-            .add_systems(Startup, generate_world)
+            .add_systems(Startup, startup_world)
             .add_systems(
                 Update,
-                pulse_exit_beacon.run_if(in_state(crate::skills::GameState::Playing)),
+                (
+                    pulse_exit_beacon,
+                    descend.run_if(in_state(crate::skills::GameState::Playing)),
+                )
+                    .run_if(in_state(crate::skills::GameState::Playing)),
             );
     }
 }
 
-/// Run the WFC generator and materialise the map as a rendered tilemap with
-/// colliders and a player.
-pub(crate) fn generate_world(
+/// Startup: build the first depth and spawn the player on it.
+pub(crate) fn startup_world(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
     config: Res<MapConfig>,
     bridge: Res<crate::bridge::BridgeTx>,
 ) {
-    let generated = generate(&config.generator).expect("world generation failed");
+    let spawn = build_world(&mut commands, &mut images, &config, &bridge, 0);
+    spawn_player(&mut commands, spawn, config.tile_size);
+}
+
+/// Spawn the player body at `position`.
+fn spawn_player(commands: &mut Commands, position: Vec2, tile_size: f32) {
+    let player_size = tile_size * 0.6;
+    commands.spawn((
+        crate::Player,
+        Sprite::from_color(crate::PLAYER_COLOUR, Vec2::splat(player_size)),
+        Transform::from_xyz(position.x, position.y, 1.0),
+        RigidBody::Dynamic,
+        Collider::rectangle(player_size, player_size),
+        LockedAxes::ROTATION_LOCKED,
+        SleepingDisabled,
+        CollidingEntities::default(),
+        CollisionLayers::from_bits(LAYER_PLAYER, LAYER_WALL | LAYER_ENEMY | LAYER_ENEMY_SHOT),
+    ));
+}
+
+/// Reaching the exit descends to the next depth: the old world is cleared
+/// and a fresh map generates from a depth-derived seed. Progression (HP,
+/// XP, level, points, unlocks) carries forward; the combo and
+/// invulnerability reset so the new depth never ambushes mid-blink.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn descend(
+    mut commands: Commands,
+    player: Single<(&mut Position, &mut LinearVelocity), With<crate::Player>>,
+    map: Res<WorldMapRes>,
+    config: Res<MapConfig>,
+    mut depth: ResMut<Depth>,
+    mut vitals: ResMut<crate::combat::PlayerVitals>,
+    mut combo: ResMut<crate::combat::ComboState>,
+    mut images: ResMut<Assets<Image>>,
+    bridge: Res<crate::bridge::BridgeTx>,
+    // One bundled param keeps the system within Bevy's 16-param limit.
+    world_entities: (
+        Query<Entity, With<TilePos>>,
+        Query<Entity, With<TilemapSize>>,
+        Query<Entity, With<WallBody>>,
+        Query<Entity, With<ExitBeacon>>,
+        Query<Entity, With<crate::enemies::Enemy>>,
+        Query<Entity, With<crate::projectiles::Projectile>>,
+        Query<Entity, With<crate::projectiles::Grenade>>,
+        Query<Entity, With<crate::drops::Pickup>>,
+    ),
+) {
+    let (tiles, tilemaps, walls, beacons, enemies, projectiles, grenades, pickups) = world_entities;
+    let (mut position, mut velocity) = player.into_inner();
+    let (width, height) = (map.map.grid.width(), map.map.grid.height());
+    let exit_pos = tile_world_pos((width, height), map.map.exit, config.tile_size);
+    if position.0.distance(exit_pos) > TILE_SIZE / 2.0 {
+        return;
+    }
+
+    depth.0 += 1;
+    for entity in tiles
+        .iter()
+        .chain(tilemaps.iter())
+        .chain(walls.iter())
+        .chain(beacons.iter())
+        .chain(enemies.iter())
+        .chain(projectiles.iter())
+        .chain(grenades.iter())
+        .chain(pickups.iter())
+    {
+        if let Ok(mut entity_commands) = commands.get_entity(entity) {
+            entity_commands.despawn();
+        }
+    }
+
+    let spawn = build_world(&mut commands, &mut images, &config, &bridge, depth.0);
+    position.0 = spawn;
+    velocity.0 = Vec2::ZERO;
+    vitals.reset_invuln();
+    *combo = crate::combat::ComboState::default();
+    bridge.send(crate::bridge::GameAudioEvent::Descent);
+    tracing::info!(depth = depth.0, "descended to the next depth");
+}
+
+/// Build a depth's world: run the WFC generator and materialise the map as
+/// a rendered tilemap with colliders. Returns the new spawn point — the
+/// player body is the caller's concern (spawned fresh on startup,
+/// repositioned on descent).
+fn build_world(
+    commands: &mut Commands,
+    images: &mut Assets<Image>,
+    config: &MapConfig,
+    bridge: &crate::bridge::BridgeTx,
+    depth: u32,
+) -> Vec2 {
+    // Depth-derived seed: deterministic per (base seed, depth).
+    let mut generator = config.generator.clone();
+    generator.seed = generator.seed.wrapping_add(depth as u64);
+    let generated = generate(&generator).expect("world generation failed");
     let (width, height) = (generated.grid.width(), generated.grid.height());
 
     // Class lookup built from the same generator config the map came from.
@@ -228,22 +330,7 @@ pub(crate) fn generate_world(
         CollisionLayers::from_bits(LAYER_WALL, u32::MAX),
     ));
 
-    // Player at the generated spawn point, above the tiles.
-    // CollidingEntities is populated by avian and read by the contact-damage
-    // system; it must be added manually.
     let spawn_pos = tile_world_pos((width, height), generated.spawn, config.tile_size);
-    let player_size = config.tile_size * 0.6;
-    commands.spawn((
-        crate::Player,
-        Sprite::from_color(crate::PLAYER_COLOUR, Vec2::splat(player_size)),
-        Transform::from_xyz(spawn_pos.x, spawn_pos.y, 1.0),
-        RigidBody::Dynamic,
-        Collider::rectangle(player_size, player_size),
-        LockedAxes::ROTATION_LOCKED,
-        SleepingDisabled,
-        CollidingEntities::default(),
-        CollisionLayers::from_bits(LAYER_PLAYER, LAYER_WALL | LAYER_ENEMY | LAYER_ENEMY_SHOT),
-    ));
 
     // Wayfinding: a translucent glow pillar over the exit, visible from
     // across the map.
@@ -265,7 +352,8 @@ pub(crate) fn generate_world(
     });
     commands.insert_resource(SpawnPoint(spawn_pos));
     bridge.send(crate::bridge::GameAudioEvent::WorldTelemetry { integrity });
-    tracing::info!(integrity, "world integrity published");
+    tracing::info!(integrity, depth, "world integrity published");
+    spawn_pos
 }
 
 /// Gentle sine pulse on the exit beacon's alpha.

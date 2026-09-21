@@ -31,6 +31,8 @@ pub enum GameAudioEvent {
     Dash,
     /// A grenade detonated.
     GrenadeBlast,
+    /// The player descended to the next depth.
+    Descent,
     /// Streaming player speed for audio modulation.
     PlayerTelemetry { speed: f32, max_speed: f32 },
     /// World-integrity ratio of the generated map (walkable fraction).
@@ -46,7 +48,8 @@ impl GameAudioEvent {
             | GameAudioEvent::ShieldReflect
             | GameAudioEvent::LevelUp
             | GameAudioEvent::Dash
-            | GameAudioEvent::GrenadeBlast => "/subit/game/event/action",
+            | GameAudioEvent::GrenadeBlast
+            | GameAudioEvent::Descent => "/subit/game/event/action",
             GameAudioEvent::MobSweep { .. } => "/subit/game/event/combat",
             GameAudioEvent::PlayerTelemetry { .. } => "/subit/game/telemetry/player",
             GameAudioEvent::WorldTelemetry { .. } => "/subit/game/telemetry/world",
@@ -62,6 +65,7 @@ impl GameAudioEvent {
             | GameAudioEvent::LevelUp
             | GameAudioEvent::Dash
             | GameAudioEvent::GrenadeBlast
+            | GameAudioEvent::Descent
             | GameAudioEvent::MobSweep { .. } => SignalType::Event,
             GameAudioEvent::PlayerTelemetry { .. } => SignalType::Stream,
             GameAudioEvent::WorldTelemetry { .. } => SignalType::Param,
@@ -94,6 +98,9 @@ impl GameAudioEvent {
             }
             GameAudioEvent::GrenadeBlast => {
                 fields.insert("type".into(), Value::String("grenade_blast".into()));
+            }
+            GameAudioEvent::Descent => {
+                fields.insert("type".into(), Value::String("descent".into()));
             }
             GameAudioEvent::PlayerTelemetry { speed, max_speed } => {
                 fields.insert("type".into(), Value::String("player_speed".into()));

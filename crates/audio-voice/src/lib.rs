@@ -74,6 +74,8 @@ pub enum GameEvent {
     Dash,
     /// A grenade detonated — deep boom.
     GrenadeBlast,
+    /// The player descended to the next depth — deep transition tone.
+    Descent,
 }
 
 /// A MIDI-ready note event.
@@ -134,6 +136,12 @@ pub fn perform_event(event: GameEvent) -> NoteEvent {
             channel: 0,
             note: 36,
             velocity: 127,
+            duration_secs: 0.4,
+        },
+        GameEvent::Descent => NoteEvent {
+            channel: 0,
+            note: 43,
+            velocity: 100,
             duration_secs: 0.4,
         },
     }

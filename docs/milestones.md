@@ -53,3 +53,11 @@ Enemy health and a shared death path; XP shards and HP-cross drops with
 magnet pickup; a linear XP curve granting skill points; a Tab-paused skills
 menu (cleave damage, shield cooldown, dash and grenade unlocks); Space dash
 with i-frames; and a wall-bouncing fused grenade with a radial blast.
+
+## Milestone 8 — Depth descent
+
+Reaching the magenta exit descends to the next depth: the world clears and
+regenerates from a depth-derived seed while all progression (HP, XP, level,
+points, unlocks) carries forward. Depth scales the mob (+10 enemies per
+layer, capped; throwers tighten to every 3rd spawn from depth 2) and a
+descent tone plays through the audio chain.
