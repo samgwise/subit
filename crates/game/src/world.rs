@@ -104,15 +104,16 @@ impl Plugin for WorldMapPlugin {
     }
 }
 
-/// Startup: build the first depth and spawn the player on it.
+/// Startup: build the first depth and spawn the player and its swarm.
 pub(crate) fn startup_world(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
     config: Res<MapConfig>,
     bridge: Res<crate::bridge::BridgeTx>,
 ) {
-    let spawn = build_world(&mut commands, &mut images, &config, &bridge, 0);
+    let (spawn, generated) = build_world(&mut commands, &mut images, &config, &bridge, 0);
     spawn_player(&mut commands, spawn, config.tile_size);
+    crate::enemies::spawn_swarm(&mut commands, &generated, &config, 0);
 }
 
 /// Spawn the player body at `position`.
@@ -182,7 +183,8 @@ fn descend(
         }
     }
 
-    let spawn = build_world(&mut commands, &mut images, &config, &bridge, depth.0);
+    let (spawn, generated) = build_world(&mut commands, &mut images, &config, &bridge, depth.0);
+    crate::enemies::spawn_swarm(&mut commands, &generated, &config, depth.0);
     position.0 = spawn;
     velocity.0 = Vec2::ZERO;
     vitals.reset_invuln();
@@ -192,16 +194,16 @@ fn descend(
 }
 
 /// Build a depth's world: run the WFC generator and materialise the map as
-/// a rendered tilemap with colliders. Returns the new spawn point — the
-/// player body is the caller's concern (spawned fresh on startup,
-/// repositioned on descent).
+/// a rendered tilemap with colliders. Returns the new spawn point and the
+/// generated map — the player body and swarm are the caller's concern
+/// (spawned fresh on startup, repositioned/re-spawned on descent).
 fn build_world(
     commands: &mut Commands,
     images: &mut Assets<Image>,
     config: &MapConfig,
     bridge: &crate::bridge::BridgeTx,
     depth: u32,
-) -> Vec2 {
+) -> (Vec2, GeneratedMap) {
     // Depth-derived seed: deterministic per (base seed, depth).
     let mut generator = config.generator.clone();
     generator.seed = generator.seed.wrapping_add(depth as u64);
@@ -353,7 +355,7 @@ fn build_world(
     commands.insert_resource(SpawnPoint(spawn_pos));
     bridge.send(crate::bridge::GameAudioEvent::WorldTelemetry { integrity });
     tracing::info!(integrity, depth, "world integrity published");
-    spawn_pos
+    (spawn_pos, generated)
 }
 
 /// Gentle sine pulse on the exit beacon's alpha.

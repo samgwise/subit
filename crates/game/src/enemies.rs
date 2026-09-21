@@ -9,10 +9,10 @@ use bevy::prelude::*;
 use rand::RngExt;
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
-use wfc::walkable_distances;
+use wfc::{GeneratedMap, prototype_set, walkable_distances};
 
 use crate::drops::spawn_drops;
-use crate::world::{MapConfig, TILE_SIZE, WorldMapRes, tile_world_pos};
+use crate::world::{MapConfig, TILE_SIZE, tile_world_pos};
 
 /// How many enemies to seed the map with.
 const ENEMY_COUNT: usize = 40;
@@ -115,33 +115,42 @@ pub struct EnemyPlugin;
 
 impl Plugin for EnemyPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_enemies.after(crate::world::startup_world))
-            .add_systems(
-                Update,
-                (enemy_seek, thrower_seek, thrower_attack)
-                    .run_if(in_state(crate::skills::GameState::Playing)),
-            );
+        // Spawning is driven by the world lifecycle (startup + descent), so
+        // there is no Startup system here.
+        app.add_systems(
+            Update,
+            (enemy_seek, thrower_seek, thrower_attack)
+                .run_if(in_state(crate::skills::GameState::Playing)),
+        );
     }
 }
 
-/// Spawn the swarm on far, BFS-reachable walkable tiles of the generated map.
-fn spawn_enemies(
-    mut commands: Commands,
-    map: Res<WorldMapRes>,
-    config: Res<MapConfig>,
-    depth: Res<crate::world::Depth>,
+/// Spawn the swarm on far, BFS-reachable walkable tiles of a freshly built
+/// map. Called by the world lifecycle for the first depth and on descent.
+pub fn spawn_swarm(
+    commands: &mut Commands,
+    generated: &GeneratedMap,
+    config: &MapConfig,
+    depth: u32,
 ) {
-    let generated = &map.map;
     let (width, height) = (generated.grid.width(), generated.grid.height());
-    let distances = walkable_distances(&generated.grid, &map.prototypes, generated.spawn);
+    let prototypes = prototype_set(
+        config.generator.wall_weight,
+        config.generator.terminal_weight,
+    );
+    let distances = walkable_distances(&generated.grid, &prototypes, generated.spawn);
     let candidates = far_reachable_cells(&distances, width, MIN_SPAWN_DISTANCE);
-    let enemy_count = enemy_count_for(depth.0);
-    let thrower_every = thrower_every_for(depth.0);
+    let enemy_count = enemy_count_for(depth);
+    let thrower_every = thrower_every_for(depth);
 
-    // Deterministic per-seed placement: same seed, same mob layout. The salt
-    // keeps enemy placement uncorrelated with the generator's own use of the
-    // seed.
-    let mut rng = SmallRng::seed_from_u64(config.generator.seed ^ 0x5EBEE_51A7D);
+    // Deterministic per-seed placement: same seed and depth, same mob
+    // layout. The salt keeps enemy placement uncorrelated with the
+    // generator's own use of the seed, and the depth mixes in so deep maps
+    // don't reuse earlier placement patterns.
+    let swarm_seed = config.generator.seed
+        ^ 0x5EBEE_51A7D
+        ^ ((depth as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+    let mut rng = SmallRng::seed_from_u64(swarm_seed);
     let mut pool = candidates;
     let mut picked = Vec::with_capacity(enemy_count);
     while picked.len() < enemy_count && !pool.is_empty() {
