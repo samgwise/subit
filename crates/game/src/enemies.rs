@@ -628,9 +628,10 @@ mod tests {
         };
         let generated = wfc::generate(&config.generator).expect("generation succeeds");
         let mut world = World::new();
-        let mut commands = world.commands();
-        spawn_swarm(&mut commands, &generated, &config, 1);
-        drop(commands);
+        {
+            let mut commands = world.commands();
+            spawn_swarm(&mut commands, &generated, &config, 1);
+        }
         world.flush();
 
         // Throwers carry no Speed (their stand-off logic is separate), so

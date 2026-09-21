@@ -16,6 +16,8 @@ use wfc::{
     GeneratedMap, GeneratorConfig, Socket, TileClass, WeightedPrototype, generate, prototype_set,
 };
 
+use crate::neon_material::{NeonTilemapHandle, NeonTilemapMaterial};
+
 /// Size of a single tile in world units (pixels).
 pub const TILE_SIZE: f32 = 32.0;
 
@@ -78,10 +80,11 @@ pub const LAYER_GRENADE: u32 = 1 << 5;
 pub struct WallBody;
 
 /// Atlas layout: 1 grid floor, 16 wall autotile masks, 1 terminal.
-const FLOOR_ATLAS_INDEX: u32 = 0;
-const WALL_ATLAS_BASE: u32 = 1;
-const TERMINAL_ATLAS_INDEX: u32 = 17;
-const ATLAS_TILES: u32 = 18;
+/// Public so the shader preview example can lay out every variant.
+pub const FLOOR_ATLAS_INDEX: u32 = 0;
+pub const WALL_ATLAS_BASE: u32 = 1;
+pub const TERMINAL_ATLAS_INDEX: u32 = 17;
+pub const ATLAS_TILES: u32 = 18;
 
 pub struct WorldMapPlugin;
 
@@ -89,6 +92,10 @@ impl Plugin for WorldMapPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<MapConfig>()
             .init_resource::<Depth>()
+            // The tilemap renders through the neon material; the custom
+            // material pipeline ships with bevy_ecs_tilemap.
+            .add_plugins(MaterialTilemapPlugin::<NeonTilemapMaterial>::default())
+            .init_resource::<NeonTilemapHandle>()
             // Top-down view: the physics default pulls everything down at
             // 9.81 units/s^2, so zero it out.
             .insert_resource(Gravity::ZERO)
@@ -109,9 +116,10 @@ pub(crate) fn startup_world(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
     config: Res<MapConfig>,
+    neon: Res<NeonTilemapHandle>,
     bridge: Res<crate::bridge::BridgeTx>,
 ) {
-    let (spawn, generated) = build_world(&mut commands, &mut images, &config, &bridge, 0);
+    let (spawn, generated) = build_world(&mut commands, &mut images, &config, &neon, &bridge, 0);
     spawn_player(&mut commands, spawn, config.tile_size);
     crate::enemies::spawn_swarm(&mut commands, &generated, &config, 0);
 }
@@ -146,6 +154,7 @@ fn descend(
     mut vitals: ResMut<crate::combat::PlayerVitals>,
     mut combo: ResMut<crate::combat::ComboState>,
     mut images: ResMut<Assets<Image>>,
+    neon: Res<NeonTilemapHandle>,
     bridge: Res<crate::bridge::BridgeTx>,
     // One bundled param keeps the system within Bevy's 16-param limit.
     world_entities: (
@@ -183,7 +192,8 @@ fn descend(
         }
     }
 
-    let (spawn, generated) = build_world(&mut commands, &mut images, &config, &bridge, depth.0);
+    let (spawn, generated) =
+        build_world(&mut commands, &mut images, &config, &neon, &bridge, depth.0);
     crate::enemies::spawn_swarm(&mut commands, &generated, &config, depth.0);
     position.0 = spawn;
     velocity.0 = Vec2::ZERO;
@@ -201,6 +211,7 @@ fn build_world(
     commands: &mut Commands,
     images: &mut Assets<Image>,
     config: &MapConfig,
+    neon: &NeonTilemapHandle,
     bridge: &crate::bridge::BridgeTx,
     depth: u32,
 ) -> (Vec2, GeneratedMap) {
@@ -300,15 +311,20 @@ fn build_world(
         x: config.tile_size,
         y: config.tile_size,
     };
-    commands.entity(tilemap_entity).insert(TilemapBundle {
-        grid_size: tile_size.into(),
-        size: map_size_wide(width, height),
-        storage: tile_storage,
-        texture: TilemapTexture::Single(atlas),
-        tile_size,
-        anchor: TilemapAnchor::Center,
-        ..Default::default()
-    });
+    // The tilemap renders through the neon material so the shader can
+    // animate the baked edge strips.
+    commands
+        .entity(tilemap_entity)
+        .insert(MaterialTilemapBundle::<NeonTilemapMaterial> {
+            grid_size: tile_size.into(),
+            size: map_size_wide(width, height),
+            storage: tile_storage,
+            texture: TilemapTexture::Single(atlas),
+            tile_size,
+            anchor: TilemapAnchor::Center,
+            material: neon.0.clone(),
+            ..Default::default()
+        });
 
     // One static compound body covering every wall tile: tiles have no
     // Transform of their own, so colliders live on a dedicated entity.
@@ -442,7 +458,7 @@ fn atlas_pixel(column: u32, px: u32, py: u32, tile_px: u32) -> [u8; 4] {
 /// Build the atlas image: one column per tile variant. Image data is
 /// row-major across the FULL atlas width — row 0 of every column first, then
 /// the next row — so the loops must walk rows, then x.
-fn build_atlas(tile_size: f32) -> Image {
+pub fn build_atlas(tile_size: f32) -> Image {
     let tile_px = tile_size as u32;
     let mut data = Vec::with_capacity((tile_px * ATLAS_TILES * tile_px * 4) as usize);
     for py in 0..tile_px {

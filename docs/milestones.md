@@ -80,3 +80,17 @@ absorption helper. Slow red-brown tanks (400 HP, 0.9-tile bodies) join the
 mob from depth 1 via shuffled role quotas. Two new skills: the barrier unlock
 (a player-side plate pool with its own violet HUD bar, soaking damage before
 health) and repeatable max health +25 that heals as it raises the ceiling.
+
+## Milestone 11 — Animated neon tilemap shader
+
+The tilemap renders through a custom bevy_ecs_tilemap material whose WGSL
+fragment shader pumps the baked lit wall strips and terminals with a
+gpu-time sine pulse — a shimmer that travels along each edge while floors
+and wall bodies stay matte — composing with the camera bloom into a
+breathing Tron glow. Shader iteration is fast: a `shader_preview` example
+renders every atlas variant in isolation with the real material and bloom,
+and Bevy's file watcher hot-reloads the WGSL live (about a second from save
+to screen; broken shaders log an error and keep the last good look).
+Supporting refactor: the game crate split into a library plus a thin binary
+so examples (and future integration tests) reuse the real modules, with
+asset paths anchored at the workspace root.

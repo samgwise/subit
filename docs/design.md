@@ -53,8 +53,18 @@ depth, where the mob grows and the run continues with all progression intact.
 - Neon bloom: an HDR camera post-process (Bevy's built-in `Bloom`, additive
   composite, ~0.6 luminance threshold) makes the bright pixels bleed glow —
   lit wall edges, the beacon pillar, terminals, the cleave flash, shots and
-  pickups — while the dark floor and wall bodies stay matte. No custom
-  shaders; the look is tuned through palette brightness and this threshold.
+  pickups — while the dark floor and wall bodies stay matte.
+- Neon tilemap shader: the tilemap renders through a custom `MaterialTilemap`
+  (WGSL at `assets/shaders/neon_tilemap.wgsl`) that pumps the baked lit
+  strips and terminals with a sine pulse driven by GPU time — no per-frame
+  CPU work. Wall-edge strips brighten toward white-cyan (strength 0.45) at
+  3 rad/s with a phase that drifts across each tile so the shimmer travels
+  along the edge; terminals pulse gently (0.2); floors and wall bodies pass
+  through untouched. Strip pixels are detected by luminance (> 0.35 — strips
+  bake at ~0.7 linear, wall bodies ~0.07). Tunables are WGSL constants and
+  hot-reload: edit the file and the running game (or the shader preview
+  example) updates within a second; a broken shader logs an error and keeps
+  the last good look.
 
 ## The player
 
@@ -165,6 +175,7 @@ until the hub clock protocol lands); telemetry bypasses quantisation.
 | Player speed / base max HP / vitality per point | 240 u/s / 100 / +25 |
 | Camera zoom | 2× (ortho scale 0.5, ~64 px tiles) |
 | Bloom | OLD_SCHOOL preset, intensity 0.15 (additive, ~0.6 threshold) |
+| Neon shader: pulse speed / strip strength / terminal strength / edge threshold | 3 rad/s / 0.45 / 0.2 / luminance 0.35 |
 | Cleave: radius / cone / cooldown / base damage / per point | 3 tiles / 90° / 0.25 s / 100 / +25 |
 | Combo window | 2 s |
 | Shield: active / cooldown / ring | 0.6 s / 3 s (−0.25/pt, floor 1 s) / 1.2 tiles |

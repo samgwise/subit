@@ -46,6 +46,19 @@ Print an ASCII rendering of a generated map for a given seed:
 cargo run -p wfc --example ascii_map 42
 ```
 
+## Tuning the neon shader
+
+The tilemap's neon glow is a WGSL shader with hot reload. Preview every
+atlas variant in isolation with the game's bloom (WASD pans):
+
+```sh
+cargo run -p game --example shader_preview
+```
+
+Edit `assets/shaders/neon_tilemap.wgsl` while the preview (or the game) is
+running — saves apply live in about a second; a broken shader logs an error
+and keeps the last good look.
+
 ## Controls
 
 | Input | Action |
