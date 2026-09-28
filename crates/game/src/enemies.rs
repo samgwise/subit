@@ -237,13 +237,7 @@ impl Plugin for EnemyPlugin {
         // there is no Startup system here.
         app.add_systems(
             Update,
-            (
-                enemy_seek,
-                thrower_seek,
-                thrower_attack,
-                shield_regen,
-                shield_rings,
-            )
+            (enemy_seek, thrower_seek, thrower_attack, shield_regen)
                 .run_if(in_state(crate::skills::GameState::Playing)),
         );
     }
@@ -409,18 +403,6 @@ fn shield_regen(time: Res<Time>, mut shields: Query<&mut Shield>) {
     for shield in &mut shields {
         let Shield { plates, regen } = shield.into_inner();
         regrow_plate(plates, regen, ENEMY_SHIELD_PLATES, time.delta());
-    }
-}
-
-/// Draw a cyan ring around every enemy whose shield still has plates —
-/// the same shield language as the player's reflect ring.
-fn shield_rings(shields: Query<(&Position, &Sprite, &Shield)>, mut gizmos: Gizmos) {
-    for (pos, sprite, shield) in &shields {
-        if shield.plates == 0 {
-            continue;
-        }
-        let radius = sprite.custom_size.unwrap_or_default().x * 0.5 + 4.0;
-        gizmos.circle_2d(pos.0, radius, Color::srgba(0.4, 0.9, 1.0, 0.5));
     }
 }
 

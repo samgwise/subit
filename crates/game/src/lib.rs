@@ -15,6 +15,7 @@ pub mod neon_material;
 pub mod player;
 pub mod progression;
 pub mod projectiles;
+pub mod shield_fx;
 pub mod skills;
 pub mod world;
 
@@ -52,6 +53,7 @@ pub fn run() {
             drops::DropsPlugin,
             skills::SkillsPlugin,
             hud::HudPlugin,
+            shield_fx::ShieldFxPlugin,
         ))
         .add_systems(Startup, player::setup)
         .add_systems(Update, player::camera_follow)

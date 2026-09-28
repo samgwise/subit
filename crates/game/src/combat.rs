@@ -416,23 +416,18 @@ fn player_vitals_fx(
     }
 }
 
-/// Raise the shield on right-mouse while off cooldown, and draw its ring
-/// while it is up.
+/// Raise the shield on right-mouse while off cooldown. While it is up the
+/// reflect dome (spawned and toggled by shield_fx) shows the reach.
 fn update_shield(
     time: Res<Time>,
     mouse: Res<ButtonInput<MouseButton>>,
     mut shield: ResMut<PlayerShield>,
-    player: Single<&Position, With<crate::Player>>,
-    mut gizmos: Gizmos,
 ) {
     shield.active.tick(time.delta());
     shield.cooldown.tick(time.delta());
     if mouse.just_pressed(MouseButton::Right) && shield.cooldown.is_finished() {
         shield.active.reset();
         shield.cooldown.reset();
-    }
-    if shield.is_active() {
-        gizmos.circle_2d(player.0, SHIELD_RADIUS, Color::srgba(0.4, 0.9, 1.0, 0.5));
     }
 }
 

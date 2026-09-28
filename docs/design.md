@@ -76,8 +76,9 @@ depth, where the mob grows and the run continues with all progression intact.
   for 0.15 s, then a blink.
 - Barrier (unlock: 3 points): a regenerating 10-plate pool (5 HP per plate)
   that soaks damage before health — the player's version of the enemy
-  shields. Regrows one plate per 2.5 s without damage; shown as a violet HUD
-  bar while owned.
+  shields. Regrows one plate per 2.5 s without damage; shown as a violet
+  HUD bar and a violet energy dome (slightly wider than the reflect dome)
+  while owned with plates remaining.
 - Death: respawn at the map spawn with full HP; the combo resets.
 
 ## Combat
@@ -93,10 +94,11 @@ depth, where the mob grows and the run continues with all progression intact.
   mob-sweep performance intensity.
 - **Shield (right mouse):** 0.6 s active, 3 s cooldown (−0.25 s per skill
   point, floor 1 s). While up: contact damage is blocked and any enemy
-  projectile inside the ring (1.2-tile radius — the drawn ring is the real
-  catch zone) is caught and reflected along the cursor with a fresh bounce
-  budget. Reflected shots turn cyan, become player weapons, and can never hit
-  the player again (physical via collision layers).
+  projectile inside the ring (1.2-tile radius — the cyan dome drawn around
+  the player is the real catch zone) is caught and reflected along the
+  cursor with a fresh bounce budget. Reflected shots turn cyan, become
+  player weapons, and can never hit the player again (physical via
+  collision layers).
 - **Grenade (G, unlock: 3 points):** 5 s cooldown. A fused lob along the
   cursor at 400 u/s that bounces off walls — two bounces survive, the third
   wall contact detonates it where it hits — or the 0.5 s fuse sets it off
@@ -131,7 +133,11 @@ depth, where the mob grows and the run continues with all progression intact.
 - **Shields:** each spawn rolls for a regenerating shield — chance 5% + 5%
   per depth, capped at 40%. Eight plates of 5 HP: each plate soaks 5 damage
   (a lighter hit still cracks the plate whole), regrowing one plate per
-  2.5 s without damage. A cyan ring shows while plates remain.
+  2.5 s without damage. Shielded enemies wear a hex-faceted energy dome
+  (a custom WGSL material, `assets/shaders/shield_dome.wgsl`) whose rim is
+  divided into eight arcs — one per plate: cracked plates go dark and
+  regrow visibly, and a hit flashes the dome. Hidden while the pool is
+  empty.
 - Enemies darken with damage — sprite brightness scales with their HP
   fraction (floor 45%) — so remaining hits read at a glance.
 
@@ -185,6 +191,7 @@ until the hub clock protocol lands); telemetry bypasses quantisation.
 | Chaser / thrower / tank speed, throw range, throw cooldown | 120 / 70 / 60 / 6 tiles / 2 s |
 | Thrower / tank frequency | every 4th spawn (every 3rd from depth 2) / every 8th from depth 1 |
 | Enemy shield: plates / plate HP / regen / spawn chance | 8 / 5 / one plate per 2.5 s / 5% + 5%×depth (cap 40%) |
+| Shield dome: hex spin / hit flash decay / barrier radius | 0.2 rad/s / ~0.3 s (decay 8) / 1.35 tiles |
 | Player barrier: plates / regen / unlock cost | 10 / one plate per 2.5 s / 3 pts |
 | Vitality: max HP per point | +25 (heals the same) |
 | Projectile: speed / bounces / lifetime / player damage | 240 u/s / 3 / 16 s / 20 |

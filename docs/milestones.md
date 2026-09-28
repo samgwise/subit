@@ -94,3 +94,15 @@ to screen; broken shaders log an error and keep the last good look).
 Supporting refactor: the game crate split into a library plus a thin binary
 so examples (and future integration tests) reuse the real modules, with
 asset paths anchored at the workspace root.
+
+## Milestone 12 — Shield energy domes
+
+The gizmo rings around shields became shader-drawn energy domes: a custom
+2D material on a circle mesh renders a translucent hex-faceted bubble whose
+rim is divided into eight arcs — one per shield plate — so cracked plates
+show as dark segments and regrowth relights them; a hit flashes the dome
+off the regen clock. The player's reflect ring wears the same cyan dome,
+and the barrier gains a violet one (a little wider, hidden until owned and
+charged). All animation runs on the GPU from globals time; the CPU side
+pushes uniforms only when dome state actually changes. The shader previews
+in the same isolated window as the tilemap neon and hot-reloads live.

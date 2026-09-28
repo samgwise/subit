@@ -11,13 +11,22 @@
 //! Bottom row: fully-lit wall tiles butted together to eyeball seams.
 
 use bevy::asset::AssetPlugin;
+use bevy::color::LinearRgba;
+use bevy::math::primitives::Circle;
+use bevy::mesh::Mesh2d;
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
+use bevy::sprite_render::{Material2dPlugin, MeshMaterial2d};
 use bevy_ecs_tilemap::prelude::*;
 use game::ASSETS_PATH;
 use game::neon_material::NeonTilemapMaterial;
 use game::player::move_direction;
+use game::shield_fx::{DomeData, ShieldDomeMaterial};
 use game::world::{ATLAS_TILES, TILE_SIZE, WALL_ATLAS_BASE, build_atlas};
+
+/// Marker for the dome whose hit flash is cycled for inspection.
+#[derive(Component)]
+struct FlashingDome;
 
 /// Camera zoom: 0.25 scale = 4× pixel size, matching the game's chunky look.
 const PREVIEW_ZOOM: f32 = 0.25;
@@ -40,16 +49,19 @@ fn main() {
                 .set(ImagePlugin::default_nearest()),
             TilemapPlugin,
             MaterialTilemapPlugin::<NeonTilemapMaterial>::default(),
+            Material2dPlugin::<ShieldDomeMaterial>::default(),
         ))
         .add_systems(Startup, setup)
-        .add_systems(Update, pan_camera)
+        .add_systems(Update, (pan_camera, flash_dome))
         .run();
 }
 
 fn setup(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
-    mut materials: ResMut<Assets<NeonTilemapMaterial>>,
+    mut map_materials: ResMut<Assets<NeonTilemapMaterial>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut dome_materials: ResMut<Assets<ShieldDomeMaterial>>,
 ) {
     commands.spawn((
         Camera2d,
@@ -65,7 +77,7 @@ fn setup(
     ));
 
     let atlas = images.add(build_atlas(TILE_SIZE));
-    let material = MaterialTilemapHandle::from(materials.add(NeonTilemapMaterial::default()));
+    let material = MaterialTilemapHandle::from(map_materials.add(NeonTilemapMaterial::default()));
     let map_size = TilemapSize {
         x: ATLAS_TILES,
         y: 2,
@@ -90,6 +102,8 @@ fn setup(
             WALL_ATLAS_BASE + 15,
         );
     }
+
+    spawn_dome_row(&mut commands, &mut meshes, &mut dome_materials);
 
     commands
         .entity(tilemap_entity)
@@ -129,6 +143,67 @@ fn spawn_tile(
         })
         .id();
     storage.set(&position, entity);
+}
+
+/// Lay out a row of shield domes below the tile strip: four plate
+/// fractions (cyan), the barrier's violet tint, and one whose hit flash is
+/// cycled for inspection.
+fn spawn_dome_row(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    dome_materials: &mut Assets<ShieldDomeMaterial>,
+) {
+    let radius = 16.0;
+    let cyan = LinearRgba::new(0.13, 0.79, 1.0, 1.0);
+    let violet = LinearRgba::new(0.45, 0.13, 1.0, 1.0);
+    let dome = |fraction: f32, tint: LinearRgba| {
+        ShieldDomeMaterial::new(DomeData {
+            plate_fraction: fraction,
+            hit_age: 999.0,
+            tint_r: tint.red,
+            tint_g: tint.green,
+            tint_b: tint.blue,
+            tint_a: tint.alpha,
+            _pad0: 0.0,
+            _pad1: 0.0,
+        })
+    };
+    for (i, (fraction, tint)) in [
+        (1.0, cyan),
+        (0.75, cyan),
+        (0.5, cyan),
+        (0.25, cyan),
+        (1.0, violet),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        commands.spawn((
+            Mesh2d(meshes.add(Circle::new(radius))),
+            MeshMaterial2d(dome_materials.add(dome(fraction, tint))),
+            Transform::from_xyz(-150.0 + 60.0 * i as f32, -72.0, 0.2),
+        ));
+    }
+    // The flashing dome starts mid-flash; the update system cycles it.
+    commands.spawn((
+        FlashingDome,
+        Mesh2d(meshes.add(Circle::new(radius))),
+        MeshMaterial2d(dome_materials.add(dome(1.0, cyan))),
+        Transform::from_xyz(150.0, -72.0, 0.2),
+    ));
+}
+
+/// Cycle the flashing dome's hit age so the flash curve plays on loop.
+fn flash_dome(
+    time: Res<Time>,
+    mut dome_materials: ResMut<Assets<ShieldDomeMaterial>>,
+    domes: Query<&MeshMaterial2d<ShieldDomeMaterial>, With<FlashingDome>>,
+) {
+    for handle in &domes {
+        if let Some(mut material) = dome_materials.get_mut(handle.id()) {
+            material.set_hit_age((time.elapsed_secs() * 2.0) % 0.5);
+        }
+    }
 }
 
 /// WASD pans the camera (zoomed in, the strip runs off-screen).
