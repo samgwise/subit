@@ -83,12 +83,13 @@ depth, where the mob grows and the run continues with all progression intact.
 
 ## Combat
 
-- **Cleave (left mouse):** 90° cone, 3-tile radius, aimed from the player to
-  the cursor, 0.25 s cooldown. Hits only enemies with a clear grid line of
-  sight (exact Amanatides–Woo traversal; diagonal corner peeks between walls
-  are blocked conservatively). Base damage 100 (+25 per skill point), shared
-  with reflected projectiles. All kills in one swing batch into a single
-  mob-sweep event.
+- **Cleave (left mouse):** a 60° cone (the reach skill widens it by 5° per
+  point), 3-tile radius (+0.25 tiles per reach point, cap 4), aimed from the
+  player to the cursor, 0.25 s cooldown. Hits only enemies with a clear grid
+  line of sight (exact Amanatides–Woo traversal; diagonal corner peeks
+  between walls are blocked conservatively). Base damage 100 (+25 per skill
+  point), shared with reflected projectiles. All kills in one swing batch
+  into a single mob-sweep event.
 - **Combo:** kills within 2 s of the previous kill chain (+1 each); the chain
   resets to 1 on the next kill after the window lapses. The chain lifts the
   mob-sweep performance intensity.
@@ -98,15 +99,22 @@ depth, where the mob grows and the run continues with all progression intact.
   the player is the real catch zone) is caught and reflected along the
   cursor with a fresh bounce budget. Reflected shots turn cyan, become
   player weapons, and can never hit the player again (physical via
-  collision layers).
+  collision layers). With the deflect volley unlock (5 points) each catch
+  also fires two extra auto-aimed shots at the nearest enemies (a ±30° fan
+  when the swarm is elsewhere).
 - **Grenade (G, unlock: 3 points):** 5 s cooldown. A fused lob along the
   cursor at 400 u/s that bounces off walls — two bounces survive, the third
   wall contact detonates it where it hits — or the 0.5 s fuse sets it off
-  mid-flight. Blast: 200 damage in a 2.5-tile radius; kills batch into the
-  combo.
-- **Dash (Space, unlock: 2 points):** 2 s cooldown, 0.15 s at 600 u/s along
-  the current WASD direction (falling back to the cursor). The dash grants
-  i-frames by opening the invulnerability window.
+  mid-flight. Blast: 200 damage (+50 per damage point, cap 6) in a 2.5-tile
+  radius; kills batch into the combo.
+- **Dash (Space, unlock: 2 points):** 2 s cooldown (−0.25 s per point, cap
+  4, floor 1 s), 0.15 s at 600 u/s along the current WASD direction
+  (falling back to the cursor). The dash grants i-frames by opening the
+  invulnerability window.
+- **Nova (E, unlock: 4 points):** 6 s cooldown. A 360° burst — 150 damage
+  in a 2.5-tile radius that shoves every survivor outward (a decaying kick
+  layered over their steering); routes through shields like every hit.
+  An expanding ring shows the reach.
 - Every hit routes through plate pools first: enemy shields soak their
   plates before an enemy's health, the barrier before player HP — one shared
   absorption helper for cleaves, reflected shots, projectiles and blasts.
@@ -150,10 +158,14 @@ depth, where the mob grows and the run continues with all progression intact.
   shape lives. A full 40-enemy clear (~550 XP) is about five levels.
 - Each level-up grants 1 skill point. Tab pauses the world (all simulation
   systems gate on the game state) and opens the skills menu.
-- Skills: cleave damage +25 (1 point), shield cooldown −0.25 s (1 point,
-  floor 1 s), max health +25 (1 point, repeatable), dash unlock (2 points),
-  grenade unlock (3 points), barrier unlock (3 points). Purchases apply
-  immediately; rows grey out when unaffordable or owned.
+- Skills: cleave damage +25 (1 point), cleave reach +0.25 tiles with arc
+  +5° (1 point, cap 4), shield cooldown −0.25 s (1 point, cap 4, floor 1 s),
+  shield duration +0.15 s (1 point, cap 4), max health +25 (1 point), dash
+  cooldown −0.25 s (1 point, cap 4, floor 1 s, needs dash), grenade damage
+  +50 (1 point, cap 6, needs grenade), dash unlock (2 points), grenade
+  unlock (3 points), barrier unlock (3 points), nova unlock (4 points),
+  deflect volley unlock (5 points). Purchases apply immediately; rows grey
+  out when unaffordable, maxed or owned, and show their level and cost.
 
 ## Ensemble audio
 
@@ -182,7 +194,12 @@ until the hub clock protocol lands); telemetry bypasses quantisation.
 | Camera zoom | 2× (ortho scale 0.5, ~64 px tiles) |
 | Bloom | OLD_SCHOOL preset, intensity 0.15 (additive, ~0.6 threshold) |
 | Neon shader: pulse speed / strip strength / terminal strength / edge threshold | 3 rad/s / 0.45 / 0.2 / luminance 0.35 |
-| Cleave: radius / cone / cooldown / base damage / per point | 3 tiles / 90° / 0.25 s / 100 / +25 |
+|| Cleave: radius / cone / cooldown / base damage / damage per point | 3–4 tiles / 60–80° / 0.25 s / 100 / +25 |
+|| Shield duration: per point / cap | +0.15 s / 4 (0.6 → 1.2 s) |
+|| Dash cooldown reduction: per point / floor | −0.25 s / 1.0 s |
+|| Grenade damage: per point / cap | +50 / 6 |
+|| Nova: damage / radius / cooldown / unlock cost | 150 / 2.5 tiles / 6 s / 4 pts |
+|| Deflect volley: extra shots / unlock cost | 2 / 5 pts |
 | Combo window | 2 s |
 | Shield: active / cooldown / ring | 0.6 s / 3 s (−0.25/pt, floor 1 s) / 1.2 tiles |
 | Dash: speed / duration / cooldown / unlock cost | 600 u/s / 0.15 s / 2 s / 2 pts |

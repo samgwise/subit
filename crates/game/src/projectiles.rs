@@ -17,7 +17,7 @@ use bevy::prelude::*;
 use crate::bridge::{BridgeTx, GameAudioEvent};
 use crate::combat::{ComboState, PlayerShield, PlayerVitals, SHIELD_RADIUS, damage_player};
 use crate::enemies::{Health, Shield, absorb_damage, kill_enemy};
-use crate::skills::{AbilityUnlocks, GameState, SkillLevels, cleave_damage};
+use crate::skills::{AbilityUnlocks, GameState, SkillLevels, cleave_damage, grenade_damage};
 use crate::world::{
     LAYER_ENEMY, LAYER_ENEMY_SHOT, LAYER_GRENADE, LAYER_PLAYER, LAYER_PLAYER_SHOT, LAYER_WALL,
     TILE_SIZE,
@@ -52,8 +52,12 @@ const GRENADE_FUSE_SECS: f32 = 0.5;
 const GRENADE_COOLDOWN_SECS: f32 = 5.0;
 /// Blast radius in world units (2.5 tiles).
 const GRENADE_RADIUS: f32 = TILE_SIZE * 2.5;
-/// Damage the blast deals within its radius.
-const GRENADE_DAMAGE: i32 = 200;
+
+/// Extra auto-aimed shots fired per caught projectile with the deflect
+/// volley unlock.
+const VOLLEY_SHOTS: usize = 2;
+/// Fan angle (each way) for volley shots with no enemy to aim at.
+const VOLLEY_FAN: f32 = 30.0_f32.to_radians();
 
 /// Wall bounces a grenade can survive; the wall contact after the last one
 /// detonates it where it hits.
@@ -320,7 +324,9 @@ fn within_shield_range(player_pos: Vec2, projectile_pos: Vec2) -> bool {
 
 /// While the shield is up, catch every enemy projectile inside the ring and
 /// reflect it along the cursor with a fresh bounce budget — the drawn ring
-/// is the actual catch zone, not a decoration.
+/// is the actual catch zone, not a decoration. With the deflect volley
+/// unlock, each catch also fires extra auto-aimed shots at the nearest
+/// enemies.
 #[allow(clippy::too_many_arguments)]
 fn shield_reflection(
     mut commands: Commands,
@@ -334,6 +340,8 @@ fn shield_reflection(
     )>,
     player: Single<&Position, With<crate::Player>>,
     shield: Res<PlayerShield>,
+    unlocks: Res<AbilityUnlocks>,
+    enemies: Query<&Position, With<crate::enemies::Enemy>>,
     bridge: Res<BridgeTx>,
     window: Single<&Window>,
     camera: Single<(&Camera, &GlobalTransform), With<Camera2d>>,
@@ -360,9 +368,52 @@ fn shield_reflection(
             camera.0,
             camera.1,
         );
+        if unlocks.deflect_volley {
+            let reflected_dir = velocity.0.normalize_or_zero();
+            let enemy_positions: Vec<Vec2> = enemies.iter().map(|pos| pos.0).collect();
+            for aim in volley_aims(player_pos, &enemy_positions, reflected_dir, VOLLEY_SHOTS) {
+                spawn_projectile(
+                    &mut commands,
+                    player_pos + aim * 12.0,
+                    aim * PROJECTILE_SPEED,
+                    ProjectileAllegiance::Player,
+                );
+            }
+        }
         bridge.send(GameAudioEvent::ShieldReflect);
         tracing::info!("shield reflected a projectile");
     }
+}
+
+/// Aim directions for the volley's extra shots: the `shots` nearest enemies
+/// to the player (shots travel, so range is no filter), then — for any
+/// shortfall — a fan around the caught shot's reflected direction.
+fn volley_aims(
+    player_pos: Vec2,
+    enemy_positions: &[Vec2],
+    caught_dir: Vec2,
+    shots: usize,
+) -> Vec<Vec2> {
+    let mut nearest: Vec<(f32, Vec2)> = enemy_positions
+        .iter()
+        .map(|pos| (player_pos.distance(*pos), *pos - player_pos))
+        .collect();
+    nearest.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut aims: Vec<Vec2> = nearest
+        .into_iter()
+        .take(shots)
+        .map(|(_, dir)| dir.normalize_or_zero())
+        .collect();
+    // Fan the shortfall around the reflected direction: +30°, then −30°.
+    while aims.len() < shots {
+        let sign = if aims.len().is_multiple_of(2) {
+            1.0
+        } else {
+            -1.0
+        };
+        aims.push((Rot2::radians(sign * VOLLEY_FAN) * caught_dir).normalize_or_zero());
+    }
+    aims
 }
 
 /// Reflect a projectile off the shield: re-aim along the cursor, restore the
@@ -455,6 +506,7 @@ fn grenade_detonate(
     mut commands: Commands,
     mut collisions: MessageReader<CollisionStart>,
     time: Res<Time>,
+    levels: Res<SkillLevels>,
     mut grenades: Query<(Entity, &Position, &mut Grenade, &mut Fuse)>,
     walls: Query<(), With<crate::world::WallBody>>,
     mut enemies: Query<
@@ -533,12 +585,13 @@ fn grenade_detonate(
                 continue;
             }
             // Shields soak their plates first; the leak lands on health.
+            let damage = grenade_damage(&levels);
             let to_health = match shield.as_mut() {
                 Some(shield) => {
                     let Shield { plates, regen } = &mut **shield;
-                    absorb_damage(plates, regen, GRENADE_DAMAGE)
+                    absorb_damage(plates, regen, damage)
                 }
-                None => GRENADE_DAMAGE,
+                None => damage,
             };
             health.hp -= to_health;
             if health.hp <= 0 {
@@ -618,5 +671,35 @@ mod tests {
         assert!((back - Vec2::new(-PROJECTILE_SPEED, 0.0)).length() < 1e-4);
         // Degenerate everything: no crash, no motion.
         assert_eq!(reflected_velocity(Vec2::ZERO, Vec2::ZERO), Vec2::ZERO);
+    }
+
+    #[test]
+    fn volley_aims_at_the_nearest_enemies_then_fans() {
+        let player = Vec2::ZERO;
+        let enemies = vec![
+            Vec2::new(100.0, 0.0),
+            Vec2::new(200.0, 0.0),
+            Vec2::new(50.0, 0.0),
+        ];
+        let aims = volley_aims(player, &enemies, Vec2::Y, 2);
+        assert_eq!(aims.len(), 2);
+        // The two nearest enemies are aimed at, nearest first.
+        assert!((aims[0] - Vec2::X).length() < 1e-4);
+        assert!((aims[1] - Vec2::X).length() < 1e-4);
+
+        // A shortfall fans around the caught shot's direction: +30°, then
+        // −30° for the second fill.
+        let one = vec![Vec2::new(100.0, 0.0)];
+        let aims = volley_aims(player, &one, Vec2::Y, 3);
+        assert_eq!(aims.len(), 3);
+        let fan = 30.0_f32.to_radians();
+        assert!((aims[0] - Vec2::X).length() < 1e-4);
+        assert!((aims[1] - (Rot2::radians(-fan) * Vec2::Y)).length() < 1e-4);
+        assert!((aims[2] - (Rot2::radians(fan) * Vec2::Y)).length() < 1e-4);
+
+        // No enemies at all: a pure fan around the caught direction.
+        let aims = volley_aims(player, &[], Vec2::Y, 2);
+        assert!((aims[0] - (Rot2::radians(fan) * Vec2::Y)).length() < 1e-4);
+        assert!((aims[1] - (Rot2::radians(-fan) * Vec2::Y)).length() < 1e-4);
     }
 }

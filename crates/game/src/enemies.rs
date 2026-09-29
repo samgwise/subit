@@ -229,6 +229,29 @@ pub fn regrow_plate(plates: &mut u32, regen: &mut Timer, max_plates: u32, delta:
 #[derive(Component, Debug)]
 struct ThrowTimer(Timer);
 
+/// A short-lived velocity kick layered on top of seek steering (nova
+/// blasts); decays exponentially so steering takes back over.
+#[derive(Component, Debug)]
+pub struct Knockback {
+    pub velocity: Vec2,
+}
+
+/// How fast the knockback kick decays (per-second exponential factor).
+const KNOCKBACK_DECAY: f32 = 8.0;
+
+/// Take the current knockback kick for this frame's velocity and decay it
+/// in place. No component, no kick.
+fn decay_knockback(knockback: Option<&mut Knockback>, delta_secs: f32) -> Vec2 {
+    match knockback {
+        Some(kb) => {
+            let kick = kb.velocity;
+            kb.velocity *= (-KNOCKBACK_DECAY * delta_secs).exp();
+            kick
+        }
+        None => Vec2::ZERO,
+    }
+}
+
 pub struct EnemyPlugin;
 
 impl Plugin for EnemyPlugin {
@@ -341,6 +364,7 @@ pub fn spawn_swarm(
 /// Steer chasers and tanks toward the player and show their damage state.
 #[allow(clippy::type_complexity)] // Bevy query tuples read worse split up.
 fn enemy_seek(
+    time: Res<Time>,
     player: Single<&Position, With<crate::Player>>,
     mut enemies: Query<
         (
@@ -350,18 +374,21 @@ fn enemy_seek(
             &Speed,
             &BaseColour,
             &mut Sprite,
+            Option<&mut Knockback>,
         ),
         (With<Enemy>, Without<Thrower>),
     >,
 ) {
     let player_pos = player.0;
-    for (pos, mut velocity, health, speed, base, mut sprite) in &mut enemies {
+    for (pos, mut velocity, health, speed, base, mut sprite, mut knockback) in &mut enemies {
         let to_player = player_pos - pos.0;
-        velocity.0 = if to_player != Vec2::ZERO {
+        let seek = if to_player != Vec2::ZERO {
             to_player.normalize() * speed.0
         } else {
             Vec2::ZERO
         };
+        let kick = decay_knockback(knockback.as_deref_mut(), time.delta_secs());
+        velocity.0 = seek + kick;
         sprite.color = damage_tint(base.0, health.hp, health.max);
     }
 }
@@ -379,6 +406,7 @@ fn thrower_velocity(to_player: Vec2) -> Vec2 {
 /// Throwers keep their distance instead of swarming, tinted by damage.
 #[allow(clippy::type_complexity)]
 fn thrower_seek(
+    time: Res<Time>,
     player: Single<&Position, With<crate::Player>>,
     mut throwers: Query<
         (
@@ -387,13 +415,16 @@ fn thrower_seek(
             &Health,
             &BaseColour,
             &mut Sprite,
+            Option<&mut Knockback>,
         ),
         With<Thrower>,
     >,
 ) {
     let player_pos = player.0;
-    for (pos, mut velocity, health, base, mut sprite) in &mut throwers {
-        velocity.0 = thrower_velocity(player_pos - pos.0);
+    for (pos, mut velocity, health, base, mut sprite, mut knockback) in &mut throwers {
+        let seek = thrower_velocity(player_pos - pos.0);
+        let kick = decay_knockback(knockback.as_deref_mut(), time.delta_secs());
+        velocity.0 = seek + kick;
         sprite.color = damage_tint(base.0, health.hp, health.max);
     }
 }
@@ -565,6 +596,20 @@ mod tests {
         // An empty shield passes everything through.
         assert_eq!(absorb_damage(&mut plates, &mut regen, 20), 20);
         assert_eq!(absorb_damage(&mut plates, &mut regen, 0), 0);
+    }
+
+    #[test]
+    fn knockback_kicks_then_decays() {
+        let mut kb = Some(Knockback {
+            velocity: Vec2::new(500.0, 0.0),
+        });
+        let kick = decay_knockback(kb.as_mut(), 1.0 / 60.0);
+        // The frame's velocity uses the undecayed kick...
+        assert!((kick.x - 500.0).abs() < 1e-4);
+        // ...and the stored kick decays so seek takes back over.
+        assert!(kb.as_ref().unwrap().velocity.x < 500.0);
+        // No component, no kick.
+        assert_eq!(decay_knockback(None, 1.0 / 60.0), Vec2::ZERO);
     }
 
     #[test]

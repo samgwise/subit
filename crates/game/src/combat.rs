@@ -12,7 +12,7 @@ use bevy::prelude::*;
 
 use crate::bridge::{BridgeTx, GameAudioEvent};
 use crate::enemies::{Enemy, Health, Shield, Thrower, absorb_damage, kill_enemy, regrow_plate};
-use crate::skills::{DashState, cleave_damage};
+use crate::skills::{DashState, cleave_damage, cleave_half_angle, cleave_radius};
 use crate::world::{MapConfig, SpawnPoint, TILE_SIZE, WorldMapRes, tile_units};
 use wfc::line_of_sight;
 
@@ -28,12 +28,6 @@ const INVULN_SECS: f32 = 0.5;
 
 /// Seconds between cleave swings.
 const ATTACK_COOLDOWN_SECS: f32 = 0.25;
-
-/// Cleave reach in world units (three tiles).
-const CLEAVE_RADIUS: f32 = TILE_SIZE * 3.0;
-
-/// Half the cleave arc: a 90-degree cone around the aim direction.
-const CLEAVE_HALF_ANGLE: f32 = std::f32::consts::FRAC_PI_4;
 
 /// Kills further apart than this window do not count as the same combo.
 const COMBO_WINDOW_SECS: f64 = 2.0;
@@ -121,6 +115,12 @@ impl PlayerShield {
         self.cooldown
             .set_duration(Duration::from_secs_f64(secs as f64));
     }
+
+    /// Re-derive the active duration after a menu purchase.
+    pub fn set_active_secs(&mut self, secs: f32) {
+        self.active
+            .set_duration(Duration::from_secs_f64(secs as f64));
+    }
 }
 
 /// Cooldown gating consecutive cleave swings.
@@ -162,6 +162,25 @@ struct CleaveFxActive {
     timer: Timer,
 }
 
+/// Damage the nova burst deals within its radius.
+const NOVA_DAMAGE: i32 = 150;
+/// Nova reach in world units (2.5 tiles).
+const NOVA_RADIUS: f32 = TILE_SIZE * 2.5;
+/// Seconds between novas.
+const NOVA_COOLDOWN_SECS: f32 = 6.0;
+/// Knockback speed kicked into caught enemies, decaying in `enemies.rs`.
+const NOVA_KNOCKBACK: f32 = 500.0;
+/// How long the expanding nova ring stays on screen.
+const NOVA_FX_SECS: f32 = 0.3;
+
+/// Nova ability cooldown.
+#[derive(Resource, Debug)]
+struct NovaState(Timer);
+
+/// Transient nova visual: an expanding ring from the blast centre.
+#[derive(Resource, Debug, Default)]
+struct NovaFx(Option<(Vec2, Timer)>);
+
 pub struct CombatPlugin;
 
 impl Plugin for CombatPlugin {
@@ -183,14 +202,18 @@ impl Plugin for CombatPlugin {
             plates: 0,
             regen: expired(crate::enemies::PLATE_REGEN_SECS),
         })
+        .insert_resource(NovaState(expired(NOVA_COOLDOWN_SECS)))
         .init_resource::<ComboState>()
         .init_resource::<CleaveFx>()
+        .init_resource::<NovaFx>()
         .add_systems(
             Update,
             (
                 player_attack,
                 cleave_fx,
                 update_shield,
+                nova_trigger,
+                nova_fx,
                 dash_trigger,
                 player_vitals_fx,
                 barrier_regen,
@@ -282,9 +305,11 @@ fn player_attack(
         let origin_units = tile_units((width, height), config.tile_size, origin);
         let origin_units = (origin_units.x, origin_units.y);
         let damage = cleave_damage(&levels);
+        let radius = cleave_radius(&levels);
+        let half_angle = cleave_half_angle(&levels);
         let mut killed = 0usize;
         for (entity, pos, thrower, mut health, mut shield) in &mut enemies {
-            if !in_cleave_arc(origin, aim, pos.0, CLEAVE_RADIUS, CLEAVE_HALF_ANGLE)
+            if !in_cleave_arc(origin, aim, pos.0, radius, half_angle)
                 || !line_of_sight(&map.map.grid, &map.prototypes, origin_units, {
                     let units = tile_units((width, height), config.tile_size, pos.0);
                     (units.x, units.y)
@@ -327,7 +352,12 @@ fn cone_rotation(aim: Vec2, half_angle: f32) -> f32 {
 
 /// Draw the cleave flash while it is active — the wedge outline of the
 /// actual hit area, not a circle.
-fn cleave_fx(mut fx: ResMut<CleaveFx>, time: Res<Time>, mut gizmos: Gizmos) {
+fn cleave_fx(
+    mut fx: ResMut<CleaveFx>,
+    levels: Res<crate::skills::SkillLevels>,
+    time: Res<Time>,
+    mut gizmos: Gizmos,
+) {
     let Some(active) = fx.0.as_mut() else {
         return;
     };
@@ -337,22 +367,24 @@ fn cleave_fx(mut fx: ResMut<CleaveFx>, time: Res<Time>, mut gizmos: Gizmos) {
         return;
     }
 
+    let radius = cleave_radius(&levels);
+    let half_angle = cleave_half_angle(&levels);
     let colour = Color::srgba(0.4, 0.9, 1.0, 0.8);
     let aim_angle = active.aim.y.atan2(active.aim.x);
     if active.aim == Vec2::ZERO {
         // Degenerate aim: the hit test treats it as radial, so flash radial.
-        gizmos.circle_2d(active.origin, CLEAVE_RADIUS, colour);
+        gizmos.circle_2d(active.origin, radius, colour);
         return;
     }
     let isometry = Isometry2d::new(
         active.origin,
-        Rot2::radians(cone_rotation(active.aim, CLEAVE_HALF_ANGLE)),
+        Rot2::radians(cone_rotation(active.aim, half_angle)),
     );
-    gizmos.arc_2d(isometry, CLEAVE_HALF_ANGLE * 2.0, CLEAVE_RADIUS, colour);
-    for edge_angle in [aim_angle - CLEAVE_HALF_ANGLE, aim_angle + CLEAVE_HALF_ANGLE] {
+    gizmos.arc_2d(isometry, half_angle * 2.0, radius, colour);
+    for edge_angle in [aim_angle - half_angle, aim_angle + half_angle] {
         gizmos.line_2d(
             active.origin,
-            active.origin + Vec2::from_angle(edge_angle) * CLEAVE_RADIUS,
+            active.origin + Vec2::from_angle(edge_angle) * radius,
             colour,
         );
     }
@@ -431,6 +463,101 @@ fn update_shield(
     }
 }
 
+/// Fire a nova on E: unlock-gated, off cooldown. A 360-degree burst —
+/// damage every enemy in the radius (through their shields), shove each
+/// survivor outward, expand a ring, batch the kills into one sweep.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn nova_trigger(
+    mut commands: Commands,
+    input: Res<ButtonInput<KeyCode>>,
+    unlocks: Res<crate::skills::AbilityUnlocks>,
+    mut nova: ResMut<NovaState>,
+    time: Res<Time>,
+    player: Single<&Position, With<crate::Player>>,
+    mut enemies: Query<
+        (
+            Entity,
+            &Position,
+            Option<&Thrower>,
+            &mut Health,
+            Option<&mut Shield>,
+        ),
+        With<Enemy>,
+    >,
+    mut combo: ResMut<ComboState>,
+    mut fx: ResMut<NovaFx>,
+    bridge: Res<BridgeTx>,
+    mut rng: ResMut<crate::drops::DropRng>,
+) {
+    nova.0.tick(time.delta());
+    if !input.just_pressed(KeyCode::KeyE) || !unlocks.nova || !nova.0.is_finished() {
+        return;
+    }
+    nova.0.reset();
+    bridge.send(GameAudioEvent::Nova);
+    *fx = NovaFx(Some((
+        player.0,
+        Timer::from_seconds(NOVA_FX_SECS, TimerMode::Once),
+    )));
+
+    let origin = player.0;
+    let mut killed = 0usize;
+    for (entity, pos, thrower, mut health, mut shield) in &mut enemies {
+        let distance = pos.0.distance(origin);
+        if distance > NOVA_RADIUS {
+            continue;
+        }
+        // Shove every caught enemy outward — the knockback decays in the
+        // seek systems, so steering takes back over.
+        let direction = (pos.0 - origin).normalize_or_zero();
+        if direction != Vec2::ZERO
+            && let Ok(mut entity_commands) = commands.get_entity(entity)
+        {
+            entity_commands.insert(crate::enemies::Knockback {
+                velocity: direction * NOVA_KNOCKBACK,
+            });
+        }
+        // Shields soak their plates first; the leak lands on health.
+        let to_health = match shield.as_mut() {
+            Some(shield) => {
+                let Shield { plates, regen } = &mut **shield;
+                absorb_damage(plates, regen, NOVA_DAMAGE)
+            }
+            None => NOVA_DAMAGE,
+        };
+        health.hp -= to_health;
+        if health.hp <= 0 {
+            killed += 1;
+            kill_enemy(&mut commands, entity, pos.0, thrower.is_some(), &mut rng.0);
+        }
+    }
+    if killed > 0 {
+        combo.register_kill(time.elapsed());
+        bridge.send(GameAudioEvent::MobSweep {
+            kill_count: killed as u32,
+            combo: combo.count,
+        });
+    }
+    tracing::info!(killed, "nova burst");
+}
+
+/// Draw the nova ring while it is active — an expanding circle out to the
+/// blast radius.
+fn nova_fx(mut fx: ResMut<NovaFx>, time: Res<Time>, mut gizmos: Gizmos) {
+    let Some((centre, timer)) = fx.0.as_mut() else {
+        return;
+    };
+    timer.tick(time.delta());
+    if timer.is_finished() {
+        *fx = NovaFx(None);
+        return;
+    }
+    let progress = timer.elapsed_secs() / NOVA_FX_SECS;
+    let radius = NOVA_RADIUS * progress;
+    let alpha = 0.8 * (1.0 - progress);
+    gizmos.circle_2d(*centre, radius, Color::srgba(0.4, 0.9, 1.0, alpha));
+}
+
 /// Regrow barrier plates while the unlock is owned.
 fn barrier_regen(
     time: Res<Time>,
@@ -506,6 +633,10 @@ fn player_speed_telemetry(
 mod tests {
     use super::*;
 
+    /// A fixed cone for the arc tests — a 90-degree cone at 96 units.
+    const TEST_HALF_ANGLE: f32 = 45.0_f32.to_radians();
+    const TEST_RADIUS: f32 = 96.0;
+
     #[test]
     fn cleave_arc_hits_ahead_and_not_behind() {
         let origin = Vec2::ZERO;
@@ -515,33 +646,33 @@ mod tests {
             origin,
             aim,
             Vec2::new(50.0, 0.0),
-            96.0,
-            CLEAVE_HALF_ANGLE
+            TEST_RADIUS,
+            TEST_HALF_ANGLE
         ));
         // Inside radius but behind the aim line.
         assert!(!in_cleave_arc(
             origin,
             aim,
             Vec2::new(-50.0, 0.0),
-            96.0,
-            CLEAVE_HALF_ANGLE
+            TEST_RADIUS,
+            TEST_HALF_ANGLE
         ));
-        // Inside radius, outside the 90-degree cone (edge case: perpendicular
-        // is exactly on the boundary for a 90-degree cone, so go wider).
+        // Inside radius but near-perpendicular to the aim: well outside the
+        // cone.
         assert!(!in_cleave_arc(
             origin,
             aim,
             Vec2::new(10.0, 90.0),
-            96.0,
-            CLEAVE_HALF_ANGLE
+            TEST_RADIUS,
+            TEST_HALF_ANGLE
         ));
         // Outside radius but inside the arc direction.
         assert!(!in_cleave_arc(
             origin,
             aim,
             Vec2::new(200.0, 0.0),
-            96.0,
-            CLEAVE_HALF_ANGLE
+            TEST_RADIUS,
+            TEST_HALF_ANGLE
         ));
     }
 
@@ -550,21 +681,21 @@ mod tests {
         let origin = Vec2::ZERO;
         let aim = Vec2::X;
         // Exactly on the cone edge: dot == cos(half_angle) counts as a hit.
-        let edge = Vec2::new(CLEAVE_HALF_ANGLE.cos(), CLEAVE_HALF_ANGLE.sin());
+        let edge = Vec2::new(TEST_HALF_ANGLE.cos(), TEST_HALF_ANGLE.sin());
         assert!(in_cleave_arc(
             origin,
             aim,
             edge,
-            CLEAVE_RADIUS,
-            CLEAVE_HALF_ANGLE
+            TEST_RADIUS,
+            TEST_HALF_ANGLE
         ));
         // Exactly on the radius edge counts as a hit.
         assert!(in_cleave_arc(
             origin,
             aim,
-            Vec2::new(CLEAVE_RADIUS, 0.0),
-            CLEAVE_RADIUS,
-            CLEAVE_HALF_ANGLE
+            Vec2::new(TEST_RADIUS, 0.0),
+            TEST_RADIUS,
+            TEST_HALF_ANGLE
         ));
     }
 
@@ -574,15 +705,15 @@ mod tests {
             Vec2::ZERO,
             Vec2::ZERO,
             Vec2::new(30.0, 30.0),
-            96.0,
-            CLEAVE_HALF_ANGLE
+            TEST_RADIUS,
+            TEST_HALF_ANGLE
         ));
         assert!(!in_cleave_arc(
             Vec2::ZERO,
             Vec2::ZERO,
             Vec2::new(300.0, 300.0),
-            96.0,
-            CLEAVE_HALF_ANGLE
+            TEST_RADIUS,
+            TEST_HALF_ANGLE
         ));
     }
 
@@ -726,7 +857,7 @@ mod tests {
 
     #[test]
     fn cone_rotation_centres_the_arc_on_the_aim() {
-        let half = CLEAVE_HALF_ANGLE;
+        let half = TEST_HALF_ANGLE;
         // Arc angles covered by an arc rotated by `cone_rotation`: the arc
         // sweeps CCW from Vec2::Y (π/2) plus the rotation.
         let span = |rotation: f32| {

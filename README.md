@@ -64,9 +64,10 @@ and keeps the last good look.
 | Input | Action |
 | --- | --- |
 | WASD | Move |
-| Left mouse | Cleave toward the cursor (kills in a 90° arc, wall-occluded) |
+| Left mouse | Cleave toward the cursor (kills in a 60° arc, wall-occluded; the reach skill widens and extends it) |
 | Right mouse | Raise the shield — blocks contact, reflects projectiles in the ring |
 | Space | Dash (once unlocked) — short burst with i-frames |
+| E | Nova (once unlocked) — 360° burst that damages and shoves the swarm |
 | G | Grenade (once unlocked) — wall-bouncing lob with a radial blast |
 | Walk onto the magenta exit | Descend to the next depth (the mob grows; progression carries over) |
 | Tab | Pause and open the skills menu |

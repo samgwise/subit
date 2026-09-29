@@ -74,6 +74,8 @@ pub enum GameEvent {
     Dash,
     /// A grenade detonated — deep boom.
     GrenadeBlast,
+    /// The player fired a nova burst — deeper, wider boom.
+    Nova,
     /// The player descended to the next depth — deep transition tone.
     Descent,
 }
@@ -137,6 +139,12 @@ pub fn perform_event(event: GameEvent) -> NoteEvent {
             note: 36,
             velocity: 127,
             duration_secs: 0.4,
+        },
+        GameEvent::Nova => NoteEvent {
+            channel: 0,
+            note: 38,
+            velocity: 127,
+            duration_secs: 0.45,
         },
         GameEvent::Descent => NoteEvent {
             channel: 0,

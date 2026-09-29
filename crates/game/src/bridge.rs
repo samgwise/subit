@@ -31,6 +31,8 @@ pub enum GameAudioEvent {
     Dash,
     /// A grenade detonated.
     GrenadeBlast,
+    /// The player fired a nova burst.
+    Nova,
     /// The player descended to the next depth.
     Descent,
     /// Streaming player speed for audio modulation.
@@ -49,6 +51,7 @@ impl GameAudioEvent {
             | GameAudioEvent::LevelUp
             | GameAudioEvent::Dash
             | GameAudioEvent::GrenadeBlast
+            | GameAudioEvent::Nova
             | GameAudioEvent::Descent => "/subit/game/event/action",
             GameAudioEvent::MobSweep { .. } => "/subit/game/event/combat",
             GameAudioEvent::PlayerTelemetry { .. } => "/subit/game/telemetry/player",
@@ -65,6 +68,7 @@ impl GameAudioEvent {
             | GameAudioEvent::LevelUp
             | GameAudioEvent::Dash
             | GameAudioEvent::GrenadeBlast
+            | GameAudioEvent::Nova
             | GameAudioEvent::Descent
             | GameAudioEvent::MobSweep { .. } => SignalType::Event,
             GameAudioEvent::PlayerTelemetry { .. } => SignalType::Stream,
@@ -98,6 +102,9 @@ impl GameAudioEvent {
             }
             GameAudioEvent::GrenadeBlast => {
                 fields.insert("type".into(), Value::String("grenade_blast".into()));
+            }
+            GameAudioEvent::Nova => {
+                fields.insert("type".into(), Value::String("nova".into()));
             }
             GameAudioEvent::Descent => {
                 fields.insert("type".into(), Value::String("descent".into()));
