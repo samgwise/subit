@@ -50,6 +50,17 @@ depth, where the mob grows and the run continues with all progression intact.
 - The camera zooms 2× (ortho scale 0.5): tiles render ~64 px and roughly a
   dozen tiles span the window — pathing and projectile avoidance read at a
   glance, with the beacon and arrow covering what zoom leaves off-screen.
+- Corrupted data zones: terminal CLUSTERS (terminals with a terminal
+  neighbour) seed corrupted patches — the cluster dilated by one tile,
+  walls excluded. The zones glitch: a hash-scheduled ~0.3 s burst every
+  ~3 s shuffles, drops and tears the base tiles' pixels (a zone-mask
+  texture read in the neon shader), and a sparse overlay tilemap flickers
+  green static and data rain above them — one shared burst clock, all
+  GPU-time driven. Every shield inside a zone bleeds a plate per second
+  (enemy shields and the player's barrier alike — lure the tank through
+  the corruption to strip it), and the player's aggro notice range sheds
+  2 steps inside a zone (stacking with the cloak, floored at 1). Crossing
+  a zone edge is a sonic trigger.
 - Neon bloom: an HDR camera post-process (Bevy's built-in `Bloom`, additive
   composite, ~0.6 luminance threshold) makes the bright pixels bleed glow —
   lit wall edges, the beacon pillar, terminals, the cleave flash, shots and
@@ -144,10 +155,11 @@ depth, where the mob grows and the run continues with all progression intact.
 - **Aggro:** enemies only notice the player within 8 path steps (BFS
   distance around the walls — an enemy behind a wall stays calm no matter
   how close it stands), standing down once the player escapes 10 — a
-  hysteresis band keeps the boundary calm. Un-alerted enemies mill slowly
-  around home on a leash (they never open fire or pursue), re-homing where
-  they lost the player, so every depth opens calm and the mob engages as
-  you reach it.
+  hysteresis band keeps the boundary calm. Inside a corrupted zone the
+  notice range sheds 2 steps (stacking with the cloak, floored at 1).
+  Un-alerted enemies mill slowly around home on a leash (they never open
+  fire or pursue), re-homing where they lost the player, so every depth
+  opens calm and the mob engages as you reach it.
 - 40 enemies per map (more with depth), spawned on tiles that are
   BFS-reachable and at least 8 steps from the player spawn; layout is
   deterministic per seed. Every 4th spawn is a thrower (every 3rd from depth
@@ -191,8 +203,10 @@ depth, where the mob grows and the run continues with all progression intact.
   cooldown −0.25 s (1 point, cap 4, floor 1 s, needs dash), grenade damage
   +50 (1 point, cap 6, needs grenade), dash unlock (2 points), grenade
   unlock (3 points), barrier unlock (3 points), nova unlock (4 points),
-  deflect volley unlock (5 points). Purchases apply immediately; rows grey
-  out when unaffordable, maxed or owned, and show their level and cost.
+  deflect volley unlock (5 points), cloak unlock (5 points) with sneak
+  −1 step (cap 4, two at max) and duration +1 s (cap 4) upgrades.
+  Purchases apply immediately; rows grey out when unaffordable, maxed or
+  owned, and show their level and cost.
 
 ## Ensemble audio
 
@@ -209,6 +223,10 @@ until the hub clock protocol lands); telemetry bypasses quantisation.
 | Level up | `/subit/game/event/action` `level_up` (event) | Chime — note 84, vel 90, 0.3 s |
 | Dash | `/subit/game/event/action` `dash` (event) | Whoosh — note 91, vel 70, 0.08 s |
 | Grenade blast | `/subit/game/event/action` `grenade_blast` (event) | Boom — note 36, vel 127, 0.4 s |
+| Nova burst | `/subit/game/event/action` `nova` (event) | Deeper boom — note 38, vel 127, 0.45 s |
+| Cloak engage | `/subit/game/event/action` `cloak` (event) | Soft descending breath — note 67, vel 75, 0.3 s |
+| Corruption enter | `/subit/game/event/action` `corruption_enter` (event) | Dissonant glitch stab — note 46, vel 95, 0.3 s |
+| Corruption exit | `/subit/game/event/action` `corruption_exit` (event) | Resolve blip — note 52, vel 60, 0.15 s |
 | Depth descent | `/subit/game/event/action` `descent` (event) | Transition tone — note 43, vel 100, 0.4 s |
 | Player speed (≈10 Hz) | `/subit/game/telemetry/player` `player_speed` (stream) | Mod-wheel CC1, full scale at 240 u/s |
 | World integrity (per map) | `/subit/game/telemetry/world` `world_integrity` (param) | Logged only — harmonic mode shift pending |
@@ -228,7 +246,8 @@ until the hub clock protocol lands); telemetry bypasses quantisation.
 || Nova: damage / radius / cooldown / unlock cost | 150 / 2.5 tiles / 6 s / 4 pts |
 || Deflect volley: extra shots / unlock cost | 2 / 5 pts |
 || Aggro: notice range / stand-down range / wander speed / leash | 8 steps / 10 / 30 u/s / 1.5 tiles |
-|| Cloak: unlock / sneak per point (floor) / duration per point (cap) / cooldown | 5 pts / −1 step (2) / +1 s (cap 4) / 10 s |
+| Cloak: unlock / sneak per point (floor) / duration per point (cap) / cooldown | 5 pts / −1 step (2) / +1 s (cap 4) / 10 s |
+| Corruption: burst interval / burst length / drain / stealth | ~3 s / ~0.3 s / 1 plate per s / −2 steps |
 | Combo window | 2 s |
 | Shield: active / cooldown / ring | 0.6 s / 3 s (−0.25/pt, floor 1 s) / 1.2 tiles |
 | Dash: speed / duration / cooldown / unlock cost | 600 u/s / 0.15 s / 2 s / 2 pts |

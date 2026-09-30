@@ -78,6 +78,10 @@ pub enum GameEvent {
     Nova,
     /// The player engaged the cloak — soft descending breath.
     Cloak,
+    /// The player entered a corrupted zone — dissonant glitch stab.
+    CorruptionEnter,
+    /// The player left a corrupted zone — resolve blip.
+    CorruptionExit,
     /// The player descended to the next depth — deep transition tone.
     Descent,
 }
@@ -153,6 +157,18 @@ pub fn perform_event(event: GameEvent) -> NoteEvent {
             note: 67,
             velocity: 75,
             duration_secs: 0.3,
+        },
+        GameEvent::CorruptionEnter => NoteEvent {
+            channel: 0,
+            note: 46,
+            velocity: 95,
+            duration_secs: 0.3,
+        },
+        GameEvent::CorruptionExit => NoteEvent {
+            channel: 0,
+            note: 52,
+            velocity: 60,
+            duration_secs: 0.15,
         },
         GameEvent::Descent => NoteEvent {
             channel: 0,

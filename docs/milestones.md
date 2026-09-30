@@ -146,6 +146,20 @@ around home on a short leash, never pursuing or opening fire. Depths now
 open calm and the mob engages as the player reaches it, and standing down
 re-homes the wanderer where it lost the player.
 
+## Milestone 17 — Corrupted data zones
+
+The green terminal patches became corrupted data zones. Clustered
+terminals seed patches (the cluster dilated a tile, walls excluded)
+whose tiles glitch — a hash-scheduled burst every few seconds shuffles,
+drops and tears the base tiles' pixels via a zone-mask texture read in
+the neon shader, while a sparse overlay tilemap flickers green static
+and data rain above them, everything on one shared burst clock. Every
+shield standing in a zone bleeds a plate per second (enemy shields and
+the player's barrier — luring a tank through the corruption strips it),
+the player sheds two aggro notice steps inside a zone (stacking with the
+cloak), and crossing a zone edge fires corruption sonic triggers through
+the bridge.
+
 ## Milestone 16 — Cloak
 
 A stealth ability in the reflector's shape: the cloak unlock (5 points,

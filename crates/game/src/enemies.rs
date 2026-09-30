@@ -13,6 +13,7 @@ use rand::SeedableRng;
 use rand::rngs::SmallRng;
 use wfc::{FlowField, GeneratedMap, prototype_set, walkable_distances};
 
+use crate::corruption::{CorruptedZones, zone_notice};
 use crate::drops::spawn_drops;
 use crate::world::{MapConfig, TILE_SIZE, WorldMapRes, tile_units, tile_world_pos};
 
@@ -438,24 +439,34 @@ pub fn spawn_swarm(
 /// where it lost the player, so it mills there instead of marching back to
 /// its spawn.
 #[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments)]
 fn aggro_gate(
     mut commands: Commands,
+    player: Single<&Position, With<crate::Player>>,
     map: Res<crate::world::WorldMapRes>,
     config: Res<MapConfig>,
     flow: Res<crate::world::PlayerFlow>,
+    zones: Res<CorruptedZones>,
     cloak: Res<crate::skills::CloakState>,
     levels: Res<crate::skills::SkillLevels>,
     mut enemies: Query<(Entity, &Position, Has<Aggro>, &mut Wander), With<Enemy>>,
 ) {
     let (width, height) = (map.map.grid.width(), map.map.grid.height());
-    // A cloaked player is only noticed at the sneak range — both for waking
-    // enemies up and for standing them down (the cloak doubles as an
-    // escape: walk away, and pursuers lose the thread).
-    let notice = if cloak.is_active() {
+    // A cloaked player is only noticed at the sneak range; standing in a
+    // corrupted zone sheds two more steps off whatever range applies — the
+    // two stack, floored at one by the zone helper.
+    let player_units = tile_units((width, height), config.tile_size, player.0);
+    let base_notice = if cloak.is_active() {
         crate::skills::cloak_sneak_steps(&levels)
     } else {
         AGGRO_RANGE_STEPS
     };
+    let notice = zone_notice(
+        base_notice,
+        zones
+            .0
+            .contains(&(player_units.x.floor() as u32, player_units.y.floor() as u32)),
+    );
     for (entity, pos, aggroed, mut wander) in &mut enemies {
         let units = tile_units((width, height), config.tile_size, pos.0);
         match aggro_flip(aggroed, flow.field.steps((units.x, units.y)), notice) {

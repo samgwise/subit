@@ -35,6 +35,8 @@ pub enum GameAudioEvent {
     Nova,
     /// The player engaged the cloak.
     Cloak,
+    /// The player crossed a corrupted zone boundary.
+    Corruption { entered: bool },
     /// The player descended to the next depth.
     Descent,
     /// Streaming player speed for audio modulation.
@@ -55,6 +57,7 @@ impl GameAudioEvent {
             | GameAudioEvent::GrenadeBlast
             | GameAudioEvent::Nova
             | GameAudioEvent::Cloak
+            | GameAudioEvent::Corruption { .. }
             | GameAudioEvent::Descent => "/subit/game/event/action",
             GameAudioEvent::MobSweep { .. } => "/subit/game/event/combat",
             GameAudioEvent::PlayerTelemetry { .. } => "/subit/game/telemetry/player",
@@ -73,6 +76,7 @@ impl GameAudioEvent {
             | GameAudioEvent::GrenadeBlast
             | GameAudioEvent::Nova
             | GameAudioEvent::Cloak
+            | GameAudioEvent::Corruption { .. }
             | GameAudioEvent::Descent
             | GameAudioEvent::MobSweep { .. } => SignalType::Event,
             GameAudioEvent::PlayerTelemetry { .. } => SignalType::Stream,
@@ -112,6 +116,16 @@ impl GameAudioEvent {
             }
             GameAudioEvent::Cloak => {
                 fields.insert("type".into(), Value::String("cloak".into()));
+            }
+            GameAudioEvent::Corruption { entered } => {
+                fields.insert(
+                    "type".into(),
+                    Value::String(if *entered {
+                        "corruption_enter".into()
+                    } else {
+                        "corruption_exit".into()
+                    }),
+                );
             }
             GameAudioEvent::Descent => {
                 fields.insert("type".into(), Value::String("descent".into()));

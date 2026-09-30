@@ -77,7 +77,28 @@ fn setup(
     ));
 
     let atlas = images.add(build_atlas(TILE_SIZE));
-    let material = MaterialTilemapHandle::from(map_materials.add(NeonTilemapMaterial::default()));
+    // Mark the right half of the strip corrupted so the glitch artefacts
+    // have somewhere to live.
+    let mut mask_data = Vec::with_capacity((ATLAS_TILES * 2 * 4) as usize);
+    for _y in 0..2u32 {
+        for x in 0..ATLAS_TILES {
+            let on = if x >= ATLAS_TILES / 2 { 255u8 } else { 0 };
+            mask_data.extend_from_slice(&[on, 0, 0, 255]);
+        }
+    }
+    let zone_mask = images.add(Image::new(
+        bevy::render::render_resource::Extent3d {
+            width: ATLAS_TILES,
+            height: 2,
+            depth_or_array_layers: 1,
+        },
+        bevy::render::render_resource::TextureDimension::D2,
+        mask_data,
+        bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+        bevy::asset::RenderAssetUsages::MAIN_WORLD | bevy::asset::RenderAssetUsages::RENDER_WORLD,
+    ));
+    let material =
+        MaterialTilemapHandle::from(map_materials.add(NeonTilemapMaterial::new(zone_mask)));
     let map_size = TilemapSize {
         x: ATLAS_TILES,
         y: 2,

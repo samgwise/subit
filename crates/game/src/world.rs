@@ -12,12 +12,16 @@ use bevy::image::Image;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy_ecs_tilemap::prelude::*;
+use rand::RngExt;
+use rand::SeedableRng;
+use rand::rngs::SmallRng;
 use wfc::{
     FlowField, GeneratedMap, GeneratorConfig, Socket, TileClass, WeightedPrototype, generate,
     prototype_set,
 };
 
-use crate::neon_material::{NeonTilemapHandle, NeonTilemapMaterial};
+use crate::corruption::{CorruptedTilemapMaterial, CorruptedZones};
+use crate::neon_material::NeonTilemapMaterial;
 
 /// Size of a single tile in world units (pixels).
 pub const TILE_SIZE: f32 = 32.0;
@@ -105,7 +109,6 @@ impl Plugin for WorldMapPlugin {
             // The tilemap renders through the neon material; the custom
             // material pipeline ships with bevy_ecs_tilemap.
             .add_plugins(MaterialTilemapPlugin::<NeonTilemapMaterial>::default())
-            .init_resource::<NeonTilemapHandle>()
             // Top-down view: the physics default pulls everything down at
             // 9.81 units/s^2, so zero it out.
             .insert_resource(Gravity::ZERO)
@@ -126,11 +129,20 @@ impl Plugin for WorldMapPlugin {
 pub(crate) fn startup_world(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
+    mut map_materials: ResMut<Assets<NeonTilemapMaterial>>,
+    mut corruption_materials: ResMut<Assets<CorruptedTilemapMaterial>>,
     config: Res<MapConfig>,
-    neon: Res<NeonTilemapHandle>,
     bridge: Res<crate::bridge::BridgeTx>,
 ) {
-    let (spawn, generated) = build_world(&mut commands, &mut images, &config, &neon, &bridge, 0);
+    let (spawn, generated) = build_world(
+        &mut commands,
+        &mut images,
+        &mut map_materials,
+        &mut corruption_materials,
+        &config,
+        &bridge,
+        0,
+    );
     spawn_player(&mut commands, spawn, config.tile_size);
     crate::enemies::spawn_swarm(&mut commands, &generated, &config, 0);
 }
@@ -165,7 +177,8 @@ fn descend(
     mut vitals: ResMut<crate::combat::PlayerVitals>,
     mut combo: ResMut<crate::combat::ComboState>,
     mut images: ResMut<Assets<Image>>,
-    neon: Res<NeonTilemapHandle>,
+    mut map_materials: ResMut<Assets<NeonTilemapMaterial>>,
+    mut corruption_materials: ResMut<Assets<CorruptedTilemapMaterial>>,
     bridge: Res<crate::bridge::BridgeTx>,
     // One bundled param keeps the system within Bevy's 16-param limit.
     world_entities: (
@@ -203,8 +216,15 @@ fn descend(
         }
     }
 
-    let (spawn, generated) =
-        build_world(&mut commands, &mut images, &config, &neon, &bridge, depth.0);
+    let (spawn, generated) = build_world(
+        &mut commands,
+        &mut images,
+        &mut map_materials,
+        &mut corruption_materials,
+        &config,
+        &bridge,
+        depth.0,
+    );
     crate::enemies::spawn_swarm(&mut commands, &generated, &config, depth.0);
     position.0 = spawn;
     velocity.0 = Vec2::ZERO;
@@ -221,8 +241,9 @@ fn descend(
 fn build_world(
     commands: &mut Commands,
     images: &mut Assets<Image>,
+    map_materials: &mut Assets<NeonTilemapMaterial>,
+    corruption_materials: &mut Assets<CorruptedTilemapMaterial>,
     config: &MapConfig,
-    neon: &NeonTilemapHandle,
     bridge: &crate::bridge::BridgeTx,
     depth: u32,
 ) -> (Vec2, GeneratedMap) {
@@ -282,6 +303,20 @@ fn build_world(
     // Built in code so the prototype needs no art assets.
     let atlas: Handle<Image> = images.add(build_atlas(config.tile_size));
 
+    // The corrupted zones: clustered terminals seed glitching patches. The
+    // zone set drives gameplay (drain, stealth); the mask image drives the
+    // base shader's artefact pass; the overlay layer draws the corruption
+    // itself.
+    let world_res = WorldMapRes {
+        map: generated.clone(),
+        prototypes: prototype_set(
+            config.generator.wall_weight,
+            config.generator.terminal_weight,
+        ),
+    };
+    let zones = CorruptedZones::build(&world_res);
+    let zone_mask: Handle<Image> = images.add(build_zone_mask(&zones, width, height));
+
     let tilemap_entity = commands.spawn_empty().id();
     let mut tile_storage = TileStorage::empty(map_size_wide(width, height));
 
@@ -323,7 +358,8 @@ fn build_world(
         y: config.tile_size,
     };
     // The tilemap renders through the neon material so the shader can
-    // animate the baked edge strips.
+    // animate the baked edge strips — this depth's material carries this
+    // depth's zone mask.
     commands
         .entity(tilemap_entity)
         .insert(MaterialTilemapBundle::<NeonTilemapMaterial> {
@@ -333,7 +369,43 @@ fn build_world(
             texture: TilemapTexture::Single(atlas),
             tile_size,
             anchor: TilemapAnchor::Center,
-            material: neon.0.clone(),
+            material: MaterialTilemapHandle::from(
+                map_materials.add(NeonTilemapMaterial::new(zone_mask)),
+            ),
+            ..Default::default()
+        });
+
+    // The corruption overlay: a second, sparse tilemap holding a tile on
+    // every corrupted cell — its shader draws the static and data rain just
+    // above the base tiles.
+    let corruption_atlas: Handle<Image> =
+        images.add(build_corruption_atlas(config.tile_size, generator.seed));
+    let corruption_entity = commands.spawn_empty().id();
+    let mut corruption_storage = TileStorage::empty(map_size_wide(width, height));
+    for &(x, y) in &zones.0 {
+        let pos = TilePos { x, y };
+        let tile_entity = commands
+            .spawn(TileBundle {
+                position: pos,
+                tilemap_id: TilemapId(corruption_entity),
+                ..Default::default()
+            })
+            .id();
+        corruption_storage.set(&pos, tile_entity);
+    }
+    commands
+        .entity(corruption_entity)
+        .insert(MaterialTilemapBundle::<CorruptedTilemapMaterial> {
+            grid_size: tile_size.into(),
+            size: map_size_wide(width, height),
+            storage: corruption_storage,
+            texture: TilemapTexture::Single(corruption_atlas),
+            tile_size,
+            anchor: TilemapAnchor::Center,
+            transform: Transform::from_xyz(0.0, 0.0, 0.05),
+            material: MaterialTilemapHandle::from(
+                corruption_materials.add(CorruptedTilemapMaterial::default()),
+            ),
             ..Default::default()
         });
 
@@ -374,13 +446,12 @@ fn build_world(
     ));
 
     // Resources other systems build on: the raw map data (plus the prototype
-    // set its tile indices refer to), the respawn point, and the first flow
-    // field — seeded toward the spawn tile until the player moves.
-    let initial_flow = FlowField::build(&generated.grid, &prototypes, generated.spawn);
-    commands.insert_resource(WorldMapRes {
-        map: generated.clone(),
-        prototypes,
-    });
+    // set its tile indices refer to), the corrupted zones, the respawn
+    // point, and the first flow field — seeded toward the spawn tile until
+    // the player moves.
+    let initial_flow = FlowField::build(&generated.grid, &world_res.prototypes, generated.spawn);
+    commands.insert_resource(world_res);
+    commands.insert_resource(zones);
     commands.insert_resource(SpawnPoint(spawn_pos));
     commands.insert_resource(PlayerFlow {
         field: initial_flow,
@@ -448,6 +519,58 @@ fn destabilise(base: Color, integrity: f32) -> Color {
         c.green * (1.0 - t) + 0.85 * t,
         c.blue * (1.0 - t) + 1.0 * t,
         c.alpha,
+    )
+}
+
+/// The corrupted-zone mask image: one pixel per cell, red channel high when
+/// the cell sits in corruption — the neon shader's glitch pass reads it.
+fn build_zone_mask(zones: &CorruptedZones, width: u32, height: u32) -> Image {
+    let mut data = Vec::with_capacity((width * height * 4) as usize);
+    for y in 0..height {
+        for x in 0..width {
+            let on = if zones.0.contains(&(x, y)) { 255u8 } else { 0 };
+            data.extend_from_slice(&[on, 0, 0, 255]);
+        }
+    }
+    Image::new(
+        Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+    )
+}
+
+/// A tiny procedural noise atlas for the corruption overlay: green-tinted
+/// random static the overlay shader animates. One tile, deterministic per
+/// seed.
+fn build_corruption_atlas(tile_size: f32, seed: u64) -> Image {
+    let tile_px = tile_size as u32;
+    let mut rng = SmallRng::seed_from_u64(seed);
+    let mut data = Vec::with_capacity((tile_px * tile_px * 4) as usize);
+    for _ in 0..tile_px * tile_px {
+        let green = rng.random_range(60..200);
+        data.extend_from_slice(&[
+            rng.random_range(0..40),
+            green,
+            rng.random_range(40..120),
+            255,
+        ]);
+    }
+    Image::new(
+        Extent3d {
+            width: tile_px,
+            height: tile_px,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
     )
 }
 

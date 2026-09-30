@@ -8,6 +8,7 @@
 
 pub mod bridge;
 pub mod combat;
+pub mod corruption;
 pub mod drops;
 pub mod enemies;
 pub mod hud;
@@ -54,6 +55,7 @@ pub fn run() {
             skills::SkillsPlugin,
             hud::HudPlugin,
             shield_fx::ShieldFxPlugin,
+            corruption::CorruptionPlugin,
         ))
         .add_systems(Startup, player::setup)
         .add_systems(Update, player::camera_follow)
