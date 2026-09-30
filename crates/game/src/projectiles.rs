@@ -17,7 +17,9 @@ use bevy::prelude::*;
 use crate::bridge::{BridgeTx, GameAudioEvent};
 use crate::combat::{ComboState, PlayerShield, PlayerVitals, SHIELD_RADIUS, damage_player};
 use crate::enemies::{Health, Shield, absorb_damage, kill_enemy};
-use crate::skills::{AbilityUnlocks, GameState, SkillLevels, cleave_damage, grenade_damage};
+use crate::skills::{
+    AbilityUnlocks, CloakState, GameState, SkillLevels, cleave_damage, grenade_damage,
+};
 use crate::world::{
     LAYER_ENEMY, LAYER_ENEMY_SHOT, LAYER_GRENADE, LAYER_PLAYER, LAYER_PLAYER_SHOT, LAYER_WALL,
     TILE_SIZE,
@@ -458,6 +460,7 @@ fn grenade_throw(
     input: Res<ButtonInput<KeyCode>>,
     unlocks: Res<AbilityUnlocks>,
     mut cooldown: ResMut<GrenadeCooldown>,
+    mut cloak: ResMut<CloakState>,
     time: Res<Time>,
     window: Single<&Window>,
     camera: Single<(&Camera, &GlobalTransform), With<Camera2d>>,
@@ -475,6 +478,7 @@ fn grenade_throw(
             return;
         }
         cooldown.0.reset();
+        cloak.end(); // lobbing gives the player away
         commands.spawn((
             Grenade {
                 bounces: GRENADE_BOUNCES,

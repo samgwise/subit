@@ -76,6 +76,8 @@ pub enum GameEvent {
     GrenadeBlast,
     /// The player fired a nova burst — deeper, wider boom.
     Nova,
+    /// The player engaged the cloak — soft descending breath.
+    Cloak,
     /// The player descended to the next depth — deep transition tone.
     Descent,
 }
@@ -145,6 +147,12 @@ pub fn perform_event(event: GameEvent) -> NoteEvent {
             note: 38,
             velocity: 127,
             duration_secs: 0.45,
+        },
+        GameEvent::Cloak => NoteEvent {
+            channel: 0,
+            note: 67,
+            velocity: 75,
+            duration_secs: 0.3,
         },
         GameEvent::Descent => NoteEvent {
             channel: 0,

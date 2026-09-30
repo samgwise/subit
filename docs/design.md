@@ -79,6 +79,15 @@ depth, where the mob grows and the run continues with all progression intact.
   shields. Regrows one plate per 2.5 s without damage; shown as a violet
   HUD bar and a violet energy dome (slightly wider than the reflect dome)
   while owned with plates remaining.
+- Cloak (unlock: 5 points, C): toggling C engages it for up to its
+  duration (3 s, +1 s per point, cap 4) — the enemy notice range shrinks
+  to 6 path steps while it is up; the sneak skill tightens it by a step
+  per point (cap 4, two at max). C again drops it early. The cloak doubles
+  as an escape: alerted enemies stand down once you're beyond the sneak
+  range, and re-homing mills them where they lost you. The player's sprite
+  dims to a slow shimmer while cloaked; attacking (cleave, nova, grenade)
+  ends it too — dashing doesn't. The 10 s cooldown starts when the cloak
+  drops.
 - Death: respawn at the map spawn with full HP; the combo resets.
 
 ## Combat
@@ -93,8 +102,10 @@ depth, where the mob grows and the run continues with all progression intact.
 - **Combo:** kills within 2 s of the previous kill chain (+1 each); the chain
   resets to 1 on the next kill after the window lapses. The chain lifts the
   mob-sweep performance intensity.
-- **Shield (right mouse):** 0.6 s active, 3 s cooldown (−0.25 s per skill
-  point, floor 1 s). While up: contact damage is blocked and any enemy
+- **Shield (right mouse):** toggles up for at most 0.6 s (the duration
+  skill adds +0.15 s per point), a second click drops it early, and the
+  3 s cooldown (−0.25 s per skill point, floor 1 s) starts the moment it's
+  down. While up: contact damage is blocked and any enemy
   projectile inside the ring (1.2-tile radius — the cyan dome drawn around
   the player is the real catch zone) is caught and reflected along the
   cursor with a fresh bounce budget. Reflected shots turn cyan, become
@@ -217,6 +228,7 @@ until the hub clock protocol lands); telemetry bypasses quantisation.
 || Nova: damage / radius / cooldown / unlock cost | 150 / 2.5 tiles / 6 s / 4 pts |
 || Deflect volley: extra shots / unlock cost | 2 / 5 pts |
 || Aggro: notice range / stand-down range / wander speed / leash | 8 steps / 10 / 30 u/s / 1.5 tiles |
+|| Cloak: unlock / sneak per point (floor) / duration per point (cap) / cooldown | 5 pts / −1 step (2) / +1 s (cap 4) / 10 s |
 | Combo window | 2 s |
 | Shield: active / cooldown / ring | 0.6 s / 3 s (−0.25/pt, floor 1 s) / 1.2 tiles |
 | Dash: speed / duration / cooldown / unlock cost | 600 u/s / 0.15 s / 2 s / 2 pts |

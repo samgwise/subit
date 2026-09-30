@@ -258,13 +258,14 @@ struct Wander {
 
 /// Whether an enemy's aggro should flip at `steps` path steps from the
 /// player (the BFS distance around the walls): `Some(true)` to alert,
-/// `Some(false)` to stand down, `None` to hold — the band between the two
-/// ranges is hysteresis. No path at all means stand down: the player is
-/// somewhere the enemy can never reach.
-fn aggro_flip(aggroed: bool, steps: Option<u32>) -> Option<bool> {
+/// `Some(false)` to stand down, `None` to hold — the band between the
+/// notice range and the stand-down range is hysteresis. No path at all
+/// means stand down: the player is somewhere the enemy can never reach.
+/// `notice` is the range that counts — the cloak shrinks it (the sneak).
+fn aggro_flip(aggroed: bool, steps: Option<u32>, notice: u32) -> Option<bool> {
     match (aggroed, steps) {
-        (false, Some(steps)) if steps <= AGGRO_RANGE_STEPS => Some(true),
-        (true, Some(steps)) if steps > AGGRO_RANGE_STEPS + DEAGGRO_EXTRA_STEPS => Some(false),
+        (false, Some(steps)) if steps <= notice => Some(true),
+        (true, Some(steps)) if steps > notice + DEAGGRO_EXTRA_STEPS => Some(false),
         (true, None) => Some(false),
         _ => None,
     }
@@ -442,12 +443,22 @@ fn aggro_gate(
     map: Res<crate::world::WorldMapRes>,
     config: Res<MapConfig>,
     flow: Res<crate::world::PlayerFlow>,
+    cloak: Res<crate::skills::CloakState>,
+    levels: Res<crate::skills::SkillLevels>,
     mut enemies: Query<(Entity, &Position, Has<Aggro>, &mut Wander), With<Enemy>>,
 ) {
     let (width, height) = (map.map.grid.width(), map.map.grid.height());
+    // A cloaked player is only noticed at the sneak range — both for waking
+    // enemies up and for standing them down (the cloak doubles as an
+    // escape: walk away, and pursuers lose the thread).
+    let notice = if cloak.is_active() {
+        crate::skills::cloak_sneak_steps(&levels)
+    } else {
+        AGGRO_RANGE_STEPS
+    };
     for (entity, pos, aggroed, mut wander) in &mut enemies {
         let units = tile_units((width, height), config.tile_size, pos.0);
-        match aggro_flip(aggroed, flow.field.steps((units.x, units.y))) {
+        match aggro_flip(aggroed, flow.field.steps((units.x, units.y)), notice) {
             Some(true) => {
                 if let Ok(mut entity_commands) = commands.get_entity(entity) {
                     entity_commands.insert(Aggro);
@@ -818,28 +829,55 @@ mod tests {
 
     #[test]
     fn aggro_flips_on_approach_and_escape_with_hysteresis() {
-        // Un-alerted enemies wake within the aggro path range...
-        assert_eq!(aggro_flip(false, Some(AGGRO_RANGE_STEPS)), Some(true));
+        let notice = AGGRO_RANGE_STEPS;
+        // Un-alerted enemies wake within the notice range...
+        assert_eq!(aggro_flip(false, Some(notice), notice), Some(true));
         // ...but hold their state in the hysteresis band: an un-alerted
         // enemy between the ranges stays calm, an alerted one stays angry.
-        let between = Some(AGGRO_RANGE_STEPS + 1);
-        assert_eq!(aggro_flip(false, between), None);
-        assert_eq!(aggro_flip(true, between), None);
-        // Alerted enemies stand down only past the de-aggro range.
+        let between = Some(notice + 1);
+        assert_eq!(aggro_flip(false, between, notice), None);
+        assert_eq!(aggro_flip(true, between, notice), None);
+        // Alerted enemies stand down only past the stand-down range.
         assert_eq!(
-            aggro_flip(true, Some(AGGRO_RANGE_STEPS + DEAGGRO_EXTRA_STEPS + 1)),
+            aggro_flip(true, Some(notice + DEAGGRO_EXTRA_STEPS + 1), notice),
             Some(false)
         );
-        // Boundary: the aggro edge is inclusive, the de-aggro edge is not —
-        // exactly at the escape range the pursuit holds.
+        // Boundary: the aggro edge is inclusive, the stand-down edge is not
+        // — exactly at the escape range the pursuit holds.
         assert_eq!(
-            aggro_flip(true, Some(AGGRO_RANGE_STEPS + DEAGGRO_EXTRA_STEPS)),
+            aggro_flip(true, Some(notice + DEAGGRO_EXTRA_STEPS), notice),
             None
         );
         // No path to the player at all: stand down rather than chase
         // forever.
-        assert_eq!(aggro_flip(true, None), Some(false));
-        assert_eq!(aggro_flip(false, None), None);
+        assert_eq!(aggro_flip(true, None, notice), Some(false));
+        assert_eq!(aggro_flip(false, None, notice), None);
+    }
+
+    #[test]
+    fn the_cloak_shrinks_the_notice_range() {
+        // Uncloaked: the standard range. Cloaked: the sneak range — an
+        // enemy 4 steps away stays dormant while cloaked (the standard
+        // range would have woken it), and an alerted one stands down there.
+        assert_eq!(aggro_flip(false, Some(4), AGGRO_RANGE_STEPS), Some(true));
+        let sneak = crate::skills::cloak_sneak_steps(&crate::skills::SkillLevels {
+            cloak: 0,
+            ..Default::default()
+        });
+        assert_eq!(sneak, 6);
+        // A 6-step notice still wakes a 5-step enemy...
+        assert_eq!(aggro_flip(false, Some(5), sneak), Some(true));
+        // ...but a 7-step one stays dormant (hysteresis band).
+        assert_eq!(aggro_flip(false, Some(7), sneak), None);
+        assert_eq!(aggro_flip(true, Some(4), sneak), None);
+        // Maxed sneak: two steps.
+        let sneak = crate::skills::cloak_sneak_steps(&crate::skills::SkillLevels {
+            cloak: crate::skills::CLOAK_SNEAK_CAP,
+            ..Default::default()
+        });
+        assert_eq!(sneak, 2);
+        assert_eq!(aggro_flip(false, Some(2), sneak), Some(true));
+        assert_eq!(aggro_flip(false, Some(3), sneak), None);
     }
 
     #[test]

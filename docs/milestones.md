@@ -145,3 +145,16 @@ nobody flickers at the boundary — while un-alerted enemies mill slowly
 around home on a short leash, never pursuing or opening fire. Depths now
 open calm and the mob engages as the player reaches it, and standing down
 re-homes the wanderer where it lost the player.
+
+## Milestone 16 — Cloak
+
+A stealth ability in the reflector's shape: the cloak unlock (5 points,
+key C) shrinks the enemy notice range to six path steps while it is up,
+the sneak skill tightens it by a step per point (cap 4 — two at max) and
+the duration skill adds a second per point (cap 4, from three seconds);
+the cooldown is a flat ten. The cloak works both ways — un-alerted
+enemies don't notice you until you're inside the sneak range, and alerted
+ones stand down once you escape it, re-homing where they lost you.
+Attacking (cleave, nova, grenade) breaks the cloak; dashing doesn't. The
+player's sprite dims to a slow shimmer while cloaked, and a soft cloak
+event plays through the audio chain.

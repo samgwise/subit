@@ -29,6 +29,8 @@ pub struct SkillLevels {
     pub vitality: u32,
     pub dash: u32,
     pub grenade: u32,
+    pub cloak: u32,
+    pub cloak_duration: u32,
 }
 
 /// Purchased ability unlocks.
@@ -39,6 +41,7 @@ pub struct AbilityUnlocks {
     pub barrier: bool,
     pub nova: bool,
     pub deflect_volley: bool,
+    pub cloak: bool,
 }
 
 // --- Skill parameters -----------------------------------------------------
@@ -128,6 +131,31 @@ pub fn max_hp_for(levels: &SkillLevels) -> i32 {
     BASE_MAX_HP + VITALITY_HP_PER_POINT * levels.vitality as i32
 }
 
+/// Cloak duration before upgrades.
+const CLOAK_DURATION_BASE: f32 = 3.0;
+/// Duration added per purchased point.
+const CLOAK_DURATION_PER_POINT: f32 = 1.0;
+
+/// Current cloak duration in seconds.
+pub fn cloak_duration_secs(levels: &SkillLevels) -> f32 {
+    CLOAK_DURATION_BASE + CLOAK_DURATION_PER_POINT * levels.cloak_duration as f32
+}
+
+/// The enemy notice range while cloaked, before the sneak skill: six path
+/// steps (down from eight).
+const CLOAK_SNEAK_BASE_STEPS: u32 = 6;
+/// Steps removed per purchased sneak point — two at the cap.
+const CLOAK_SNEAK_PER_POINT: u32 = 1;
+/// The notice range never drops below this.
+const CLOAK_SNEAK_MIN_STEPS: u32 = 2;
+
+/// Current enemy notice range while cloaked, in path steps.
+pub fn cloak_sneak_steps(levels: &SkillLevels) -> u32 {
+    CLOAK_SNEAK_BASE_STEPS
+        .saturating_sub(CLOAK_SNEAK_PER_POINT * levels.cloak)
+        .max(CLOAK_SNEAK_MIN_STEPS)
+}
+
 // --- Caps ------------------------------------------------------------------
 
 /// Purchase caps for the repeatable skills that have them: the cooldown
@@ -138,6 +166,8 @@ pub const SHIELD_LEVEL_CAP: u32 = 4;
 pub const SHIELD_DURATION_CAP: u32 = 4;
 pub const DASH_LEVEL_CAP: u32 = 4;
 pub const GRENADE_LEVEL_CAP: u32 = 6;
+pub const CLOAK_SNEAK_CAP: u32 = 4;
+pub const CLOAK_DURATION_CAP: u32 = 4;
 
 // --- Costs -----------------------------------------------------------------
 
@@ -147,6 +177,7 @@ pub const GRENADE_UNLOCK_COST: u32 = 3;
 pub const BARRIER_UNLOCK_COST: u32 = 3;
 pub const NOVA_UNLOCK_COST: u32 = 4;
 pub const VOLLEY_UNLOCK_COST: u32 = 5;
+pub const CLOAK_UNLOCK_COST: u32 = 5;
 
 // --- Dash state (the ability itself lives with movement) -------------------
 
@@ -171,7 +202,56 @@ pub const DASH_SPEED: f32 = 600.0;
 /// Seconds of dash travel.
 pub const DASH_SECS: f32 = 0.15;
 
+/// Cloak ability state, shared between the trigger, the break-on-attack
+/// hooks and the aggro gate. While active, enemies evaluate their aggro
+/// with the sneak range instead of the standard one.
+#[derive(Resource, Debug)]
+pub struct CloakState {
+    pub active: Timer,
+    pub cooldown: Timer,
+}
+
+impl CloakState {
+    /// True while the cloak is up.
+    pub fn is_active(&self) -> bool {
+        !self.active.is_finished()
+    }
+
+    /// Engage the cloak — it stays up until ended or its duration runs
+    /// out.
+    pub fn engage(&mut self) {
+        self.active.reset();
+    }
+
+    /// End the cloak now — a manual toggle-off or an attack giving the
+    /// player away. The down state begins, and with it the cooldown. The
+    /// active timer is finished with a tick (its `finished` flag only
+    /// updates on ticks, never on `set_elapsed`).
+    pub fn end(&mut self) {
+        self.active.tick(self.active.duration());
+        self.cooldown.reset();
+    }
+
+    /// Re-derive the duration after a menu purchase.
+    pub fn set_duration_secs(&mut self, secs: f32) {
+        self.active
+            .set_duration(Duration::from_secs_f64(secs as f64));
+    }
+}
+
+/// Seconds between cloak activations (flat — no reduction skill).
+pub const CLOAK_COOLDOWN_SECS: f32 = 10.0;
+
 pub struct SkillsPlugin;
+
+/// A once-off timer that starts already expired (no grace period): a fresh
+/// Bevy timer reports unfinished, which would boot abilities in their
+/// active/cooldown state.
+fn expired(secs: f32) -> Timer {
+    let mut timer = Timer::from_seconds(secs, TimerMode::Once);
+    timer.tick(Duration::from_secs_f64(secs as f64 + 1.0));
+    timer
+}
 
 impl Plugin for SkillsPlugin {
     fn build(&self, app: &mut App) {
@@ -179,9 +259,13 @@ impl Plugin for SkillsPlugin {
             .init_resource::<SkillLevels>()
             .init_resource::<AbilityUnlocks>()
             .insert_resource(DashState {
-                active: Timer::from_seconds(DASH_SECS, TimerMode::Once),
-                cooldown: Timer::from_seconds(DASH_COOLDOWN_BASE, TimerMode::Once),
+                active: expired(DASH_SECS),
+                cooldown: expired(DASH_COOLDOWN_BASE),
                 dir: Vec2::ZERO,
+            })
+            .insert_resource(CloakState {
+                active: expired(CLOAK_DURATION_BASE),
+                cooldown: expired(CLOAK_COOLDOWN_SECS),
             })
             .add_systems(Startup, spawn_menu)
             .add_systems(Update, (toggle_menu, refresh_menu, handle_purchases));
@@ -220,6 +304,9 @@ enum SkillRow {
     Nova,
     DeflectVolley,
     Barrier,
+    Cloak,
+    CloakSneak,
+    CloakDuration,
 }
 
 /// Menu text for a levelled row: effect, level out of the cap, and either
@@ -267,6 +354,13 @@ impl SkillRow {
             SkillRow::Nova => (!unlocks.nova).then_some(NOVA_UNLOCK_COST),
             SkillRow::DeflectVolley => (!unlocks.deflect_volley).then_some(VOLLEY_UNLOCK_COST),
             SkillRow::Barrier => (!unlocks.barrier).then_some(BARRIER_UNLOCK_COST),
+            SkillRow::Cloak => (!unlocks.cloak).then_some(CLOAK_UNLOCK_COST),
+            SkillRow::CloakSneak => {
+                (unlocks.cloak && levels.cloak < CLOAK_SNEAK_CAP).then_some(SKILL_COST)
+            }
+            SkillRow::CloakDuration => {
+                (unlocks.cloak && levels.cloak_duration < CLOAK_DURATION_CAP).then_some(SKILL_COST)
+            }
         }
     }
 
@@ -348,12 +442,32 @@ impl SkillRow {
             SkillRow::Barrier => {
                 unlock_label("barrier", None, unlocks.barrier, BARRIER_UNLOCK_COST)
             }
+            SkillRow::Cloak => unlock_label("cloak", Some("C"), unlocks.cloak, CLOAK_UNLOCK_COST),
+            SkillRow::CloakSneak => {
+                if !unlocks.cloak {
+                    "Cloak sneak −1 step  (needs cloak)".to_string()
+                } else {
+                    levelled_label("Cloak sneak", "−1 step", levels.cloak, CLOAK_SNEAK_CAP)
+                }
+            }
+            SkillRow::CloakDuration => {
+                if !unlocks.cloak {
+                    "Cloak duration +1s  (needs cloak)".to_string()
+                } else {
+                    levelled_label(
+                        "Cloak duration",
+                        &format!("+{CLOAK_DURATION_PER_POINT}s"),
+                        levels.cloak_duration,
+                        CLOAK_DURATION_CAP,
+                    )
+                }
+            }
         }
     }
 }
 
 /// The menu's rows in display order: upgrades first, then the unlocks.
-const MENU_ROWS: [SkillRow; 12] = [
+const MENU_ROWS: [SkillRow; 15] = [
     SkillRow::Cleave,
     SkillRow::CleaveReach,
     SkillRow::Shield,
@@ -361,11 +475,14 @@ const MENU_ROWS: [SkillRow; 12] = [
     SkillRow::Vitality,
     SkillRow::DashCooldown,
     SkillRow::GrenadeDamage,
+    SkillRow::CloakSneak,
+    SkillRow::CloakDuration,
     SkillRow::Dash,
     SkillRow::Grenade,
     SkillRow::Nova,
     SkillRow::DeflectVolley,
     SkillRow::Barrier,
+    SkillRow::Cloak,
 ];
 
 fn spawn_menu(mut commands: Commands) {
@@ -426,6 +543,7 @@ fn handle_purchases(
     mut unlocks: ResMut<AbilityUnlocks>,
     mut shield: ResMut<PlayerShield>,
     mut dash: ResMut<DashState>,
+    mut cloak: ResMut<CloakState>,
     mut vitals: ResMut<crate::combat::PlayerVitals>,
     mut barrier: ResMut<Barrier>,
 ) {
@@ -510,6 +628,26 @@ fn handle_purchases(
                 // The purchase fills the pool; regen keeps it topped up.
                 barrier.plates = BARRIER_PLATES;
                 tracing::info!("unlocked barrier");
+            }
+            SkillRow::Cloak => {
+                points.0 -= CLOAK_UNLOCK_COST;
+                unlocks.cloak = true;
+                tracing::info!("unlocked cloak");
+            }
+            SkillRow::CloakSneak => {
+                points.0 -= SKILL_COST;
+                levels.cloak += 1;
+                tracing::info!(cloak = levels.cloak, "purchased cloak sneak");
+            }
+            SkillRow::CloakDuration => {
+                points.0 -= SKILL_COST;
+                levels.cloak_duration += 1;
+                // Apply immediately: lengthen the live active timer.
+                cloak.set_duration_secs(cloak_duration_secs(&levels));
+                tracing::info!(
+                    cloak_duration = levels.cloak_duration,
+                    "purchased cloak duration"
+                );
             }
         }
     }
@@ -612,6 +750,42 @@ mod tests {
         assert_eq!(grenade_damage(&levels), 200);
         levels.grenade = 6;
         assert_eq!(grenade_damage(&levels), 500);
+    }
+
+    #[test]
+    fn cloak_toggles_and_the_cooldown_starts_at_the_drop() {
+        let mut cloak = CloakState {
+            active: expired(CLOAK_DURATION_BASE),
+            cooldown: expired(CLOAK_COOLDOWN_SECS),
+        };
+        assert!(!cloak.is_active());
+        cloak.engage();
+        assert!(cloak.is_active());
+        // Ending it (toggle-off or an attack) starts the wait.
+        cloak.end();
+        assert!(!cloak.is_active());
+        assert!(!cloak.cooldown.is_finished());
+        cloak
+            .cooldown
+            .tick(Duration::from_secs_f64(CLOAK_COOLDOWN_SECS as f64 + 0.01));
+        assert!(cloak.cooldown.is_finished());
+    }
+
+    #[test]
+    fn cloak_duration_grows_and_sneak_tightens_to_two_steps() {
+        let mut levels = SkillLevels::default();
+        assert!((cloak_duration_secs(&levels) - 3.0).abs() < 1e-5);
+        levels.cloak_duration = 4;
+        assert!((cloak_duration_secs(&levels) - 7.0).abs() < 1e-5);
+
+        assert_eq!(cloak_sneak_steps(&levels), 6);
+        levels.cloak = 2;
+        assert_eq!(cloak_sneak_steps(&levels), 4);
+        levels.cloak = CLOAK_SNEAK_CAP;
+        assert_eq!(cloak_sneak_steps(&levels), 2);
+        // Past the cap the floor holds.
+        levels.cloak = 100;
+        assert_eq!(cloak_sneak_steps(&levels), 2);
     }
 
     #[test]

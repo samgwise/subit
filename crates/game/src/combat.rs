@@ -12,7 +12,7 @@ use bevy::prelude::*;
 
 use crate::bridge::{BridgeTx, GameAudioEvent};
 use crate::enemies::{Enemy, Health, Shield, Thrower, absorb_damage, kill_enemy, regrow_plate};
-use crate::skills::{DashState, cleave_damage, cleave_half_angle, cleave_radius};
+use crate::skills::{CloakState, DashState, cleave_damage, cleave_half_angle, cleave_radius};
 use crate::world::{MapConfig, SpawnPoint, TILE_SIZE, WorldMapRes, tile_units};
 use wfc::line_of_sight;
 
@@ -108,6 +108,22 @@ impl PlayerShield {
     /// True while the shield is up (blocking damage, reflecting shots).
     pub fn is_active(&self) -> bool {
         !self.active.is_finished()
+    }
+
+    /// Raise the shield — it stays up until dropped or its duration runs
+    /// out.
+    pub fn raise(&mut self) {
+        self.active.reset();
+    }
+
+    /// Drop the shield: the down state begins, and with it the cooldown —
+    /// dropping early (a manual toggle-off or the duration expiring) starts
+    /// the re-raise wait immediately. The active timer is finished with a
+    /// tick (its `finished` flag only updates on ticks, never on
+    /// `set_elapsed`).
+    pub fn lower(&mut self) {
+        self.active.tick(self.active.duration());
+        self.cooldown.reset();
     }
 
     /// Re-derive the cooldown timer after a menu purchase.
@@ -214,8 +230,10 @@ impl Plugin for CombatPlugin {
                 update_shield,
                 nova_trigger,
                 nova_fx,
+                cloak_trigger,
                 dash_trigger,
                 player_vitals_fx,
+                cloak_fx.after(player_vitals_fx),
                 barrier_regen,
                 contact_damage,
                 player_speed_telemetry,
@@ -258,6 +276,7 @@ fn player_attack(
     mut cooldown: ResMut<CleaveCooldown>,
     mut combo: ResMut<ComboState>,
     mut fx: ResMut<CleaveFx>,
+    mut cloak: ResMut<CloakState>,
     bridge: Res<BridgeTx>,
     time: Res<Time>,
     mouse: Res<ButtonInput<MouseButton>>,
@@ -294,6 +313,7 @@ fn player_attack(
         let aim = cursor_world - origin;
 
         cooldown.0.reset();
+        cloak.end(); // swinging gives the player away
         bridge.send(GameAudioEvent::AttackPrimary);
         *fx = CleaveFx(Some(CleaveFxActive {
             origin,
@@ -448,18 +468,70 @@ fn player_vitals_fx(
     }
 }
 
-/// Raise the shield on right-mouse while off cooldown. While it is up the
-/// reflect dome (spawned and toggled by shield_fx) shows the reach.
+/// Right-mouse toggles the shield: click up (it stays up for at most the
+/// duration skill's window), click again to drop it early — the cooldown
+/// starts the moment it's down. While it is up the reflect dome (spawned
+/// and toggled by shield_fx) shows the reach.
 fn update_shield(
     time: Res<Time>,
     mouse: Res<ButtonInput<MouseButton>>,
     mut shield: ResMut<PlayerShield>,
 ) {
-    shield.active.tick(time.delta());
-    shield.cooldown.tick(time.delta());
-    if mouse.just_pressed(MouseButton::Right) && shield.cooldown.is_finished() {
-        shield.active.reset();
-        shield.cooldown.reset();
+    if shield.is_active() {
+        shield.active.tick(time.delta());
+        // A second click drops it early; the duration ends it regardless —
+        // either way the cooldown begins now.
+        if shield.active.is_finished() || mouse.just_pressed(MouseButton::Right) {
+            shield.lower();
+        }
+    } else {
+        shield.cooldown.tick(time.delta());
+        if mouse.just_pressed(MouseButton::Right) && shield.cooldown.is_finished() {
+            shield.raise();
+        }
+    }
+}
+
+/// C toggles the cloak: engage while off cooldown (enemies then evaluate
+/// their aggro with the sneak range — see the aggro gate — and the
+/// player's sprite dims), press again to drop it early. The duration ends
+/// it regardless, and the cooldown starts the moment it's down. Attacking
+/// breaks it too.
+fn cloak_trigger(
+    input: Res<ButtonInput<KeyCode>>,
+    unlocks: Res<crate::skills::AbilityUnlocks>,
+    mut cloak: ResMut<CloakState>,
+    time: Res<Time>,
+    bridge: Res<BridgeTx>,
+) {
+    if cloak.is_active() {
+        cloak.active.tick(time.delta());
+        if cloak.active.is_finished() || input.just_pressed(KeyCode::KeyC) {
+            cloak.end();
+        }
+        return;
+    }
+    cloak.cooldown.tick(time.delta());
+    if !input.just_pressed(KeyCode::KeyC) || !unlocks.cloak || !cloak.cooldown.is_finished() {
+        return;
+    }
+    cloak.engage();
+    bridge.send(GameAudioEvent::Cloak);
+    tracing::info!("cloak engaged");
+}
+
+/// Dim the player's sprite while cloaked — a slow shimmer over the resting
+/// tint. Runs after the vitals blink so the cloak look wins while active.
+fn cloak_fx(
+    cloak: Res<CloakState>,
+    time: Res<Time>,
+    mut player: Single<&mut Sprite, With<crate::Player>>,
+) {
+    if cloak.is_active() {
+        let alpha = 0.3 + 0.08 * (time.elapsed_secs() * 6.0).sin();
+        let mut colour = crate::PLAYER_COLOUR;
+        colour.set_alpha(alpha);
+        player.color = colour;
     }
 }
 
@@ -472,6 +544,7 @@ fn nova_trigger(
     input: Res<ButtonInput<KeyCode>>,
     unlocks: Res<crate::skills::AbilityUnlocks>,
     mut nova: ResMut<NovaState>,
+    mut cloak: ResMut<CloakState>,
     time: Res<Time>,
     player: Single<&Position, With<crate::Player>>,
     mut enemies: Query<
@@ -494,6 +567,7 @@ fn nova_trigger(
         return;
     }
     nova.0.reset();
+    cloak.end(); // bursting gives the player away
     bridge.send(GameAudioEvent::Nova);
     *fx = NovaFx(Some((
         player.0,
@@ -820,7 +894,7 @@ mod tests {
     }
 
     #[test]
-    fn shield_blocks_and_then_recovers() {
+    fn shield_toggles_up_and_the_cooldown_starts_at_the_drop() {
         let mut shield = PlayerShield {
             active: expired(SHIELD_ACTIVE_SECS),
             cooldown: expired(SHIELD_COOLDOWN_SECS),
@@ -828,19 +902,31 @@ mod tests {
         // Fresh state: shield down, cooldown ready.
         assert!(!shield.is_active());
         assert!(shield.cooldown.is_finished());
-        // Raise: active, and stays active through the window.
-        shield.active.reset();
-        shield.cooldown.reset();
+        // Raise: up, and stays up while the duration runs.
+        shield.raise();
         assert!(shield.is_active());
         shield
             .active
-            .tick(Duration::from_secs_f64(SHIELD_ACTIVE_SECS as f64 + 0.01));
+            .tick(Duration::from_secs_f64(SHIELD_ACTIVE_SECS as f64 * 0.5));
+        assert!(shield.is_active());
+        // The duration ends it; the cooldown begins at the drop.
+        shield
+            .active
+            .tick(Duration::from_secs_f64(SHIELD_ACTIVE_SECS as f64 * 0.6));
+        shield.lower();
         assert!(!shield.is_active());
-        // Cooldown still running: not ready again.
+        assert!(!shield.cooldown.is_finished());
+        // Ready again once the cooldown runs out.
         shield
             .cooldown
             .tick(Duration::from_secs_f64(SHIELD_COOLDOWN_SECS as f64 + 0.01));
         assert!(shield.cooldown.is_finished());
+        shield.raise();
+        assert!(shield.is_active());
+        // An early toggle-off drops it and still starts the wait.
+        shield.lower();
+        assert!(!shield.is_active());
+        assert!(!shield.cooldown.is_finished());
     }
 
     #[test]

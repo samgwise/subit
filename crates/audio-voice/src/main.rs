@@ -129,6 +129,7 @@ fn parse_event(payload: &BTreeMap<String, Value>) -> Option<GameEvent> {
         "dash" => Some(GameEvent::Dash),
         "grenade_blast" => Some(GameEvent::GrenadeBlast),
         "nova" => Some(GameEvent::Nova),
+        "cloak" => Some(GameEvent::Cloak),
         "descent" => Some(GameEvent::Descent),
         _ => None,
     }
