@@ -172,3 +172,30 @@ ones stand down once you escape it, re-homing where they lost you.
 Attacking (cleave, nova, grenade) breaks the cloak; dashing doesn't. The
 player's sprite dims to a slow shimmer while cloaked, and a soft cloak
 event plays through the audio chain.
+
+## Milestone 18 — Destructible cracked walls
+
+Roughly 18% of the *eligible* wall tiles are now cracked — a
+deterministic per-seed pass after generation, so the same seed always
+cracks the same walls (the solver never knows, and the sealed border
+never cracks). Eligibility is thinness — walkable on one full axis — so
+every crack reads as a passable door along its thin side, and a phasing
+dash can never end embedded in a thick wall. They render with 16 new
+cracked atlas variants (the same lit autotile edges plus baked fracture
+lines, pulsing like walls in the neon shader) and sit on their own small
+compound collider — the solid-wall body keeps its original shape
+untouched. They come down two ways. The dash phases through them
+silently: the player's collision filter drops the cracked layer mid-dash
+and restores it the frame the dash ends — nothing destroyed, no shortcut
+left behind. The phase only arms when the dash rests on walkable ground
+(the dash line is marched quarter-tile by quarter-tile: cracks pass,
+solid walls stop the travel) — a crack that backs onto more wall bonks
+like any wall instead of re-hardening around the player and wedging
+them. The grenade blast destroys them loudly: the tile becomes an open
+floor (tinted from the depth's stored integrity), the surviving walls'
+autotile masks recompute around the hole, the cracked compound rebuilds
+(vanishing when the last one goes — parry rejects empty compounds), and
+the flow field rebuilds through the new route. The blast is loud too:
+every enemy within 10 tiles — euclidean, so sound passes through walls —
+is provoked into a forced ~10 s hunt that ignores the aggro hysteresis
+until it lapses.

@@ -14,15 +14,21 @@ use avian2d::prelude::{
 };
 use bevy::prelude::*;
 
+use bevy_ecs_tilemap::prelude::{MaterialTilemapHandle, TileStorage};
+
 use crate::bridge::{BridgeTx, GameAudioEvent};
 use crate::combat::{ComboState, PlayerShield, PlayerVitals, SHIELD_RADIUS, damage_player};
-use crate::enemies::{Health, Shield, absorb_damage, kill_enemy};
+use crate::enemies::{
+    Health, PROVOKED_SECS, Provoked, Shield, absorb_damage, kill_enemy, within_earshot,
+};
+use crate::neon_material::NeonTilemapMaterial;
 use crate::skills::{
     AbilityUnlocks, CloakState, GameState, SkillLevels, cleave_damage, grenade_damage,
 };
 use crate::world::{
-    LAYER_ENEMY, LAYER_ENEMY_SHOT, LAYER_GRENADE, LAYER_PLAYER, LAYER_PLAYER_SHOT, LAYER_WALL,
-    TILE_SIZE,
+    CrackedWallBody, CrackedWalls, LAYER_CRACKED_WALL, LAYER_ENEMY, LAYER_ENEMY_SHOT,
+    LAYER_GRENADE, LAYER_PLAYER, LAYER_PLAYER_SHOT, LAYER_WALL, TILE_SIZE, WorldMapRes,
+    destroy_cracked_walls,
 };
 
 /// Projectile travel speed in world units per second (~4 px/frame, so no
@@ -109,6 +115,7 @@ impl Plugin for ProjectilePlugin {
             TimerMode::Once,
         )))
         .init_resource::<BlastFx>()
+        .init_resource::<BlastQueue>()
         .add_systems(
             Update,
             (
@@ -116,6 +123,7 @@ impl Plugin for ProjectilePlugin {
                 shield_reflection,
                 grenade_throw,
                 grenade_detonate,
+                grenade_destruction.after(grenade_detonate),
                 projectile_lifetime,
             )
                 .run_if(in_state(GameState::Playing)),
@@ -123,15 +131,23 @@ impl Plugin for ProjectilePlugin {
     }
 }
 
-/// The collision layer set for an allegiance.
+/// Grenade blasts awaiting the cracked-wall destruction pass (consumed by
+/// `grenade_destruction`, ordered after the detonation).
+#[derive(Resource, Debug, Default)]
+struct BlastQueue(Vec<Vec2>);
+
+/// The collision layer set for an allegiance: cracked walls block like
+/// walls — shots bounce off them without destroying anything.
 fn layers_for(allegiance: ProjectileAllegiance) -> CollisionLayers {
     match allegiance {
-        ProjectileAllegiance::Enemy => {
-            CollisionLayers::from_bits(LAYER_ENEMY_SHOT, LAYER_WALL | LAYER_PLAYER)
-        }
-        ProjectileAllegiance::Player => {
-            CollisionLayers::from_bits(LAYER_PLAYER_SHOT, LAYER_WALL | LAYER_ENEMY)
-        }
+        ProjectileAllegiance::Enemy => CollisionLayers::from_bits(
+            LAYER_ENEMY_SHOT,
+            LAYER_WALL | LAYER_CRACKED_WALL | LAYER_PLAYER,
+        ),
+        ProjectileAllegiance::Player => CollisionLayers::from_bits(
+            LAYER_PLAYER_SHOT,
+            LAYER_WALL | LAYER_CRACKED_WALL | LAYER_ENEMY,
+        ),
     }
 }
 
@@ -205,7 +221,8 @@ fn projectile_impacts(
         &mut Sprite,
         &mut Lifetime,
     )>,
-    walls: Query<(), With<crate::world::WallBody>>,
+    // Bounces count against solid and cracked walls alike.
+    walls: Query<(), Or<(With<crate::world::WallBody>, With<CrackedWallBody>)>>,
     player: Single<(Entity, &Position), With<crate::Player>>,
     mut enemies: Query<
         (
@@ -487,9 +504,9 @@ fn grenade_throw(
             Transform::from_xyz(player.0.x, player.0.y, 2.0),
             RigidBody::Dynamic,
             Collider::circle(4.0),
-            // Walls block the lob — it bounces off them — while everything
-            // else is ignored.
-            CollisionLayers::from_bits(LAYER_GRENADE, LAYER_WALL),
+            // Walls (solid or cracked) block the lob — it bounces off
+            // them — while everything else is ignored.
+            CollisionLayers::from_bits(LAYER_GRENADE, LAYER_WALL | LAYER_CRACKED_WALL),
             Restitution::new(1.0),
             Friction::ZERO,
             LinearVelocity(dir * GRENADE_SPEED),
@@ -512,7 +529,8 @@ fn grenade_detonate(
     time: Res<Time>,
     levels: Res<SkillLevels>,
     mut grenades: Query<(Entity, &Position, &mut Grenade, &mut Fuse)>,
-    walls: Query<(), With<crate::world::WallBody>>,
+    // Bounces count against solid and cracked walls alike.
+    walls: Query<(), Or<(With<crate::world::WallBody>, With<CrackedWallBody>)>>,
     mut enemies: Query<
         (
             Entity,
@@ -525,6 +543,7 @@ fn grenade_detonate(
     >,
     mut combo: ResMut<ComboState>,
     mut fx: ResMut<BlastFx>,
+    mut blasts: ResMut<BlastQueue>,
     bridge: Res<BridgeTx>,
     mut rng: ResMut<crate::drops::DropRng>,
     mut gizmos: Gizmos,
@@ -583,6 +602,22 @@ fn grenade_detonate(
         *fx = BlastFx(Some((centre, Timer::from_seconds(0.15, TimerMode::Once))));
         bridge.send(GameAudioEvent::GrenadeBlast);
 
+        // The blast is loud: every enemy within earshot — through walls —
+        // is provoked into a forced hunt (a fresh blast refreshes).
+        for (enemy_entity, pos, ..) in &mut enemies {
+            if within_earshot(centre, pos.0)
+                && let Ok(mut entity_commands) = commands.get_entity(enemy_entity)
+            {
+                entity_commands.insert(Provoked(Timer::from_seconds(
+                    PROVOKED_SECS,
+                    TimerMode::Once,
+                )));
+            }
+        }
+        // Cracked walls in the blast radius come down (the destruction
+        // pass runs after this system).
+        blasts.0.push(centre);
+
         let mut killed = 0usize;
         for (enemy_entity, pos, thrower, mut health, mut shield) in &mut enemies {
             if pos.0.distance(centre) > GRENADE_RADIUS {
@@ -619,6 +654,46 @@ fn grenade_detonate(
         tracing::info!(killed, "grenade detonated");
         if let Ok(mut entity_commands) = commands.get_entity(entity) {
             entity_commands.despawn();
+        }
+    }
+}
+
+/// Consume this frame's grenade blasts: cracked walls in the blast radius
+/// are destroyed (grid flip, tile retexture, neighbour masks, compound
+/// rebuild) and the map change propagates to the flow field.
+#[allow(clippy::type_complexity)]
+fn grenade_destruction(
+    mut commands: Commands,
+    mut blasts: ResMut<BlastQueue>,
+    mut map: ResMut<WorldMapRes>,
+    mut cracked: ResMut<CrackedWalls>,
+    config: Res<crate::world::MapConfig>,
+    mut tilemaps: Query<&mut TileStorage, With<MaterialTilemapHandle<NeonTilemapMaterial>>>,
+    mut cracked_bodies: Query<(Entity, &mut Collider), With<CrackedWallBody>>,
+) {
+    if blasts.0.is_empty() {
+        return;
+    }
+    let Ok(mut storage) = tilemaps.single_mut() else {
+        blasts.0.clear();
+        return;
+    };
+    for centre in std::mem::take(&mut blasts.0) {
+        for (body, mut collider) in &mut cracked_bodies {
+            let destroyed = destroy_cracked_walls(
+                &mut commands,
+                &mut map,
+                &mut cracked,
+                &mut storage,
+                body,
+                &mut collider,
+                centre,
+                GRENADE_RADIUS,
+                config.tile_size,
+            );
+            if !destroyed.is_empty() {
+                tracing::info!(?destroyed, "blast destroyed cracked walls");
+            }
         }
     }
 }

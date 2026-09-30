@@ -13,9 +13,11 @@ generative audio.
 
 - `crates/game` — Bevy client: WFC-generated tilemap with physics, WASD player
   with HP and respawn, enemy swarm (chasers and throwers), mouse-aimed cleave,
-  shield reflection, dash and grenade abilities, XP/level progression with a
-  pause-and-spend skills menu, and the Ensemble bridge publishing combat
-  events and telemetry to the hub.
+  shield reflection, dash and grenade abilities, destructible cracked walls
+  (the dash phases through them, the grenade blasts them open — and wakes
+  the neighbourhood), XP/level progression with a pause-and-spend skills
+  menu, and the Ensemble bridge publishing combat events and telemetry to
+  the hub.
 - `crates/wfc` — pure-Rust Wave Function Collapse solver with grid
   reachability (BFS distances, line of sight), deliberately engine-free so it
   can run off the ECS thread and be tested in isolation.
@@ -66,10 +68,10 @@ and keeps the last good look.
 | WASD | Move |
 | Left mouse | Cleave toward the cursor (kills in a 60° arc, wall-occluded; the reach skill widens and extends it) |
 | Right mouse | Raise the shield — blocks contact, reflects projectiles in the ring |
-| Space | Dash (once unlocked) — short burst with i-frames |
+| Space | Dash (once unlocked) — short burst with i-frames; phases silently through cracked walls |
 | E | Nova (once unlocked) — 360° burst that damages and shoves the swarm |
 | C | Cloak (once unlocked) — sneak past enemies; attacking breaks it |
-| G | Grenade (once unlocked) — wall-bouncing lob with a radial blast |
+| G | Grenade (once unlocked) — wall-bouncing lob; the blast destroys cracked walls and provokes the neighbourhood |
 | Walk onto the magenta exit | Descend to the next depth (the mob grows; progression carries over) |
 | Tab | Pause and open the skills menu |
 

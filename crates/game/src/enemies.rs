@@ -249,6 +249,33 @@ struct ThrowTimer(Timer);
 #[derive(Component)]
 pub struct Aggro;
 
+/// Seconds a provoked enemy stays on the warpath after the blast.
+pub const PROVOKED_SECS: f32 = 10.0;
+
+/// Blast-sound radius: enemies within this euclidean distance of the
+/// detonation are provoked — sound passes through walls.
+pub const PROVOKE_RADIUS: f32 = TILE_SIZE * 10.0;
+
+/// Provoked by a loud blast: forced pursuit for the duration, no stand-down
+/// while it lasts — the normal hysteresis resumes when it lapses. Inserted
+/// by the grenade detonation; a fresh blast re-inserts (refreshing) it.
+#[derive(Component, Debug)]
+pub struct Provoked(pub Timer);
+
+/// Whether an enemy at `position` is within earshot of a blast at `centre`
+/// — euclidean, because sound does not route around walls.
+pub fn within_earshot(centre: Vec2, position: Vec2) -> bool {
+    position.distance(centre) <= PROVOKE_RADIUS
+}
+
+/// Tick a provoked timer: `true` while the forced hunt lasts, `false` the
+/// frame it lapses (the caller removes the component and falls back to the
+/// normal aggro rules).
+fn provoked_tick(timer: &mut Timer, delta: Duration) -> bool {
+    timer.tick(delta);
+    !timer.is_finished()
+}
+
 /// Home position and wander state for an un-alerted enemy's milling.
 #[derive(Component, Debug)]
 struct Wander {
@@ -400,6 +427,7 @@ pub fn spawn_swarm(
             CollisionLayers::from_bits(
                 crate::world::LAYER_ENEMY,
                 crate::world::LAYER_WALL
+                    | crate::world::LAYER_CRACKED_WALL
                     | crate::world::LAYER_ENEMY
                     | crate::world::LAYER_PLAYER
                     | crate::world::LAYER_PLAYER_SHOT,
@@ -442,6 +470,7 @@ pub fn spawn_swarm(
 #[allow(clippy::too_many_arguments)]
 fn aggro_gate(
     mut commands: Commands,
+    time: Res<Time>,
     player: Single<&Position, With<crate::Player>>,
     map: Res<crate::world::WorldMapRes>,
     config: Res<MapConfig>,
@@ -449,7 +478,16 @@ fn aggro_gate(
     zones: Res<CorruptedZones>,
     cloak: Res<crate::skills::CloakState>,
     levels: Res<crate::skills::SkillLevels>,
-    mut enemies: Query<(Entity, &Position, Has<Aggro>, &mut Wander), With<Enemy>>,
+    mut enemies: Query<
+        (
+            Entity,
+            &Position,
+            Has<Aggro>,
+            &mut Wander,
+            Option<&mut Provoked>,
+        ),
+        With<Enemy>,
+    >,
 ) {
     let (width, height) = (map.map.grid.width(), map.map.grid.height());
     // A cloaked player is only noticed at the sneak range; standing in a
@@ -467,7 +505,26 @@ fn aggro_gate(
             .0
             .contains(&(player_units.x.floor() as u32, player_units.y.floor() as u32)),
     );
-    for (entity, pos, aggroed, mut wander) in &mut enemies {
+    for (entity, pos, aggroed, mut wander, mut provoked) in &mut enemies {
+        // A provoked enemy hunts regardless of the path distance — the
+        // blast told it exactly where to look — standing down only when
+        // the timer lapses back into the normal rules.
+        let forced = match provoked.as_deref_mut() {
+            Some(timer) => provoked_tick(&mut timer.0, time.delta()),
+            None => false,
+        };
+        if forced {
+            if !aggroed && let Ok(mut entity_commands) = commands.get_entity(entity) {
+                entity_commands.insert(Aggro);
+            }
+            continue;
+        }
+        if provoked.is_some()
+            && let Ok(mut entity_commands) = commands.get_entity(entity)
+        {
+            // The timer just lapsed: back to the normal hysteresis.
+            entity_commands.remove::<Provoked>();
+        }
         let units = tile_units((width, height), config.tile_size, pos.0);
         match aggro_flip(aggroed, flow.field.steps((units.x, units.y)), notice) {
             Some(true) => {
@@ -762,7 +819,14 @@ mod tests {
             exit: (2, 2),
         };
         let flow = FlowField::build(&grid, &prototypes, (3, 2));
-        (WorldMapRes { map, prototypes }, flow)
+        (
+            WorldMapRes {
+                map,
+                prototypes,
+                integrity: 1.0,
+            },
+            flow,
+        )
     }
 
     #[test]
@@ -903,6 +967,46 @@ mod tests {
         let velocity = wander_velocity(home, far, dir);
         assert!(velocity.x < 0.0, "the leash turns the enemy back home");
         assert!((velocity.length() - WANDER_SPEED).abs() < 1e-5);
+    }
+
+    #[test]
+    fn provoked_holds_for_the_duration_then_lapses() {
+        let mut timer = Timer::from_seconds(PROVOKED_SECS, TimerMode::Once);
+        // Holds through the duration...
+        assert!(provoked_tick(
+            &mut timer,
+            Duration::from_secs_f64(PROVOKED_SECS as f64 * 0.9)
+        ));
+        assert!(provoked_tick(
+            &mut timer,
+            Duration::from_secs_f64(PROVOKED_SECS as f64 * 0.09)
+        ));
+        // ...and lapses the frame the timer runs out.
+        assert!(!provoked_tick(
+            &mut timer,
+            Duration::from_secs_f64(PROVOKED_SECS as f64 * 0.01)
+        ));
+    }
+
+    #[test]
+    fn earshot_is_euclidean_sound_ignores_walls() {
+        let centre = Vec2::ZERO;
+        // Boundary counts as within earshot.
+        assert!(within_earshot(centre, Vec2::new(PROVOKE_RADIUS, 0.0)));
+        assert!(within_earshot(
+            centre,
+            Vec2::new(PROVOKE_RADIUS * 0.99, 0.0)
+        ));
+        assert!(!within_earshot(
+            centre,
+            Vec2::new(PROVOKE_RADIUS * 1.01, 0.0)
+        ));
+        // The radius is euclidean, not Chebyshev: the box corner sits
+        // farther out than the circle, even though its axes are in range.
+        assert!(!within_earshot(
+            centre,
+            Vec2::new(PROVOKE_RADIUS, PROVOKE_RADIUS)
+        ));
     }
 
     #[test]

@@ -13,7 +13,7 @@ use bevy::prelude::*;
 use crate::bridge::{BridgeTx, GameAudioEvent};
 use crate::enemies::{Enemy, Health, Shield, Thrower, absorb_damage, kill_enemy, regrow_plate};
 use crate::skills::{CloakState, DashState, cleave_damage, cleave_half_angle, cleave_radius};
-use crate::world::{MapConfig, SpawnPoint, TILE_SIZE, WorldMapRes, tile_units};
+use crate::world::{CrackedWalls, MapConfig, SpawnPoint, TILE_SIZE, WorldMapRes, tile_units};
 use wfc::line_of_sight;
 
 /// Player hit points at full health, before vitality upgrades.
@@ -410,11 +410,62 @@ fn cleave_fx(
     }
 }
 
+/// Whether a dash along `dir` from `position` may phase through cracked
+/// walls: the dash must rest on walkable ground. The march follows the
+/// dash line quarter-tile by quarter-tile — cracked tiles phase (the centre
+/// passes through), solid walls stop the centre at their face — and the
+/// rest tile must be walkable. A crack that backs onto solid wall (or a
+/// second cracked tile) stops the dash short, and re-hardening around the
+/// player then wedges them; failing the check bonks like any wall instead.
+fn phase_allowed(
+    map: &WorldMapRes,
+    cracked: &CrackedWalls,
+    tile_size: f32,
+    position: Vec2,
+    dir: Vec2,
+) -> bool {
+    let (width, height) = (map.map.grid.width(), map.map.grid.height());
+    let tile_at = |world: Vec2| -> Option<(u32, u32)> {
+        let units = tile_units((width, height), tile_size, world);
+        let (x, y) = (units.x.floor(), units.y.floor());
+        if x < 0.0 || y < 0.0 || x >= width as f32 || y >= height as f32 {
+            return None;
+        }
+        Some((x as u32, y as u32))
+    };
+    let class_at = |tile: (u32, u32)| {
+        map.prototypes[map.map.grid.get(tile.0, tile.1).expect("fully collapsed") as usize]
+            .prototype
+            .class
+    };
+    // Quarter-tile steps cannot skip a tile (tiles are a full unit wide).
+    let travel = crate::skills::DASH_SPEED * crate::skills::DASH_SECS;
+    let steps = (travel / tile_size * 4.0).ceil() as usize;
+    let delta = dir * (travel / steps as f32);
+    let mut rest = position;
+    for _ in 0..steps {
+        let next = rest + delta;
+        let blocked = match tile_at(next) {
+            None => true, // off the map — as good as solid
+            Some(tile) => {
+                let class = class_at(tile);
+                !class.walkable() && !cracked.0.contains(&tile)
+            }
+        };
+        if blocked {
+            break;
+        }
+        rest = next;
+    }
+    tile_at(rest).is_some_and(|tile| class_at(tile).walkable())
+}
+
 /// Trigger the dash on Space: unlocked, off cooldown, with a direction from
 /// the current WASD input falling back to the cursor. The dash doubles as
 /// i-frames — it resets the invulnerability window, so the blink shows it.
 #[allow(clippy::too_many_arguments)]
 fn dash_trigger(
+    mut commands: Commands,
     input: Res<ButtonInput<KeyCode>>,
     unlocks: Res<crate::skills::AbilityUnlocks>,
     mut dash: ResMut<DashState>,
@@ -423,10 +474,20 @@ fn dash_trigger(
     time: Res<Time>,
     window: Single<&Window>,
     camera: Single<(&Camera, &GlobalTransform), With<Camera2d>>,
-    player: Single<&Position, With<crate::Player>>,
+    player: Single<(Entity, &Position), With<crate::Player>>,
+    map: Res<WorldMapRes>,
+    cracked: Res<CrackedWalls>,
+    config: Res<MapConfig>,
 ) {
+    let (player_entity, player_pos) = player.into_inner();
+    // Track the dash ending: cracked walls harden again the frame it
+    // finishes — the restore must not depend on the trigger running.
+    let was_active = !dash.active.is_finished();
     dash.active.tick(time.delta());
     dash.cooldown.tick(time.delta());
+    if was_active && dash.active.is_finished() {
+        crate::world::swap_player_layers(&mut commands, player_entity, false);
+    }
     if !input.just_pressed(KeyCode::Space) || !unlocks.dash || !dash.cooldown.is_finished() {
         return;
     }
@@ -437,7 +498,7 @@ fn dash_trigger(
         && let Some(cursor) = window.cursor_position()
         && let Ok(cursor_world) = camera.0.viewport_to_world_2d(camera.1, cursor)
     {
-        dir = (cursor_world - player.0).normalize_or_zero();
+        dir = (cursor_world - player_pos.0).normalize_or_zero();
     }
     if dir == Vec2::ZERO {
         return; // standing still with no cursor — nothing to dash along
@@ -447,6 +508,15 @@ fn dash_trigger(
     dash.active.reset();
     dash.cooldown.reset();
     vitals.invuln.reset();
+    // Phase: drop the cracked-wall layer so the dash ghosts silently
+    // through cracked walls — no destruction, nothing left behind. Avian
+    // needs both sides to agree; the cracked body never filters the player
+    // out, so the player's filter alone toggles the collision. Only when
+    // the dash rests on walkable ground, though — otherwise the wall
+    // re-hardens around the player at dash end (see `phase_allowed`).
+    if phase_allowed(&map, &cracked, config.tile_size, player_pos.0, dir) {
+        crate::world::swap_player_layers(&mut commands, player_entity, true);
+    }
     bridge.send(GameAudioEvent::Dash);
     tracing::info!(dir = ?dash.dir, "dash");
 }
@@ -706,10 +776,107 @@ fn player_speed_telemetry(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use avian2d::prelude::CollisionLayers;
 
     /// A fixed cone for the arc tests — a 90-degree cone at 96 units.
     const TEST_HALF_ANGLE: f32 = 45.0_f32.to_radians();
     const TEST_RADIUS: f32 = 96.0;
+
+    /// A 5x5 all-floor map with walls forced at the given cells.
+    fn phase_map(walls: &[(u32, u32)]) -> WorldMapRes {
+        let prototypes = wfc::prototype_set(0.25, 0.02);
+        let floor = prototypes
+            .iter()
+            .position(|p| p.prototype.class.walkable())
+            .expect("the set has walkable tiles") as u32;
+        let wall = prototypes
+            .iter()
+            .position(|p| !p.prototype.class.walkable())
+            .expect("the set has a wall") as u32;
+        let mut grid = wfc::Grid::new(5, 5);
+        for y in 0..5 {
+            for x in 0..5 {
+                grid.set(x, y, floor);
+            }
+        }
+        for &(x, y) in walls {
+            grid.set(x, y, wall);
+        }
+        WorldMapRes {
+            map: wfc::GeneratedMap {
+                grid,
+                spawn: (0, 2),
+                exit: (4, 2),
+            },
+            prototypes,
+            integrity: 1.0,
+        }
+    }
+
+    #[test]
+    fn phasing_needs_a_walkable_rest_tile() {
+        // Standing on tile (1,2) dashing east: the travel (2.8 tiles) ends
+        // in tile 4 unless a wall stops it short.
+        let start = crate::world::tile_world_pos((5, 5), (1, 2), TILE_SIZE);
+        let cracked_one = CrackedWalls(std::iter::once((2, 2)).collect());
+
+        // A thin crack with floor behind: phase.
+        let map = phase_map(&[(2, 2)]);
+        assert!(phase_allowed(&map, &cracked_one, TILE_SIZE, start, Vec2::X));
+
+        // The same crack backing onto solid wall: the dash stops short and
+        // rests INSIDE the crack — no phase (the bonk, not the wedge).
+        let map = phase_map(&[(2, 2), (3, 2)]);
+        assert!(!phase_allowed(
+            &map,
+            &cracked_one,
+            TILE_SIZE,
+            start,
+            Vec2::X
+        ));
+
+        // A two-thick cracked blob backing onto solid wall: the rest lands
+        // in the second crack.
+        let map = phase_map(&[(2, 2), (3, 2), (4, 2)]);
+        let cracked_two = CrackedWalls([(2, 2), (3, 2)].into_iter().collect());
+        assert!(!phase_allowed(
+            &map,
+            &cracked_two,
+            TILE_SIZE,
+            start,
+            Vec2::X
+        ));
+
+        // A cracked wall with clear run-out past it (even with a solid
+        // wall further down): the rest is walkable floor — phase.
+        let map = phase_map(&[(2, 2), (4, 2)]);
+        assert!(phase_allowed(&map, &cracked_one, TILE_SIZE, start, Vec2::X));
+
+        // Dashing into a solid wall (no crack involved): the rest is the
+        // floor tile before it — the phase is allowed (and harmless: solid
+        // walls block regardless).
+        let map = phase_map(&[(2, 2)]);
+        assert!(phase_allowed(
+            &map,
+            &CrackedWalls::default(),
+            TILE_SIZE,
+            start,
+            Vec2::X
+        ));
+    }
+
+    #[test]
+    fn player_layers_phase_through_cracked_walls_only() {
+        let cracked = CollisionLayers::from_bits(crate::world::LAYER_CRACKED_WALL, u32::MAX);
+        let solid = CollisionLayers::from_bits(crate::world::LAYER_WALL, u32::MAX);
+        // Resting: cracked walls block like walls — both sides agree.
+        assert!(crate::world::player_layers(false).interacts_with(cracked));
+        // Phasing: the filter drops the cracked layer, so the dash ghosts
+        // through — while solid walls still block.
+        assert!(!crate::world::player_layers(true).interacts_with(cracked));
+        assert!(crate::world::player_layers(true).interacts_with(solid));
+        assert!(crate::world::player_layers(false).interacts_with(solid));
+    }
 
     #[test]
     fn cleave_arc_hits_ahead_and_not_behind() {

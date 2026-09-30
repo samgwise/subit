@@ -12,10 +12,13 @@
 #import bevy_ecs_tilemap::vertex_output::MeshVertexOutput
 #import bevy_sprite::mesh2d_view_bindings::{view, globals}
 
-// Atlas columns: 0 floor, 1-16 wall autotiles, 17 terminal.
+// Atlas columns: 0 floor, 1-16 wall autotiles, 17 terminal, 18-33 cracked
+// wall autotiles (they pulse like the solid walls).
 const WALL_TILE_FIRST: i32 = 1;
 const WALL_TILE_LAST: i32 = 16;
 const TERMINAL_TILE: i32 = 17;
+const CRACKED_TILE_FIRST: i32 = 18;
+const CRACKED_TILE_LAST: i32 = 33;
 
 // Corruption: the zone mask (one pixel per map cell, red > 0.5 = corrupted)
 // is read at the fragment's tile position; the artefacts share the burst
@@ -109,7 +112,8 @@ fn fragment(in: MeshVertexOutput) -> @location(0) vec4<f32> {
     // Neon pass: pump the baked lit strips and the terminal; everything
     // else (floors, wall bodies) stays exactly as baked.
     var glow = 0.0;
-    if (in.tile_id >= WALL_TILE_FIRST && in.tile_id <= WALL_TILE_LAST) {
+    if ((in.tile_id >= WALL_TILE_FIRST && in.tile_id <= WALL_TILE_LAST)
+        || (in.tile_id >= CRACKED_TILE_FIRST && in.tile_id <= CRACKED_TILE_LAST)) {
         let luminance = dot(base.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
         if (luminance > EDGE_LUMINANCE) {
             // Phase drifts across the tile so the shimmer travels along

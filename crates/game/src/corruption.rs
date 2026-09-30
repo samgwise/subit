@@ -262,6 +262,7 @@ mod tests {
                 config.generator.wall_weight,
                 config.generator.terminal_weight,
             ),
+            integrity: 1.0,
         };
         (world, config)
     }

@@ -40,9 +40,10 @@ depth, where the mob grows and the run continues with all progression intact.
   forward; the combo and invulnerability reset. Depth scales the mob: +10
   enemies per layer (cap 80), and throwers tighten from every 4th spawn to
   every 3rd from depth 2.
-- Rendering is a code-generated 18-tile atlas (row-major image data): a
+- Rendering is a code-generated 34-tile atlas (row-major image data): a
   grid-lined floor, 16 wall autotile variants with lit edges where walls face
-  floor, and a neon-green terminal. Floor brightness scales with open-edge
+  floor, 16 cracked wall variants (the same lit edges plus baked crack
+  lines — they pulse like walls), and a neon-green terminal. Floor brightness scales with open-edge
   count (corridors read darker than arenas) and drifts cooler as world
   integrity drops — the visual twin of the audio mode shift. The exit tile is
   magenta, marked by a pulsing beacon pillar; an off-screen HUD arrow points
@@ -61,6 +62,26 @@ depth, where the mob grows and the run continues with all progression intact.
   the corruption to strip it), and the player's aggro notice range sheds
   2 steps inside a zone (stacking with the cloak, floored at 1). Crossing
   a zone edge is a sonic trigger.
+- Cracked walls: about 18% of the *eligible* wall tiles are cracked — a
+  deterministic per-seed pass after generation (the solver never knows; the
+  sealed border never cracks). Eligibility is thinness: the tile must be
+  walkable on one full axis (N+S or E+W), so every crack reads as a
+  passable door along its thin side and a phasing dash can never end
+  embedded in a thick wall. They render with the cracked variants and
+  block like walls, and they come down two ways. The dash phases through
+  them silently: the player's collision filter drops the cracked layer
+  mid-dash and restores the frame it ends — nothing is destroyed and no
+  shortcut is left behind. The phase only arms when the dash rests on
+  walkable ground (the dash line is marched quarter-tile by quarter-tile:
+  cracks phase, solid walls stop the travel); a crack that backs onto more
+  wall leaves the dash bonking like any wall instead of wedging the
+  player. The grenade blast destroys cracks loudly: the tile becomes open
+  floor (tinted from the depth's stored integrity), the surviving walls'
+  autotile masks recompute around the hole, the cracked compound rebuilds
+  (vanishing when the last one goes), and the flow field rebuilds through
+  the new route. The blast is loud too — every enemy within 10 tiles
+  (euclidean, so sound passes through walls) is provoked: a forced ~10 s
+  hunt that ignores the aggro hysteresis until it lapses.
 - Neon bloom: an HDR camera post-process (Bevy's built-in `Bloom`, additive
   composite, ~0.6 luminance threshold) makes the bright pixels bleed glow —
   lit wall edges, the beacon pillar, terminals, the cleave flash, shots and
@@ -128,11 +149,16 @@ depth, where the mob grows and the run continues with all progression intact.
   cursor at 400 u/s that bounces off walls — two bounces survive, the third
   wall contact detonates it where it hits — or the 0.5 s fuse sets it off
   mid-flight. Blast: 200 damage (+50 per damage point, cap 6) in a 2.5-tile
-  radius; kills batch into the combo.
+  radius; kills batch into the combo. Cracked walls in the blast radius are
+  destroyed (they become open floor — see World) and every enemy within
+  10 tiles is provoked into a forced hunt (see Enemies).
 - **Dash (Space, unlock: 2 points):** 2 s cooldown (−0.25 s per point, cap
   4, floor 1 s), 0.15 s at 600 u/s along the current WASD direction
   (falling back to the cursor). The dash grants i-frames by opening the
-  invulnerability window.
+  invulnerability window, and it phases silently through cracked walls —
+  the collision filter drops the cracked layer mid-dash, restoring the
+  frame it ends. The phase arms only when the dash would rest on walkable
+  ground; a crack that backs onto more wall bonks like any wall.
 - **Nova (E, unlock: 4 points):** 6 s cooldown. A 360° burst — 150 damage
   in a 2.5-tile radius that shoves every survivor outward (a decaying kick
   layered over their steering); routes through shields like every hit.
@@ -159,7 +185,10 @@ depth, where the mob grows and the run continues with all progression intact.
   notice range sheds 2 steps (stacking with the cloak, floored at 1).
   Un-alerted enemies mill slowly around home on a leash (they never open
   fire or pursue), re-homing where they lost the player, so every depth
-  opens calm and the mob engages as you reach it.
+  opens calm and the mob engages as you reach it. A grenade blast provokes
+  every enemy within 10 tiles — euclidean, through walls: forced pursuit
+  for ~10 s with no stand-down while it lasts; the normal hysteresis
+  resumes when it lapses.
 - 40 enemies per map (more with depth), spawned on tiles that are
   BFS-reachable and at least 8 steps from the player spawn; layout is
   deterministic per seed. Every 4th spawn is a thrower (every 3rd from depth
