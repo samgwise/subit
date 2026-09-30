@@ -121,6 +121,22 @@ depth, where the mob grows and the run continues with all progression intact.
 
 ## Enemies
 
+- **Steering:** enemies pursue with a hybrid seek — straight at the player
+  when the sight line is clear (smooth pursuit, no grid quantisation),
+  otherwise along a BFS flow field toward the player's tile that routes
+  around bends instead of pressing into the nearest corner. The field
+  (`wfc::FlowField`, built over the existing reachability BFS) rebuilds only
+  when the player changes tile or the map regenerates; enemy reads are O(1).
+  Throwers keep their hold-at-range behaviour and only flow-field while
+  approaching. Colliders are circles (same footprints as the old boxes), so
+  agents glide around tile vertices instead of snagging on them.
+- **Aggro:** enemies only notice the player within 8 path steps (BFS
+  distance around the walls — an enemy behind a wall stays calm no matter
+  how close it stands), standing down once the player escapes 10 — a
+  hysteresis band keeps the boundary calm. Un-alerted enemies mill slowly
+  around home on a leash (they never open fire or pursue), re-homing where
+  they lost the player, so every depth opens calm and the mob engages as
+  you reach it.
 - 40 enemies per map (more with depth), spawned on tiles that are
   BFS-reachable and at least 8 steps from the player spawn; layout is
   deterministic per seed. Every 4th spawn is a thrower (every 3rd from depth
@@ -200,6 +216,7 @@ until the hub clock protocol lands); telemetry bypasses quantisation.
 || Grenade damage: per point / cap | +50 / 6 |
 || Nova: damage / radius / cooldown / unlock cost | 150 / 2.5 tiles / 6 s / 4 pts |
 || Deflect volley: extra shots / unlock cost | 2 / 5 pts |
+|| Aggro: notice range / stand-down range / wander speed / leash | 8 steps / 10 / 30 u/s / 1.5 tiles |
 | Combo window | 2 s |
 | Shield: active / cooldown / ring | 0.6 s / 3 s (−0.25/pt, floor 1 s) / 1.2 tiles |
 | Dash: speed / duration / cooldown / unlock cost | 600 u/s / 0.15 s / 2 s / 2 pts |

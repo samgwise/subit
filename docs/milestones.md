@@ -106,3 +106,42 @@ and the barrier gains a violet one (a little wider, hidden until owned and
 charged). All animation runs on the GPU from globals time; the CPU side
 pushes uniforms only when dome state actually changes. The shader previews
 in the same isolated window as the tilemap neon and hot-reloads live.
+
+## Milestone 13 — Skill expansion
+
+Every combat tool gained upgrade paths, and the menu learned to show
+levels: rows render their level out of a cap and their current cost, and
+grey out when maxed, owned or gated behind their ability (the dash and
+grenade cooldown skills need the ability first). The cleave starts at a
+narrower 60° cone; its new reach skill extends it — +0.25 tiles and +5° of
+arc per point (capped at 4). The shield gained a duration skill (+0.15 s,
+cap 4) beside the existing cooldown skill, the dash a cooldown skill
+(−0.25 s, cap 4, floor 1 s), and the grenade a damage skill (+50, cap 6).
+Two expensive unlocks joined the panel: nova (4 points) — a 360° burst
+that damages through shields and shoves survivors aside, with an expanding
+ring and its own audio event — and deflect volley (5 points) — every caught
+projectile is reflected alongside two extra auto-aimed shots at the
+nearest enemies, fanning around the reflection when the swarm is
+elsewhere.
+
+## Milestone 14 — Enemy pathing
+
+Corner-stuck enemies fixed two ways. Colliders went from boxes to circles
+(same footprints), so agents glide around tile vertices instead of
+snagging on them; and a BFS flow field (`wfc::FlowField`, built over the
+existing reachability BFS) steers blocked enemies around bends — direct
+pursuit when the sight line is clear, field descent when it isn't. The
+field targets the player's tile and rebuilds only on tile changes or depth
+descent; enemy reads are O(1), and knockback composes additively with the
+new steering.
+
+## Milestone 15 — Aggro and wandering
+
+The fully competent swarm stopped converging from the opening second:
+enemies notice the player within 8 path steps (BFS distance around the
+walls — enemies behind a wall stay dormant no matter how close they
+stand) and stand down once the player escapes 10 — a hysteresis band so
+nobody flickers at the boundary — while un-alerted enemies mill slowly
+around home on a short leash, never pursuing or opening fire. Depths now
+open calm and the mob engages as the player reaches it, and standing down
+re-homes the wanderer where it lost the player.

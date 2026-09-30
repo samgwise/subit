@@ -11,10 +11,10 @@ use bevy::prelude::*;
 use rand::RngExt;
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
-use wfc::{GeneratedMap, prototype_set, walkable_distances};
+use wfc::{FlowField, GeneratedMap, prototype_set, walkable_distances};
 
 use crate::drops::spawn_drops;
-use crate::world::{MapConfig, TILE_SIZE, tile_world_pos};
+use crate::world::{MapConfig, TILE_SIZE, WorldMapRes, tile_units, tile_world_pos};
 
 /// How many enemies to seed the map with.
 const ENEMY_COUNT: usize = 40;
@@ -26,6 +26,21 @@ const ENEMY_SPEED: f32 = 120.0;
 /// Enemies spawn at least this many BFS steps from the player spawn, so the
 /// opening seconds are never an instant ambush.
 const MIN_SPAWN_DISTANCE: u32 = 8;
+
+/// Enemies only notice the player within this many path steps (BFS cell
+/// steps around the walls, not euclidean distance) — an enemy behind a wall
+/// stays calm no matter how close it stands.
+const AGGRO_RANGE_STEPS: u32 = 8;
+/// Alerted enemies stand down only when the player escapes this many steps
+/// farther — hysteresis so nobody flickers in and out of aggro at the
+/// boundary.
+const DEAGGRO_EXTRA_STEPS: u32 = 2;
+/// Un-alerted enemies mill slowly around where they spawned.
+const WANDER_SPEED: f32 = 30.0;
+/// How far a wandering enemy may stray from its home before it turns back.
+const WANDER_LEASH_TILES: f32 = 1.5;
+/// Seconds between wander direction re-rolls (±0.5 s).
+const WANDER_REPICK_SECS: f32 = 1.5;
 
 /// Enemy collider footprint as a fraction of a tile.
 const ENEMY_SIZE_TILES: f32 = 0.6;
@@ -229,6 +244,42 @@ pub fn regrow_plate(plates: &mut u32, regen: &mut Timer, max_plates: u32, delta:
 #[derive(Component, Debug)]
 struct ThrowTimer(Timer);
 
+/// Marker: this enemy has noticed the player and pursues.
+#[derive(Component)]
+pub struct Aggro;
+
+/// Home position and wander state for an un-alerted enemy's milling.
+#[derive(Component, Debug)]
+struct Wander {
+    home: Vec2,
+    dir: Vec2,
+    repick: Timer,
+}
+
+/// Whether an enemy's aggro should flip at `steps` path steps from the
+/// player (the BFS distance around the walls): `Some(true)` to alert,
+/// `Some(false)` to stand down, `None` to hold — the band between the two
+/// ranges is hysteresis. No path at all means stand down: the player is
+/// somewhere the enemy can never reach.
+fn aggro_flip(aggroed: bool, steps: Option<u32>) -> Option<bool> {
+    match (aggroed, steps) {
+        (false, Some(steps)) if steps <= AGGRO_RANGE_STEPS => Some(true),
+        (true, Some(steps)) if steps > AGGRO_RANGE_STEPS + DEAGGRO_EXTRA_STEPS => Some(false),
+        (true, None) => Some(false),
+        _ => None,
+    }
+}
+
+/// The wandering velocity: drift in the current wander direction, unless
+/// the leash pulls — beyond the stray radius from home, head home instead.
+fn wander_velocity(home: Vec2, position: Vec2, dir: Vec2) -> Vec2 {
+    if position.distance(home) > WANDER_LEASH_TILES * TILE_SIZE {
+        (home - position).normalize_or_zero() * WANDER_SPEED
+    } else {
+        dir * WANDER_SPEED
+    }
+}
+
 /// A short-lived velocity kick layered on top of seek steering (nova
 /// blasts); decays exponentially so steering takes back over.
 #[derive(Component, Debug)]
@@ -260,7 +311,14 @@ impl Plugin for EnemyPlugin {
         // there is no Startup system here.
         app.add_systems(
             Update,
-            (enemy_seek, thrower_seek, thrower_attack, shield_regen)
+            (
+                aggro_gate,
+                wander_seek,
+                enemy_seek,
+                thrower_seek,
+                thrower_attack,
+                shield_regen,
+            )
                 .run_if(in_state(crate::skills::GameState::Playing)),
         );
     }
@@ -321,8 +379,20 @@ pub fn spawn_swarm(
             BaseColour(colour),
             Sprite::from_color(colour, Vec2::splat(size)),
             Transform::from_xyz(pos.x, pos.y, 1.0),
+            // Un-alerted until the player comes close; the wander state
+            // mills them around home while they wait.
+            Wander {
+                home: pos,
+                dir: Vec2::from_angle(rng.random_range(0.0..core::f32::consts::TAU)),
+                repick: Timer::from_seconds(
+                    WANDER_REPICK_SECS + rng.random_range(-0.5..0.5),
+                    TimerMode::Once,
+                ),
+            },
             RigidBody::Dynamic,
-            Collider::rectangle(size, size),
+            // Circles, not boxes: round agents glide around tile corners
+            // instead of snagging on their vertices.
+            Collider::circle(size * 0.5),
             LockedAxes::ROTATION_LOCKED,
             SleepingDisabled,
             CollisionLayers::from_bits(
@@ -361,11 +431,71 @@ pub fn spawn_swarm(
     tracing::info!("spawned {} enemies", picked.len());
 }
 
+/// Alert enemies that come within aggro range of the player — by path steps
+/// around the walls, so enemies behind a nearby wall stay dormant — and
+/// stand down the ones it escapes. Standing down re-homes the wanderer
+/// where it lost the player, so it mills there instead of marching back to
+/// its spawn.
+#[allow(clippy::type_complexity)]
+fn aggro_gate(
+    mut commands: Commands,
+    map: Res<crate::world::WorldMapRes>,
+    config: Res<MapConfig>,
+    flow: Res<crate::world::PlayerFlow>,
+    mut enemies: Query<(Entity, &Position, Has<Aggro>, &mut Wander), With<Enemy>>,
+) {
+    let (width, height) = (map.map.grid.width(), map.map.grid.height());
+    for (entity, pos, aggroed, mut wander) in &mut enemies {
+        let units = tile_units((width, height), config.tile_size, pos.0);
+        match aggro_flip(aggroed, flow.field.steps((units.x, units.y))) {
+            Some(true) => {
+                if let Ok(mut entity_commands) = commands.get_entity(entity) {
+                    entity_commands.insert(Aggro);
+                }
+            }
+            Some(false) => {
+                wander.home = pos.0;
+                if let Ok(mut entity_commands) = commands.get_entity(entity) {
+                    entity_commands.remove::<Aggro>();
+                }
+            }
+            None => {}
+        }
+    }
+}
+
+/// Un-alerted enemies mill around their home position instead of pursuing.
+#[allow(clippy::type_complexity)]
+fn wander_seek(
+    time: Res<Time>,
+    mut rng: ResMut<crate::drops::DropRng>,
+    mut enemies: Query<
+        (&Position, &mut LinearVelocity, &mut Wander),
+        (With<Enemy>, Without<Aggro>),
+    >,
+) {
+    for (pos, mut velocity, mut wander) in &mut enemies {
+        wander.repick.tick(time.delta());
+        if wander.repick.is_finished() {
+            wander.dir = Vec2::from_angle(rng.0.random_range(0.0..core::f32::consts::TAU));
+            wander.repick.set_duration(Duration::from_secs_f64(
+                (WANDER_REPICK_SECS + rng.0.random_range(-0.5..0.5)) as f64,
+            ));
+            wander.repick.reset();
+        }
+        velocity.0 = wander_velocity(wander.home, pos.0, wander.dir);
+    }
+}
+
 /// Steer chasers and tanks toward the player and show their damage state.
 #[allow(clippy::type_complexity)] // Bevy query tuples read worse split up.
+#[allow(clippy::too_many_arguments)]
 fn enemy_seek(
     time: Res<Time>,
     player: Single<&Position, With<crate::Player>>,
+    map: Res<crate::world::WorldMapRes>,
+    config: Res<MapConfig>,
+    flow: Res<crate::world::PlayerFlow>,
     mut enemies: Query<
         (
             &Position,
@@ -376,38 +506,36 @@ fn enemy_seek(
             &mut Sprite,
             Option<&mut Knockback>,
         ),
-        (With<Enemy>, Without<Thrower>),
+        (With<Enemy>, Without<Thrower>, With<Aggro>),
     >,
 ) {
     let player_pos = player.0;
     for (pos, mut velocity, health, speed, base, mut sprite, mut knockback) in &mut enemies {
         let to_player = player_pos - pos.0;
-        let seek = if to_player != Vec2::ZERO {
-            to_player.normalize() * speed.0
-        } else {
-            Vec2::ZERO
-        };
+        let seek = seek_velocity(
+            &map,
+            config.tile_size,
+            pos.0,
+            to_player,
+            speed.0,
+            &flow.field,
+        );
         let kick = decay_knockback(knockback.as_deref_mut(), time.delta_secs());
         velocity.0 = seek + kick;
         sprite.color = damage_tint(base.0, health.hp, health.max);
     }
 }
 
-/// Velocity for a thrower given the vector to the player: chase while
-/// farther than throw range, then hold position.
-fn thrower_velocity(to_player: Vec2) -> Vec2 {
-    if to_player.length() > THROW_RANGE {
-        to_player.normalize_or_zero() * THROWER_SPEED
-    } else {
-        Vec2::ZERO
-    }
-}
-
 /// Throwers keep their distance instead of swarming, tinted by damage.
+/// Out of throw range they steer like anything else (flow field when
+/// blocked); in range they hold position.
 #[allow(clippy::type_complexity)]
 fn thrower_seek(
     time: Res<Time>,
     player: Single<&Position, With<crate::Player>>,
+    map: Res<crate::world::WorldMapRes>,
+    config: Res<MapConfig>,
+    flow: Res<crate::world::PlayerFlow>,
     mut throwers: Query<
         (
             &Position,
@@ -417,15 +545,59 @@ fn thrower_seek(
             &mut Sprite,
             Option<&mut Knockback>,
         ),
-        With<Thrower>,
+        (With<Thrower>, With<Aggro>),
     >,
 ) {
     let player_pos = player.0;
     for (pos, mut velocity, health, base, mut sprite, mut knockback) in &mut throwers {
-        let seek = thrower_velocity(player_pos - pos.0);
+        let to_player = player_pos - pos.0;
+        let seek = if to_player.length() <= THROW_RANGE {
+            Vec2::ZERO // in range: hold position
+        } else {
+            seek_velocity(
+                &map,
+                config.tile_size,
+                pos.0,
+                to_player,
+                THROWER_SPEED,
+                &flow.field,
+            )
+        };
         let kick = decay_knockback(knockback.as_deref_mut(), time.delta_secs());
         velocity.0 = seek + kick;
         sprite.color = damage_tint(base.0, health.hp, health.max);
+    }
+}
+
+/// Steering for one pursuer: straight at the player when the sight line is
+/// clear (smooth pursuit, no grid quantisation), otherwise a flow-field
+/// step that routes around bends instead of pressing into the nearest
+/// corner.
+fn seek_velocity(
+    map: &WorldMapRes,
+    tile_size: f32,
+    position: Vec2,
+    to_player: Vec2,
+    speed: f32,
+    flow: &FlowField,
+) -> Vec2 {
+    if to_player == Vec2::ZERO {
+        return Vec2::ZERO;
+    }
+    let (width, height) = (map.map.grid.width(), map.map.grid.height());
+    let units = tile_units((width, height), tile_size, position);
+    let player_units = tile_units((width, height), tile_size, position + to_player);
+    let clear = wfc::line_of_sight(
+        &map.map.grid,
+        &map.prototypes,
+        (units.x, units.y),
+        (player_units.x, player_units.y),
+    );
+    if clear {
+        to_player.normalize() * speed
+    } else {
+        flow.direction((units.x, units.y))
+            .map_or(Vec2::ZERO, |(dx, dy)| Vec2::new(dx, dy) * speed)
     }
 }
 
@@ -437,12 +609,14 @@ fn shield_regen(time: Res<Time>, mut shields: Query<&mut Shield>) {
     }
 }
 
-/// Lob a bouncing projectile at the player's current position on cooldown.
+/// Lob a bouncing projectile at the player's current position on cooldown —
+/// alerted throwers only; an un-alerted mob never opens fire.
+#[allow(clippy::type_complexity)]
 fn thrower_attack(
     mut commands: Commands,
     time: Res<Time>,
     player: Single<&Position, With<crate::Player>>,
-    mut throwers: Query<(&Position, &mut ThrowTimer), With<Thrower>>,
+    mut throwers: Query<(&Position, &mut ThrowTimer), (With<Thrower>, With<Aggro>)>,
     bridge: Res<crate::bridge::BridgeTx>,
 ) {
     let player_pos = player.0;
@@ -539,19 +713,63 @@ mod tests {
         }
     }
 
+    /// A 5x5 map (all floor) as a `WorldMapRes`, plus a flow field toward
+    /// tile (3, 2). `wall_tile` optionally walls one cell.
+    fn test_map(wall_tile: Option<(u32, u32)>) -> (WorldMapRes, FlowField) {
+        let prototypes = prototype_set(0.25, 0.02);
+        let floor = prototypes
+            .iter()
+            .position(|p| p.prototype.class.walkable())
+            .expect("the set has walkable tiles") as u32;
+        let mut grid = wfc::Grid::new(5, 5);
+        for y in 0..5 {
+            for x in 0..5 {
+                grid.set(x, y, floor);
+            }
+        }
+        if let Some((x, y)) = wall_tile {
+            let wall = prototypes
+                .iter()
+                .position(|p| !p.prototype.class.walkable())
+                .expect("the set has a wall") as u32;
+            grid.set(x, y, wall);
+        }
+        let map = GeneratedMap {
+            grid: grid.clone(),
+            spawn: (2, 2),
+            exit: (2, 2),
+        };
+        let flow = FlowField::build(&grid, &prototypes, (3, 2));
+        (WorldMapRes { map, prototypes }, flow)
+    }
+
     #[test]
-    fn throwers_chase_until_range_then_hold() {
-        let far = Vec2::new(THROW_RANGE * 2.0, 0.0);
-        let velocity = thrower_velocity(far);
-        assert!(velocity.x > 0.0);
-        assert!((velocity.length() - THROWER_SPEED).abs() < 1e-5);
-        // Inside throw range: hold.
-        assert_eq!(
-            thrower_velocity(Vec2::new(THROW_RANGE * 0.5, 0.0)),
-            Vec2::ZERO
-        );
-        // Boundary is exclusive: exactly at range means hold.
-        assert_eq!(thrower_velocity(Vec2::new(THROW_RANGE, 0.0)), Vec2::ZERO);
+    fn seek_drives_straight_when_sight_is_clear() {
+        let (map, flow) = test_map(None);
+        // Enemy on tile (2,2) (world origin-ish), player one tile east:
+        // clear sight, straight pursuit at full speed.
+        let position = Vec2::new(0.0, 0.0);
+        let player = Vec2::new(TILE_SIZE, 0.0);
+        let velocity = seek_velocity(&map, TILE_SIZE, position, player - position, 120.0, &flow);
+        assert!((velocity.x - 120.0).abs() < 1e-4);
+        assert!(velocity.y.abs() < 1e-4);
+        // No separation: no seek at all.
+        let velocity = seek_velocity(&map, TILE_SIZE, position, Vec2::ZERO, 120.0, &flow);
+        assert_eq!(velocity, Vec2::ZERO);
+    }
+
+    #[test]
+    fn seek_follows_the_flow_field_when_blocked() {
+        // A wall at (2,2) blocks the straight shot from (0,2) to (3,2).
+        let (map, flow) = test_map(Some((2, 2)));
+        // Enemy on tile (0,2): world x = (0.5 - 2.5) * 32 = -64.
+        let position = Vec2::new(-64.0, 0.0);
+        let player = Vec2::new(TILE_SIZE, 0.0);
+        let velocity = seek_velocity(&map, TILE_SIZE, position, player - position, 120.0, &flow);
+        // The flow field routes up-right through the open corner above the
+        // wall — a diagonal descent.
+        assert!((velocity.x - 120.0 / core::f32::consts::SQRT_2).abs() < 1e-4);
+        assert!((velocity.y + 120.0 / core::f32::consts::SQRT_2).abs() < 1e-4);
     }
 
     #[test]
@@ -596,6 +814,46 @@ mod tests {
         // An empty shield passes everything through.
         assert_eq!(absorb_damage(&mut plates, &mut regen, 20), 20);
         assert_eq!(absorb_damage(&mut plates, &mut regen, 0), 0);
+    }
+
+    #[test]
+    fn aggro_flips_on_approach_and_escape_with_hysteresis() {
+        // Un-alerted enemies wake within the aggro path range...
+        assert_eq!(aggro_flip(false, Some(AGGRO_RANGE_STEPS)), Some(true));
+        // ...but hold their state in the hysteresis band: an un-alerted
+        // enemy between the ranges stays calm, an alerted one stays angry.
+        let between = Some(AGGRO_RANGE_STEPS + 1);
+        assert_eq!(aggro_flip(false, between), None);
+        assert_eq!(aggro_flip(true, between), None);
+        // Alerted enemies stand down only past the de-aggro range.
+        assert_eq!(
+            aggro_flip(true, Some(AGGRO_RANGE_STEPS + DEAGGRO_EXTRA_STEPS + 1)),
+            Some(false)
+        );
+        // Boundary: the aggro edge is inclusive, the de-aggro edge is not —
+        // exactly at the escape range the pursuit holds.
+        assert_eq!(
+            aggro_flip(true, Some(AGGRO_RANGE_STEPS + DEAGGRO_EXTRA_STEPS)),
+            None
+        );
+        // No path to the player at all: stand down rather than chase
+        // forever.
+        assert_eq!(aggro_flip(true, None), Some(false));
+        assert_eq!(aggro_flip(false, None), None);
+    }
+
+    #[test]
+    fn wander_drifts_until_the_leash_pulls_home() {
+        let home = Vec2::ZERO;
+        let dir = Vec2::X;
+        // Inside the leash: drift along the wander direction.
+        let velocity = wander_velocity(home, Vec2::new(10.0, 0.0), dir);
+        assert!((velocity.x - WANDER_SPEED).abs() < 1e-5);
+        // Beyond the leash: head home regardless of the wander direction.
+        let far = Vec2::new(WANDER_LEASH_TILES * TILE_SIZE + 10.0, 0.0);
+        let velocity = wander_velocity(home, far, dir);
+        assert!(velocity.x < 0.0, "the leash turns the enemy back home");
+        assert!((velocity.length() - WANDER_SPEED).abs() < 1e-5);
     }
 
     #[test]

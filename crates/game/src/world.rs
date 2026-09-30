@@ -13,7 +13,8 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy_ecs_tilemap::prelude::*;
 use wfc::{
-    GeneratedMap, GeneratorConfig, Socket, TileClass, WeightedPrototype, generate, prototype_set,
+    FlowField, GeneratedMap, GeneratorConfig, Socket, TileClass, WeightedPrototype, generate,
+    prototype_set,
 };
 
 use crate::neon_material::{NeonTilemapHandle, NeonTilemapMaterial};
@@ -55,6 +56,15 @@ pub struct WorldMapRes {
 /// World-space position the player respawns at.
 #[derive(Resource, Debug, Clone, Copy)]
 pub struct SpawnPoint(pub Vec2);
+
+/// The BFS flow field toward the player's tile: enemies descend it when
+/// they lack line of sight, routing around bends instead of hugging
+/// corners. Rebuilt when the player changes tile or the map regenerates.
+#[derive(Resource)]
+pub struct PlayerFlow {
+    pub field: FlowField,
+    pub target: (u32, u32),
+}
 
 /// Current depth layer; increments each time the player reaches the exit.
 #[derive(Resource, Debug, Clone, Copy, Default)]
@@ -104,6 +114,7 @@ impl Plugin for WorldMapPlugin {
                 Update,
                 (
                     pulse_exit_beacon,
+                    update_flow,
                     descend.run_if(in_state(crate::skills::GameState::Playing)),
                 )
                     .run_if(in_state(crate::skills::GameState::Playing)),
@@ -363,15 +374,42 @@ fn build_world(
     ));
 
     // Resources other systems build on: the raw map data (plus the prototype
-    // set its tile indices refer to) and the respawn point.
+    // set its tile indices refer to), the respawn point, and the first flow
+    // field — seeded toward the spawn tile until the player moves.
+    let initial_flow = FlowField::build(&generated.grid, &prototypes, generated.spawn);
     commands.insert_resource(WorldMapRes {
         map: generated.clone(),
         prototypes,
     });
     commands.insert_resource(SpawnPoint(spawn_pos));
+    commands.insert_resource(PlayerFlow {
+        field: initial_flow,
+        target: generated.spawn,
+    });
     bridge.send(crate::bridge::GameAudioEvent::WorldTelemetry { integrity });
     tracing::info!(integrity, depth, "world integrity published");
     (spawn_pos, generated)
+}
+
+/// Rebuild the flow field when the player changes tile or the map
+/// regenerates on descent — a 48x48 BFS per change is trivial, and enemy
+/// reads are O(1).
+fn update_flow(
+    player: Single<&Position, With<crate::Player>>,
+    map: Res<WorldMapRes>,
+    config: Res<MapConfig>,
+    mut flow: ResMut<PlayerFlow>,
+) {
+    let (width, height) = (map.map.grid.width(), map.map.grid.height());
+    let units = tile_units((width, height), config.tile_size, player.0);
+    let tile = (
+        (units.x.floor() as i32).clamp(0, width as i32 - 1) as u32,
+        (units.y.floor() as i32).clamp(0, height as i32 - 1) as u32,
+    );
+    if map.is_changed() || tile != flow.target {
+        flow.field = FlowField::build(&map.map.grid, &map.prototypes, tile);
+        flow.target = tile;
+    }
 }
 
 /// Gentle sine pulse on the exit beacon's alpha.
