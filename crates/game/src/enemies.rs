@@ -24,10 +24,6 @@ const ENEMY_COUNT: usize = 40;
 /// kiting and escapes stay viable).
 const ENEMY_SPEED: f32 = 120.0;
 
-/// Enemies spawn at least this many BFS steps from the player spawn, so the
-/// opening seconds are never an instant ambush.
-const MIN_SPAWN_DISTANCE: u32 = 8;
-
 /// Enemies only notice the player within this many path steps (BFS cell
 /// steps around the walls, not euclidean distance) — an enemy behind a wall
 /// stays calm no matter how close it stands.
@@ -36,6 +32,11 @@ const AGGRO_RANGE_STEPS: u32 = 8;
 /// farther — hysteresis so nobody flickers in and out of aggro at the
 /// boundary.
 const DEAGGRO_EXTRA_STEPS: u32 = 2;
+/// Enemies spawn at least this many BFS steps from the player spawn —
+/// beyond the stand-down range, so the opening frame cannot aggro anyone
+/// and the hysteresis band starts fully calm. Derived from the aggro
+/// constants, so retuning either can never re-create a boundary overlap.
+const MIN_SPAWN_DISTANCE: u32 = AGGRO_RANGE_STEPS + DEAGGRO_EXTRA_STEPS;
 /// Un-alerted enemies mill slowly around where they spawned.
 const WANDER_SPEED: f32 = 30.0;
 /// How far a wandering enemy may stray from its home before it turns back.
@@ -743,6 +744,17 @@ fn far_reachable_cells(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_spawn_floor_sits_outside_aggro_reach() {
+        assert!(MIN_SPAWN_DISTANCE > AGGRO_RANGE_STEPS);
+        // An un-alerted enemy on the minimum spawn distance can never flip
+        // aggro while the player stands at the spawn.
+        assert_eq!(
+            aggro_flip(false, Some(MIN_SPAWN_DISTANCE), AGGRO_RANGE_STEPS),
+            None
+        );
+    }
 
     #[test]
     fn far_cells_exclude_the_spawn_and_walls() {

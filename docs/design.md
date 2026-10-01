@@ -190,7 +190,8 @@ depth, where the mob grows and the run continues with all progression intact.
   for ~10 s with no stand-down while it lasts; the normal hysteresis
   resumes when it lapses.
 - 40 enemies per map (more with depth), spawned on tiles that are
-  BFS-reachable and at least 8 steps from the player spawn; layout is
+  BFS-reachable and at least 10 steps from the player spawn — beyond the
+  stand-down range, so no depth opens aggroed; layout is
   deterministic per seed. Every 4th spawn is a thrower (every 3rd from depth
   2) and every 8th from depth 1 is a tank; the roles shuffle so the specials
   scatter through the mob instead of clustering.
@@ -281,7 +282,7 @@ until the hub clock protocol lands); telemetry bypasses quantisation.
 | Shield: active / cooldown / ring | 0.6 s / 3 s (−0.25/pt, floor 1 s) / 1.2 tiles |
 | Dash: speed / duration / cooldown / unlock cost | 600 u/s / 0.15 s / 2 s / 2 pts |
 | Grenade: speed / fuse / cooldown / blast / damage / bounces / unlock cost | 400 u/s / 0.5 s / 5 s / 2.5 tiles / 200 / 2 / 3 pts |
-| Enemy: count / chaser HP / thrower HP / tank HP / min spawn distance | 40 + 10×depth (cap 80) / 100 / 200 / 400 / 8 BFS steps |
+|| Enemy: count / chaser HP / thrower HP / tank HP / min spawn distance | 40 + 10×depth (cap 80) / 100 / 200 / 400 / 10 BFS steps |
 | Chaser / thrower / tank speed, throw range, throw cooldown | 120 / 70 / 60 / 6 tiles / 2 s |
 | Thrower / tank frequency | every 4th spawn (every 3rd from depth 2) / every 8th from depth 1 |
 | Enemy shield: plates / plate HP / regen / spawn chance | 8 / 5 / one plate per 2.5 s / 5% + 5%×depth (cap 40%) |
