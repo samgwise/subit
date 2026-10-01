@@ -39,6 +39,12 @@ pub enum GameAudioEvent {
     Corruption { entered: bool },
     /// The player descended to the next depth.
     Descent,
+    /// A transmitter drone fired a shot.
+    DroneShot,
+    /// A transmitter drone went offline.
+    DroneDown,
+    /// A transmitter drone finished its reboot and rejoined.
+    DroneOnline,
     /// Streaming player speed for audio modulation.
     PlayerTelemetry { speed: f32, max_speed: f32 },
     /// World-integrity ratio of the generated map (walkable fraction).
@@ -58,7 +64,10 @@ impl GameAudioEvent {
             | GameAudioEvent::Nova
             | GameAudioEvent::Cloak
             | GameAudioEvent::Corruption { .. }
-            | GameAudioEvent::Descent => "/subit/game/event/action",
+            | GameAudioEvent::Descent
+            | GameAudioEvent::DroneShot
+            | GameAudioEvent::DroneDown
+            | GameAudioEvent::DroneOnline => "/subit/game/event/action",
             GameAudioEvent::MobSweep { .. } => "/subit/game/event/combat",
             GameAudioEvent::PlayerTelemetry { .. } => "/subit/game/telemetry/player",
             GameAudioEvent::WorldTelemetry { .. } => "/subit/game/telemetry/world",
@@ -78,6 +87,9 @@ impl GameAudioEvent {
             | GameAudioEvent::Cloak
             | GameAudioEvent::Corruption { .. }
             | GameAudioEvent::Descent
+            | GameAudioEvent::DroneShot
+            | GameAudioEvent::DroneDown
+            | GameAudioEvent::DroneOnline
             | GameAudioEvent::MobSweep { .. } => SignalType::Event,
             GameAudioEvent::PlayerTelemetry { .. } => SignalType::Stream,
             GameAudioEvent::WorldTelemetry { .. } => SignalType::Param,
@@ -129,6 +141,15 @@ impl GameAudioEvent {
             }
             GameAudioEvent::Descent => {
                 fields.insert("type".into(), Value::String("descent".into()));
+            }
+            GameAudioEvent::DroneShot => {
+                fields.insert("type".into(), Value::String("drone_shot".into()));
+            }
+            GameAudioEvent::DroneDown => {
+                fields.insert("type".into(), Value::String("drone_down".into()));
+            }
+            GameAudioEvent::DroneOnline => {
+                fields.insert("type".into(), Value::String("drone_online".into()));
             }
             GameAudioEvent::PlayerTelemetry { speed, max_speed } => {
                 fields.insert("type".into(), Value::String("player_speed".into()));

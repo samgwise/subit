@@ -19,7 +19,7 @@ use bevy_ecs_tilemap::prelude::{MaterialTilemapHandle, TileStorage};
 use crate::bridge::{BridgeTx, GameAudioEvent};
 use crate::combat::{ComboState, PlayerShield, PlayerVitals, SHIELD_RADIUS, damage_player};
 use crate::enemies::{
-    Health, PROVOKED_SECS, Provoked, Shield, absorb_damage, kill_enemy, within_earshot,
+    Aggro, Health, PROVOKED_SECS, Provoked, Shield, absorb_damage, kill_enemy, within_earshot,
 };
 use crate::neon_material::NeonTilemapMaterial;
 use crate::skills::{
@@ -50,7 +50,7 @@ const RADIUS: f32 = 5.0;
 const PROJECTILE_SPRITE: f32 = 12.0;
 
 /// Damage an (unshielded) projectile hit deals.
-const PROJECTILE_DAMAGE: i32 = 20;
+pub const PROJECTILE_DAMAGE: i32 = 20;
 
 /// Grenade lob speed in world units per second.
 const GRENADE_SPEED: f32 = 400.0;
@@ -100,6 +100,9 @@ pub enum ProjectileAllegiance {
 pub struct Projectile {
     pub bounces: u32,
     pub allegiance: ProjectileAllegiance,
+    /// Damage the hit deals: the thrower's lob, the shared cleave for
+    /// reflected and volley shots, the drone's own chip.
+    pub damage: i32,
 }
 
 /// Per-projectile expiry timer.
@@ -160,18 +163,21 @@ fn colour_for(allegiance: ProjectileAllegiance) -> Color {
     }
 }
 
-/// Spawn a projectile at `origin` moving with `velocity`.
+/// Spawn a projectile at `origin` moving with `velocity`, dealing `damage`
+/// on impact.
 pub fn spawn_projectile(
     commands: &mut Commands,
     origin: Vec2,
     velocity: Vec2,
     allegiance: ProjectileAllegiance,
+    damage: i32,
 ) {
     commands.spawn((
         Projectile {
             bounces: MAX_BOUNCES,
             allegiance,
-        },
+            damage,
+ },
         Sprite::from_color(colour_for(allegiance), Vec2::splat(PROJECTILE_SPRITE)),
         Transform::from_xyz(origin.x, origin.y, 2.0),
         RigidBody::Dynamic,
@@ -238,7 +244,6 @@ fn projectile_impacts(
     mut barrier: ResMut<crate::combat::Barrier>,
     shield: Res<PlayerShield>,
     mut combo: ResMut<ComboState>,
-    levels: Res<SkillLevels>,
     bridge: Res<BridgeTx>,
     time: Res<Time>,
     mut rng: ResMut<crate::drops::DropRng>,
@@ -281,7 +286,11 @@ fn projectile_impacts(
             if shield.is_active() {
                 continue;
             }
-            if damage_player(&mut vitals, &mut barrier, PROJECTILE_DAMAGE) {
+            let shot_damage = projectiles
+                .get(projectile_entity)
+                .map(|(_, _, p, ..)| p.damage)
+                .unwrap_or(PROJECTILE_DAMAGE);
+            if damage_player(&mut vitals, &mut barrier, shot_damage) {
                 tracing::info!(hp = vitals.hp, "player hit by projectile");
                 if let Ok(mut entity_commands) = commands.get_entity(projectile_entity) {
                     entity_commands.despawn();
@@ -301,7 +310,10 @@ fn projectile_impacts(
             let Ok((_, enemy_pos, thrower, mut health, mut shield)) = enemies.get_mut(other) else {
                 continue;
             };
-            let damage = cleave_damage(&levels);
+            let damage = projectiles
+                .get(projectile_entity)
+                .map(|(_, _, p, ..)| p.damage)
+                .unwrap_or(0);
             // Shields soak their plates first; the leak lands on health.
             let to_health = match shield.as_mut() {
                 Some(shield) => {
@@ -325,6 +337,12 @@ fn projectile_impacts(
                     combo: combo.count,
                 });
                 tracing::info!(combo = combo.count, "projectile killed an enemy");
+            } else {
+                // A player-side shot that survives its target still gives the
+                // game away: the enemy heard it and turns on the player.
+                if let Ok(mut entity_commands) = commands.get_entity(other) {
+                    entity_commands.insert(Aggro);
+                }
             }
             // The projectile dies on impact either way.
             if let Ok(mut entity_commands) = commands.get_entity(projectile_entity) {
@@ -360,6 +378,7 @@ fn shield_reflection(
     player: Single<&Position, With<crate::Player>>,
     shield: Res<PlayerShield>,
     unlocks: Res<AbilityUnlocks>,
+    levels: Res<crate::skills::SkillLevels>,
     enemies: Query<&Position, With<crate::enemies::Enemy>>,
     bridge: Res<BridgeTx>,
     window: Single<&Window>,
@@ -383,6 +402,7 @@ fn shield_reflection(
             &mut sprite,
             &mut lifetime,
             player_pos,
+            cleave_damage(&levels),
             *window,
             camera.0,
             camera.1,
@@ -396,6 +416,7 @@ fn shield_reflection(
                     player_pos + aim * 12.0,
                     aim * PROJECTILE_SPEED,
                     ProjectileAllegiance::Player,
+                    cleave_damage(&levels),
                 );
             }
         }
@@ -446,6 +467,7 @@ fn apply_reflection(
     sprite: &mut Sprite,
     lifetime: &mut Lifetime,
     player_pos: Vec2,
+    damage: i32,
     window: &Window,
     camera: &Camera,
     camera_transform: &GlobalTransform,
@@ -459,6 +481,7 @@ fn apply_reflection(
     velocity.0 = reflected_velocity(velocity.0, aim);
     projectile.bounces = MAX_BOUNCES;
     projectile.allegiance = ProjectileAllegiance::Player;
+    projectile.damage = damage;
     sprite.color = colour_for(ProjectileAllegiance::Player);
     lifetime.0.reset();
     // CollisionLayers is immutable: swap it via remove + insert.
@@ -541,6 +564,10 @@ fn grenade_detonate(
         ),
         With<crate::enemies::Enemy>,
     >,
+    drones: Query<
+        (Entity, &Transform, Has<crate::drones::Jammed>, Has<crate::drones::Downed>),
+        With<crate::drones::Drone>,
+    >,
     mut combo: ResMut<ComboState>,
     mut fx: ResMut<BlastFx>,
     mut blasts: ResMut<BlastQueue>,
@@ -614,6 +641,14 @@ fn grenade_detonate(
                 )));
             }
         }
+        // And it fries the player's own drone if it hovered too close.
+        crate::drones::down_drones_in_radius(
+            &mut commands,
+            &drones,
+            centre,
+            GRENADE_RADIUS,
+            &bridge,
+        );
         // Cracked walls in the blast radius come down (the destruction
         // pass runs after this system).
         blasts.0.push(centre);

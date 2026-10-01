@@ -199,3 +199,25 @@ the flow field rebuilds through the new route. The blast is loud too:
 every enemy within 10 tiles — euclidean, so sound passes through walls —
 is provoked into a forced ~10 s hunt that ignores the aggro hysteresis
 until it lapses.
+
+## Milestone 19 — Transmitter drone
+
+The first ally: the transmitter unlock (4 points) summons a drone that
+hovers at a 2-tile standoff ring around the player and fires a 34-damage
+chip shot at the nearest enemy within 6 tiles every 2 s — no line-of-sight
+check, bouncing shots, and kills feeding the usual drops and combo. It
+follows straight on a clear sight line and down the player's flow field
+when blocked, with no collider — nothing touches it in flight. The fleet
+skill adds a drone per point (cap 4). The link is fragile in exactly two
+ways: corrupted data zones jam it (either end standing in a zone hangs the
+drone dark and offline, its 8 s reboot clock starting only when the jam
+clears) and a grenade blast fries an online drone caught in the radius
+(the same reboot, held by a jam). Drone shots count as the player's —
+surviving targets aggro on the spot — but firing never breaks the cloak.
+Projectiles now carry their damage on the shot itself (the thrower's lob,
+the shared cleave for reflected and volley shots, the drone's chip), and
+three new events (`drone_shot`, `drone_down`, `drone_online`) play through
+the audio chain. The fleet respawns from the player's physics position on
+descent (the transform lags the teleport — a stale-position spawn could
+embed a drone in a fresh wall), and a drone stranded where no path reads
+recalls to the player rather than hanging forever.

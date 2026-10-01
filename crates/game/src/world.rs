@@ -277,10 +277,21 @@ fn descend(
         Query<Entity, With<crate::projectiles::Projectile>>,
         Query<Entity, With<crate::projectiles::Grenade>>,
         Query<Entity, With<crate::drops::Pickup>>,
+        Query<Entity, With<crate::drones::Drone>>,
     ),
 ) {
-    let (tiles, tilemaps, walls, cracked_walls, beacons, enemies, projectiles, grenades, pickups) =
-        world_entities;
+    let (
+        tiles,
+        tilemaps,
+        walls,
+        cracked_walls,
+        beacons,
+        enemies,
+        projectiles,
+        grenades,
+        pickups,
+        drones,
+    ) = world_entities;
     let (mut position, mut velocity) = player.into_inner();
     let (width, height) = (map.map.grid.width(), map.map.grid.height());
     let exit_pos = tile_world_pos((width, height), map.map.exit, config.tile_size);
@@ -289,6 +300,8 @@ fn descend(
     }
 
     depth.0 += 1;
+    // Drones go too: the new map would leave them embedded in fresh
+    // walls, and the fleet maintenance respawns them at the player.
     for entity in tiles
         .iter()
         .chain(tilemaps.iter())
@@ -299,6 +312,7 @@ fn descend(
         .chain(projectiles.iter())
         .chain(grenades.iter())
         .chain(pickups.iter())
+        .chain(drones.iter())
     {
         if let Ok(mut entity_commands) = commands.get_entity(entity) {
             entity_commands.despawn();

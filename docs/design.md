@@ -163,6 +163,20 @@ depth, where the mob grows and the run continues with all progression intact.
   in a 2.5-tile radius that shoves every survivor outward (a decaying kick
   layered over their steering); routes through shields like every hit.
   An expanding ring shows the reach.
+- **Transmitter drone (unlock: 4 points):** summons a companion drone that
+  hovers at a 2-tile standoff ring and fires a 34-damage chip shot at the
+  nearest enemy within 6 tiles every 2 s — no line-of-sight check (bouncing
+  lobs read fine coming from a machine). It follows the player: straight
+  when the sight line is clear, otherwise down the player's flow field,
+  gliding at 180 u/s with no collider — nothing touches it in flight. The
+  fleet skill adds a drone per point (cap 4 total, one point each). The
+  link is fragile in exactly two ways. Corruption jams it: while either
+  the player or the drone stands in a corrupted zone the drone hangs dark
+  and offline, and its 8 s reboot clock only starts when the jam clears.
+  A grenade blast fries an online drone caught in the radius — the same
+  8 s reboot, held if the jam keeps it down. Shots from the drone count
+  as the player's: a surviving target aggros on the spot, though the drone
+  firing never breaks the cloak. Kills feed the usual drops and combo.
 - Every hit routes through plate pools first: enemy shields soak their
   plates before an enemy's health, the barrier before player HP — one shared
   absorption helper for cleaves, reflected shots, projectiles and blasts.
@@ -234,7 +248,9 @@ depth, where the mob grows and the run continues with all progression intact.
   +50 (1 point, cap 6, needs grenade), dash unlock (2 points), grenade
   unlock (3 points), barrier unlock (3 points), nova unlock (4 points),
   deflect volley unlock (5 points), cloak unlock (5 points) with sneak
-  −1 step (cap 4, two at max) and duration +1 s (cap 4) upgrades.
+  −1 step (cap 4, two at max) and duration +1 s (cap 4) upgrades,
+  transmitter unlock (4 points), drone fleet +1 drone per point (cap 4,
+  needs transmitter).
   Purchases apply immediately; rows grey out when unaffordable, maxed or
   owned, and show their level and cost.
 
@@ -258,6 +274,9 @@ until the hub clock protocol lands); telemetry bypasses quantisation.
 | Corruption enter | `/subit/game/event/action` `corruption_enter` (event) | Dissonant glitch stab — note 46, vel 95, 0.3 s |
 | Corruption exit | `/subit/game/event/action` `corruption_exit` (event) | Resolve blip — note 52, vel 60, 0.15 s |
 | Depth descent | `/subit/game/event/action` `descent` (event) | Transition tone — note 43, vel 100, 0.4 s |
+| Transmitter drone fires | `/subit/game/event/action` `drone_shot` (event) | Small blip — note 64, vel 55, 0.1 s |
+| Transmitter drone goes offline | `/subit/game/event/action` `drone_down` (event) | Glitchy fall — note 40, vel 100, 0.35 s |
+| Transmitter drone rejoins | `/subit/game/event/action` `drone_online` (event) | Rising blip — note 76, vel 85, 0.2 s |
 | Player speed (≈10 Hz) | `/subit/game/telemetry/player` `player_speed` (stream) | Mod-wheel CC1, full scale at 240 u/s |
 | World integrity (per map) | `/subit/game/telemetry/world` `world_integrity` (param) | Logged only — harmonic mode shift pending |
 
@@ -274,7 +293,9 @@ until the hub clock protocol lands); telemetry bypasses quantisation.
 || Dash cooldown reduction: per point / floor | −0.25 s / 1.0 s |
 || Grenade damage: per point / cap | +50 / 6 |
 || Nova: damage / radius / cooldown / unlock cost | 150 / 2.5 tiles / 6 s / 4 pts |
-|| Deflect volley: extra shots / unlock cost | 2 / 5 pts |
+||| Deflect volley: extra shots / unlock cost | 2 / 5 pts |
+||| Transmitter drone: damage / cadence / range / speed / standoff / reboot | 34 / 2 s / 6 tiles / 180 u/s / 2 tiles / 8 s |
+||| Transmitter unlock / fleet | 4 pts / +1 drone per point (cap 4) |
 || Aggro: notice range / stand-down range / wander speed / leash | 8 steps / 10 / 30 u/s / 1.5 tiles |
 | Cloak: unlock / sneak per point (floor) / duration per point (cap) / cooldown | 5 pts / −1 step (2) / +1 s (cap 4) / 10 s |
 | Corruption: burst interval / burst length / drain / stealth | ~3 s / ~0.3 s / 1 plate per s / −2 steps |

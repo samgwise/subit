@@ -31,6 +31,7 @@ pub struct SkillLevels {
     pub grenade: u32,
     pub cloak: u32,
     pub cloak_duration: u32,
+    pub drone_fleet: u32,
 }
 
 /// Purchased ability unlocks.
@@ -41,6 +42,7 @@ pub struct AbilityUnlocks {
     pub barrier: bool,
     pub nova: bool,
     pub deflect_volley: bool,
+    pub transmitter: bool,
     pub cloak: bool,
 }
 
@@ -168,6 +170,9 @@ pub const DASH_LEVEL_CAP: u32 = 4;
 pub const GRENADE_LEVEL_CAP: u32 = 6;
 pub const CLOAK_SNEAK_CAP: u32 = 4;
 pub const CLOAK_DURATION_CAP: u32 = 4;
+pub const FLEET_MAX_DRONES: u32 = 4;
+/// Purchase cap for the fleet skill: one point per extra drone.
+pub const FLEET_LEVEL_CAP: u32 = FLEET_MAX_DRONES - 1;
 
 // --- Costs -----------------------------------------------------------------
 
@@ -176,8 +181,15 @@ pub const DASH_UNLOCK_COST: u32 = 2;
 pub const GRENADE_UNLOCK_COST: u32 = 3;
 pub const BARRIER_UNLOCK_COST: u32 = 3;
 pub const NOVA_UNLOCK_COST: u32 = 4;
+pub const TRANSMITTER_UNLOCK_COST: u32 = 4;
 pub const VOLLEY_UNLOCK_COST: u32 = 5;
 pub const CLOAK_UNLOCK_COST: u32 = 5;
+
+/// Drones the transmitter fields at the current fleet level: the unlock
+/// comes with one, each fleet point adds another, capped.
+pub fn fleet_count(levels: &SkillLevels) -> usize {
+    1 + levels.drone_fleet.min(FLEET_LEVEL_CAP) as usize
+}
 
 // --- Dash state (the ability itself lives with movement) -------------------
 
@@ -302,6 +314,8 @@ enum SkillRow {
     Grenade,
     GrenadeDamage,
     Nova,
+    Transmitter,
+    DroneFleet,
     DeflectVolley,
     Barrier,
     Cloak,
@@ -353,6 +367,13 @@ impl SkillRow {
             SkillRow::Grenade => (!unlocks.grenade).then_some(GRENADE_UNLOCK_COST),
             SkillRow::Nova => (!unlocks.nova).then_some(NOVA_UNLOCK_COST),
             SkillRow::DeflectVolley => (!unlocks.deflect_volley).then_some(VOLLEY_UNLOCK_COST),
+            SkillRow::Transmitter => {
+                (!unlocks.transmitter).then_some(TRANSMITTER_UNLOCK_COST)
+            }
+            SkillRow::DroneFleet => {
+                (unlocks.transmitter && levels.drone_fleet < FLEET_LEVEL_CAP)
+                    .then_some(SKILL_COST)
+            }
             SkillRow::Barrier => (!unlocks.barrier).then_some(BARRIER_UNLOCK_COST),
             SkillRow::Cloak => (!unlocks.cloak).then_some(CLOAK_UNLOCK_COST),
             SkillRow::CloakSneak => {
@@ -433,6 +454,16 @@ impl SkillRow {
                 unlock_label("grenade", Some("G"), unlocks.grenade, GRENADE_UNLOCK_COST)
             }
             SkillRow::Nova => unlock_label("nova", Some("E"), unlocks.nova, NOVA_UNLOCK_COST),
+            SkillRow::Transmitter => {
+                unlock_label("transmitter", None, unlocks.transmitter, TRANSMITTER_UNLOCK_COST)
+            }
+            SkillRow::DroneFleet => {
+                if !unlocks.transmitter {
+                    "Drone fleet +1  (needs transmitter)".to_string()
+                } else {
+                    levelled_label("Drone fleet", "+1 drone", levels.drone_fleet, FLEET_LEVEL_CAP)
+                }
+            }
             SkillRow::DeflectVolley => unlock_label(
                 "deflect volley",
                 None,
@@ -467,7 +498,7 @@ impl SkillRow {
 }
 
 /// The menu's rows in display order: upgrades first, then the unlocks.
-const MENU_ROWS: [SkillRow; 15] = [
+const MENU_ROWS: [SkillRow; 17] = [
     SkillRow::Cleave,
     SkillRow::CleaveReach,
     SkillRow::Shield,
@@ -475,11 +506,13 @@ const MENU_ROWS: [SkillRow; 15] = [
     SkillRow::Vitality,
     SkillRow::DashCooldown,
     SkillRow::GrenadeDamage,
+    SkillRow::DroneFleet,
     SkillRow::CloakSneak,
     SkillRow::CloakDuration,
     SkillRow::Dash,
     SkillRow::Grenade,
     SkillRow::Nova,
+    SkillRow::Transmitter,
     SkillRow::DeflectVolley,
     SkillRow::Barrier,
     SkillRow::Cloak,
@@ -617,6 +650,19 @@ fn handle_purchases(
                 unlocks.nova = true;
                 tracing::info!("unlocked nova");
             }
+            SkillRow::Transmitter => {
+                points.0 -= TRANSMITTER_UNLOCK_COST;
+                unlocks.transmitter = true;
+                tracing::info!("unlocked transmitter");
+            }
+            SkillRow::DroneFleet => {
+                points.0 -= SKILL_COST;
+                levels.drone_fleet += 1;
+                tracing::info!(
+                    fleet = levels.drone_fleet,
+                    "purchased drone fleet"
+                );
+            }
             SkillRow::DeflectVolley => {
                 points.0 -= VOLLEY_UNLOCK_COST;
                 unlocks.deflect_volley = true;
@@ -750,6 +796,19 @@ mod tests {
         assert_eq!(grenade_damage(&levels), 200);
         levels.grenade = 6;
         assert_eq!(grenade_damage(&levels), 500);
+    }
+
+    #[test]
+    fn fleet_grows_from_one_and_caps_at_four_drones() {
+        let mut levels = SkillLevels::default();
+        assert_eq!(fleet_count(&levels), 1);
+        levels.drone_fleet = 2;
+        assert_eq!(fleet_count(&levels), 3);
+        levels.drone_fleet = FLEET_LEVEL_CAP;
+        assert_eq!(fleet_count(&levels), FLEET_MAX_DRONES as usize);
+        // Past the cap the fleet stops growing.
+        levels.drone_fleet = 100;
+        assert_eq!(fleet_count(&levels), FLEET_MAX_DRONES as usize);
     }
 
     #[test]

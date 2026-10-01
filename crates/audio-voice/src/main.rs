@@ -133,6 +133,9 @@ fn parse_event(payload: &BTreeMap<String, Value>) -> Option<GameEvent> {
         "corruption_enter" => Some(GameEvent::CorruptionEnter),
         "corruption_exit" => Some(GameEvent::CorruptionExit),
         "descent" => Some(GameEvent::Descent),
+        "drone_shot" => Some(GameEvent::DroneShot),
+        "drone_down" => Some(GameEvent::DroneDown),
+        "drone_online" => Some(GameEvent::DroneOnline),
         _ => None,
     }
 }

@@ -715,6 +715,7 @@ fn thrower_attack(
             pos.0,
             to_player.normalize_or_zero() * crate::projectiles::PROJECTILE_SPEED,
             crate::projectiles::ProjectileAllegiance::Enemy,
+            crate::projectiles::PROJECTILE_DAMAGE,
         );
         bridge.send(crate::bridge::GameAudioEvent::ProjectileThrow);
     }

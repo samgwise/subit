@@ -84,6 +84,12 @@ pub enum GameEvent {
     CorruptionExit,
     /// The player descended to the next depth — deep transition tone.
     Descent,
+    /// A transmitter drone fired a shot — small mid blip.
+    DroneShot,
+    /// A transmitter drone went offline — glitchy falling tone.
+    DroneDown,
+    /// A transmitter drone finished its reboot — rising blip.
+    DroneOnline,
 }
 
 /// A MIDI-ready note event.
@@ -175,6 +181,24 @@ pub fn perform_event(event: GameEvent) -> NoteEvent {
             note: 43,
             velocity: 100,
             duration_secs: 0.4,
+        },
+        GameEvent::DroneShot => NoteEvent {
+            channel: 0,
+            note: 64,
+            velocity: 55,
+            duration_secs: 0.1,
+        },
+        GameEvent::DroneDown => NoteEvent {
+            channel: 0,
+            note: 40,
+            velocity: 100,
+            duration_secs: 0.35,
+        },
+        GameEvent::DroneOnline => NoteEvent {
+            channel: 0,
+            note: 76,
+            velocity: 85,
+            duration_secs: 0.2,
         },
     }
 }
