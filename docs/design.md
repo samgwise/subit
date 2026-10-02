@@ -28,7 +28,13 @@ depth, where the mob grows and the run continues with all progression intact.
 - Tile classes: `Floor` (16 edge-mask variants, weights favouring open
   arenas), `Wall`, `Terminal`. Configured shares: walls 25% of the map,
   terminals 2%. Contradictions and undersized walkable regions restart the
-  collapse with a derived seed (up to 100 attempts).
+  collapse with a derived seed (up to 100 attempts). Exhausting the budget
+  is a real outcome — about a quarter of default-config seeds reject ~98%
+  of their attempts on region size (solver contradictions never happen):
+  the game escalates to an uncorrelated seed family for up to four rounds,
+  halving and then dropping the walkable floor only as a last resort, so a
+  map always comes out and the same (seed, depth) stays deterministic.
+  Every escalation is logged as a warning — a tuning signal, not an error.
 - Reachability is guaranteed: a BFS flood fill keeps only the largest walkable
   region (≥30% of interior cells), picks the spawn at random within it and the
   exit as the cell farthest from the spawn. `wfc::walkable_distances` exposes
@@ -82,6 +88,19 @@ depth, where the mob grows and the run continues with all progression intact.
   the new route. The blast is loud too — every enemy within 10 tiles
   (euclidean, so sound passes through walls) is provoked: a forced ~10 s
   hunt that ignores the aggro hysteresis until it lapses.
+- Locked vaults: every depth seals one room off the main path — a natural
+  island when one qualifies (at least 12 cells with a single thin wall
+  facing the main region), otherwise a carved 5×3 room inside a 7×5 wall
+  ring punched beside the main path (placement is deterministic per
+  (seed, depth), and a depth that fits neither runs vault-less rather
+  than failing). The door is a wall in the grid — nothing paths, sees or
+  routes through — drawn as a pulsing amber slab on its own small body.
+  Inside waits a mixed mob (3 enemies, +1 every 3 depths, cap 5 — same
+  role mix and shield rolls as the depth's swarm, calm because the room
+  is unreachable) and a guaranteed HP cross at the room's centre. The
+  door and the room's whole seal are excluded from cracked-wall marking,
+  so grenades and dashes can never open a second way in; the vault is
+  the transmitter's to open.
 - Neon bloom: an HDR camera post-process (Bevy's built-in `Bloom`, additive
   composite, ~0.6 luminance threshold) makes the bright pixels bleed glow —
   lit wall edges, the beacon pillar, terminals, the cleave flash, shots and
@@ -190,20 +209,26 @@ depth, where the mob grows and the run continues with all progression intact.
   in a 2.5-tile radius that shoves every survivor outward (a decaying kick
   layered over their steering); routes through shields like every hit.
   An expanding ring shows the reach.
-- **Transmitter drone (unlock: 4 points):** summons a companion drone that
-  hovers at a 2-tile standoff ring and fires a 34-damage chip shot at the
-  nearest enemy within 6 tiles every 2 s — no line-of-sight check (bouncing
-  lobs read fine coming from a machine). It follows the player: straight
-  when the sight line is clear, otherwise down the player's flow field,
-  gliding at 180 u/s with no collider — nothing touches it in flight. The
-  fleet skill adds a drone per point (cap 4 total, one point each). The
-  link is fragile in exactly two ways. Corruption jams it: while either
-  the player or the drone stands in a corrupted zone the drone hangs dark
-  and offline, and its 8 s reboot clock only starts when the jam clears.
-  A grenade blast fries an online drone caught in the radius — the same
-  8 s reboot, held if the jam keeps it down. Shots from the drone count
-  as the player's: a surviving target aggros on the spot, though the drone
-  firing never breaks the cloak. Kills feed the usual drops and combo.
+- **Transmitter drone (unlock: 2 points):** the vault key first, a weapon
+  second. Owning it opens locked vaults — walking within 1.5 tiles of a
+  closed door broadcasts the code and the door slides open (an
+  unlock-and-slide chime through the audio chain). The transmitter fields
+  no drones of its own; the fleet skill adds one drone per point (cap 4,
+  one point each), each hovering at a 2-tile standoff ring and firing a
+  34-damage chip shot at the nearest enemy within 6 tiles every 2 s — no
+  line-of-sight check (bouncing lobs read fine coming from a machine).
+  Drones follow the player: straight when the sight line is clear,
+  otherwise down the player's flow field, gliding at 180 u/s with no
+  collider — nothing touches them in flight. The link is fragile in
+  exactly two ways. Corruption jams it: while the player stands in a
+  corrupted zone the drones hang dark and offline — the drones' own
+  position is irrelevant (they hover over corruption freely, so they can
+  never strand themselves in a zone they cannot leave offline) — and the
+  8 s reboot clock only starts when the player leaves the zone. A grenade
+  blast fries an online drone caught in the radius — the same 8 s reboot,
+  held if the jam keeps it down. Shots from drones count as the player's:
+  a surviving target aggros on the spot, though the drone firing never
+  breaks the cloak. Kills feed the usual drops and combo.
 - Every hit routes through plate pools first: enemy shields soak their
   plates before an enemy's health, the barrier before player HP — one shared
   absorption helper for cleaves, reflected shots, projectiles and blasts.
@@ -264,6 +289,8 @@ depth, where the mob grows and the run continues with all progression intact.
 - Kills always drop an XP shard (10 chaser, 25 thrower) and 15% of kills add
   an HP cross (25 HP, clamped to max). Pickups (10–12 px, alpha-pulsing) drift
   to the player inside a 2-tile magnet radius and apply within half a tile.
+  The vault holds a guaranteed cross at its centre — the room's treasure,
+  claimed with the mob's own drops.
 - `xp_for_level(level) = 40 + 30 × level` — linear, the single place the curve
   shape lives. A full 40-enemy clear (~550 XP) is about five levels.
 - Each level-up grants 1 skill point. Tab pauses the world (all simulation
@@ -276,8 +303,8 @@ depth, where the mob grows and the run continues with all progression intact.
   unlock (3 points), barrier unlock (3 points), nova unlock (4 points),
   deflect volley unlock (5 points), cloak unlock (5 points) with sneak
   −1 step (cap 4, two at max) and duration +1 s (cap 4) upgrades,
-  transmitter unlock (4 points), drone fleet +1 drone per point (cap 4,
-  needs transmitter).
+  transmitter unlock (2 points — the vault key), drone fleet +1 drone per
+  point (cap 4, needs transmitter; the unlock fields none).
   Purchases apply immediately; rows grey out when unaffordable, maxed or
   owned, and show their level and cost.
 
@@ -304,6 +331,7 @@ until the hub clock protocol lands); telemetry bypasses quantisation.
 | Transmitter drone fires | `/subit/game/event/action` `drone_shot` (event) | Small blip — note 64, vel 55, 0.1 s |
 | Transmitter drone goes offline | `/subit/game/event/action` `drone_down` (event) | Glitchy fall — note 40, vel 100, 0.35 s |
 | Transmitter drone rejoins | `/subit/game/event/action` `drone_online` (event) | Rising blip — note 76, vel 85, 0.2 s |
+| Vault door opens | `/subit/game/event/action` `vault_open` (event) | Unlock-and-slide chime — note 70, vel 90, 0.3 s |
 | Player speed (≈10 Hz) | `/subit/game/telemetry/player` `player_speed` (stream) | Mod-wheel CC1, full scale at 240 u/s |
 | World integrity (per map) | `/subit/game/telemetry/world` `world_integrity` (param) | Logged only — harmonic mode shift pending |
 
@@ -322,7 +350,8 @@ until the hub clock protocol lands); telemetry bypasses quantisation.
 || Nova: damage / radius / cooldown / unlock cost | 150 / 2.5 tiles / 6 s / 4 pts |
 ||| Deflect volley: extra shots / unlock cost | 2 / 5 pts |
 ||| Transmitter drone: damage / cadence / range / speed / standoff / reboot | 34 / 2 s / 6 tiles / 180 u/s / 2 tiles / 8 s |
-||| Transmitter unlock / fleet | 4 pts / +1 drone per point (cap 4) |
+||| Transmitter unlock / fleet | 2 pts / +1 drone per point (cap 4, none at unlock) |
+||| Vault: min island / carved interior / mob / door open radius | 12 cells / 5×3 / 3 + 1 per 3 depths (cap 5) / 1.5 tiles |
 || Aggro: notice range / stand-down range / wander speed / leash | 8 steps / 10 / 30 u/s / 1.5 tiles |
 | Cloak: unlock / sneak per point (floor) / duration per point (cap) / cooldown | 5 pts / −1 step (2) / +1 s (cap 4) / 10 s |
 | Corruption: burst interval / burst length / drain / stealth | ~3 s / ~0.3 s / 1 plate per s / −2 steps |

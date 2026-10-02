@@ -240,3 +240,45 @@ stay mouse-driven (pad nav is the deferred tail), the Steam Deck needs
 nothing special (it is just a standard pad), and rumble is unexplored. A
 pad-only aim line runs out to the cleave's current reach — the stick
 player's cursor, and a range hint in one.
+
+## Milestone 21 — Generation can't panic the descent
+
+Roughly a quarter of default-config seeds exhausted the generator's
+100-restart budget and panicked the game mid-descent. The measurement
+showed why: the walkable-region ratio gate (30% of interior) rejects ~98%
+of collapse attempts at a 25% wall share (mean rejected region ~13%), so
+some seeds never meet it within budget — solver contradictions never
+happen at all. Descent now escalates: the depth-derived seed runs the
+standard budget first (well-behaved seeds keep today's maps), then up to
+four uncorrelated seed families get their own budgets, and the last
+guarded rounds halve and finally drop the walkable floor rather than let
+the run die — a sparser arena beats a panic. Escalations log warnings so
+tuning can see them, and a known budget-exhausting seed is pinned as a
+regression test.
+
+## Milestone 22 — Locked vaults, opened by the transmitter
+
+The unreachable islands became the point. Every depth now seals one room
+off the main path — a natural island when one qualifies (12+ cells behind
+a single thin wall), otherwise a 5×3 room carved into a 7×5 wall ring
+punched beside the main path, all deterministic per (seed, depth), and a
+depth that fits neither simply runs vault-less. The door is a wall the
+grid means it: nothing paths, sees or routes through, drawn as a pulsing
+amber slab on its own small body. Inside mills a mixed mob (three enemies,
+one more every 3 depths, capped at 5 — the depth's own role mix and shield
+rolls, calm because the room is unreachable) over a guaranteed HP cross.
+The door answers only to the transmitter: walking near it with the unlock
+owned slides it open — the grid cell flips to floor, the flow field
+reroutes, and an unlock-and-slide chime plays. The vault's whole seal is
+excluded from cracked-wall marking so grenades and dashes can never open
+a second way in. The transmitter itself repriced to 2 points and fields
+no drones of its own — the fleet skill (one point per drone, cap 4) is
+the only drone source, making the unlock the cheap utility buy and the
+fleet the weapon investment. Shipped with two fixes and a rule change:
+the door opener had read the corruption overlay's tile storage as its
+own (an unfiltered query is ambiguous with two tilemaps — the door never
+opened), the drone jam gate had no drone filter (jamming and "rebooting"
+every sprite in the world whenever the player crossed corruption), and
+the jam now rides on the player's position alone — a drone hovering over
+corruption flies on fine instead of stranding itself in a zone it could
+never leave offline.

@@ -45,6 +45,8 @@ pub enum GameAudioEvent {
     DroneDown,
     /// A transmitter drone finished its reboot and rejoined.
     DroneOnline,
+    /// The transmitter opened a locked vault door.
+    VaultOpen,
     /// Streaming player speed for audio modulation.
     PlayerTelemetry { speed: f32, max_speed: f32 },
     /// World-integrity ratio of the generated map (walkable fraction).
@@ -67,7 +69,8 @@ impl GameAudioEvent {
             | GameAudioEvent::Descent
             | GameAudioEvent::DroneShot
             | GameAudioEvent::DroneDown
-            | GameAudioEvent::DroneOnline => "/subit/game/event/action",
+            | GameAudioEvent::DroneOnline
+            | GameAudioEvent::VaultOpen => "/subit/game/event/action",
             GameAudioEvent::MobSweep { .. } => "/subit/game/event/combat",
             GameAudioEvent::PlayerTelemetry { .. } => "/subit/game/telemetry/player",
             GameAudioEvent::WorldTelemetry { .. } => "/subit/game/telemetry/world",
@@ -90,6 +93,7 @@ impl GameAudioEvent {
             | GameAudioEvent::DroneShot
             | GameAudioEvent::DroneDown
             | GameAudioEvent::DroneOnline
+            | GameAudioEvent::VaultOpen
             | GameAudioEvent::MobSweep { .. } => SignalType::Event,
             GameAudioEvent::PlayerTelemetry { .. } => SignalType::Stream,
             GameAudioEvent::WorldTelemetry { .. } => SignalType::Param,
@@ -150,6 +154,9 @@ impl GameAudioEvent {
             }
             GameAudioEvent::DroneOnline => {
                 fields.insert("type".into(), Value::String("drone_online".into()));
+            }
+            GameAudioEvent::VaultOpen => {
+                fields.insert("type".into(), Value::String("vault_open".into()));
             }
             GameAudioEvent::PlayerTelemetry { speed, max_speed } => {
                 fields.insert("type".into(), Value::String("player_speed".into()));

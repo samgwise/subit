@@ -10,16 +10,15 @@ use crate::Grid;
 use crate::socket::Direction;
 use crate::tiles::WeightedPrototype;
 
-/// Find the largest connected region of walkable tiles. Returns `None` when
-/// the grid has no walkable cells (or an uncollapsed cell).
-pub(crate) fn largest_walkable_region(
-    grid: &Grid,
-    prototypes: &[WeightedPrototype],
-) -> Option<Vec<(u32, u32)>> {
+/// All 4-connected walkable regions of a collapsed grid, largest first.
+/// Uncollapsed cells count as unwalkable. Consumers use this to tell the
+/// main play space from the smaller islands around it (e.g. vault
+/// placement, cosmetic connectivity stats).
+pub fn walkable_regions(grid: &Grid, prototypes: &[WeightedPrototype]) -> Vec<Vec<(u32, u32)>> {
     let width = grid.width();
     let height = grid.height();
     let mut visited = vec![false; (width * height) as usize];
-    let mut largest: Vec<(u32, u32)> = Vec::new();
+    let mut regions: Vec<Vec<(u32, u32)>> = Vec::new();
 
     for y in 0..height {
         for x in 0..width {
@@ -27,14 +26,17 @@ pub(crate) fn largest_walkable_region(
             if visited[start] {
                 continue;
             }
-            let tile = grid.get(x, y)?;
-            if !prototypes[tile as usize].prototype.class.walkable() {
+            let walkable = matches!(
+                grid.get(x, y),
+                Some(tile) if prototypes[tile as usize].prototype.class.walkable()
+            );
+            if !walkable {
                 visited[start] = true;
                 continue;
             }
 
-            // Flood-fill this region, marking cells visited as they are seen
-            // so nothing is enqueued twice.
+            // Flood-fill this region, marking cells visited as they are
+            // seen so nothing is enqueued twice.
             let mut region = Vec::new();
             let mut queue = VecDeque::new();
             visited[start] = true;
@@ -54,22 +56,29 @@ pub(crate) fn largest_walkable_region(
                         continue;
                     }
                     visited[neighbour] = true;
-                    let tile = grid.get(nx, ny)?;
-                    if prototypes[tile as usize].prototype.class.walkable() {
+                    let tile = grid.get(nx, ny);
+                    if matches!(
+                        tile,
+                        Some(t) if prototypes[t as usize].prototype.class.walkable()
+                    ) {
                         queue.push_back((nx, ny));
                     }
                 }
             }
-            if region.len() > largest.len() {
-                largest = region;
-            }
+            regions.push(region);
         }
     }
-    if largest.is_empty() {
-        None
-    } else {
-        Some(largest)
-    }
+    regions.sort_by_key(|region| std::cmp::Reverse(region.len()));
+    regions
+}
+
+/// Find the largest connected region of walkable tiles. Returns `None` when
+/// the grid has no walkable cells.
+pub(crate) fn largest_walkable_region(
+    grid: &Grid,
+    prototypes: &[WeightedPrototype],
+) -> Option<Vec<(u32, u32)>> {
+    walkable_regions(grid, prototypes).into_iter().next()
 }
 
 /// Whether the sight line between two points is unobstructed by non-walkable
@@ -384,6 +393,34 @@ mod tests {
             })
             .unwrap();
         (prototypes, wall, open_floor)
+    }
+
+    #[test]
+    fn regions_split_and_sort_largest_first() {
+        let (prototypes, wall, floor) = test_setup();
+        let mut grid = Grid::new(9, 5);
+        for y in 0..5 {
+            for x in 0..9 {
+                grid.set(x, y, floor as u32);
+            }
+        }
+        // Sealed border plus a full wall column at x=3: the interior splits
+        // into a 6-cell left half and a 12-cell right half.
+        for x in 0..9 {
+            grid.set(x, 0, wall as u32);
+            grid.set(x, 4, wall as u32);
+        }
+        for y in 0..5 {
+            grid.set(0, y, wall as u32);
+            grid.set(8, y, wall as u32);
+            grid.set(3, y, wall as u32);
+        }
+        let regions = walkable_regions(&grid, &prototypes);
+        assert_eq!(regions.len(), 2);
+        assert_eq!(regions[0].len(), 12);
+        assert_eq!(regions[1].len(), 6);
+        // Every walkable cell lands in exactly one region.
+        assert_eq!(regions.iter().map(Vec::len).sum::<usize>(), 18);
     }
 
     #[test]

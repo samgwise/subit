@@ -57,9 +57,10 @@ pub struct Drone;
 #[derive(Component, Debug)]
 struct FireTimer(Timer);
 
-/// Marker: the transmitter link is jammed by corruption (either end of the
-/// link stands in a zone). Inserted/removed by the jam gate; while present
-/// the drone neither moves, fires, nor reboots.
+/// Marker: the transmitter link is jammed by corruption (the player's end
+/// of the link stands in a zone — the drone's own position is irrelevant).
+/// Inserted/removed by the jam gate; while present the drone neither
+/// moves, fires, nor reboots.
 #[derive(Component, Debug)]
 pub struct Jammed;
 
@@ -130,12 +131,6 @@ fn fleet_maintenance(
     }
 }
 
-/// The transmitter link survives unless either end stands in corruption —
-/// the signal cannot cross the data rot.
-fn link_jammed(player_in_zone: bool, drone_in_zone: bool) -> bool {
-    player_in_zone || drone_in_zone
-}
-
 /// Advance a drone's reboot clock one frame: `Some(true)` when the reboot
 /// finishes this frame (back online), `Some(false)` while still waiting,
 /// `None` when the link is jammed — no clean time accrues inside corruption.
@@ -147,9 +142,11 @@ fn tick_reboot(jammed: bool, timer: &mut Timer, delta: Duration) -> Option<bool>
     Some(timer.is_finished())
 }
 
-/// Keep every drone's link state current: jam while either end of the link
-/// is inside corruption, start the reboot when the jam clears, and count
-/// the reboot down to a return.
+/// Keep every drone's link state current: jam the fleet while the player
+/// stands in corruption, start the reboot when the player leaves, and
+/// count the reboot down to a return. The link rides on the player's
+/// transmitter alone — a drone hovering over corruption flies on fine,
+/// and can never strand itself somewhere it cannot leave while offline.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn jam_gate(
     mut commands: Commands,
@@ -161,14 +158,15 @@ fn jam_gate(
     // transform lags the teleport until the physics sync runs).
     player: Single<&Position, With<crate::Player>>,
     bridge: Res<BridgeTx>,
-    mut drones: Query<(Entity, &Transform, Has<Jammed>, Option<&mut Downed>)>,
+    // Drones only — without the filter this matched every entity with a
+    // transform, jamming the whole world in corruption and "rebooting" it
+    // on the way out.
+    mut drones: Query<(Entity, Has<Jammed>, Option<&mut Downed>), With<Drone>>,
 ) {
     let map_size = (map.map.grid.width(), map.map.grid.height());
     let player_in_zone = zones.contains_world(map_size, config.tile_size, player.0);
-    for (entity, transform, jammed, mut downed) in &mut drones {
-        let drone_in_zone =
-            zones.contains_world(map_size, config.tile_size, transform.translation.xy());
-        match (jammed, link_jammed(player_in_zone, drone_in_zone)) {
+    for (entity, jammed, mut downed) in &mut drones {
+        match (jammed, player_in_zone) {
             // The link just died: dark and silent until it clears.
             (false, true) => {
                 if let Ok(mut entity_commands) = commands.get_entity(entity) {
@@ -190,11 +188,7 @@ fn jam_gate(
             _ => {}
         }
         if let Some(clock) = downed.as_deref_mut()
-            && tick_reboot(
-                link_jammed(player_in_zone, drone_in_zone),
-                &mut clock.0,
-                time.delta(),
-            ) == Some(true)
+            && tick_reboot(player_in_zone, &mut clock.0, time.delta()) == Some(true)
         {
             if let Ok(mut entity_commands) = commands.get_entity(entity) {
                 entity_commands.remove::<Downed>();
@@ -370,14 +364,6 @@ fn pulse_colour(elapsed: f32) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_link_jams_when_either_end_is_in_corruption() {
-        assert!(!link_jammed(false, false));
-        assert!(link_jammed(true, false));
-        assert!(link_jammed(false, true));
-        assert!(link_jammed(true, true));
-    }
 
     #[test]
     fn the_reboot_holds_inside_corruption() {

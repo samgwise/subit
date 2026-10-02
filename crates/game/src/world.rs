@@ -18,12 +18,13 @@ use rand::RngExt;
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
 use wfc::{
-    FlowField, GeneratedMap, GeneratorConfig, Socket, TileClass, WeightedPrototype, generate,
-    prototype_set,
+    FlowField, GeneratedMap, GeneratorConfig, GenerationError, Socket, TileClass,
+    WeightedPrototype, generate, prototype_set,
 };
 
 use crate::corruption::{CorruptedTilemapMaterial, CorruptedZones};
 use crate::neon_material::NeonTilemapMaterial;
+use crate::vault::Vault;
 
 /// Size of a single tile in world units (pixels).
 pub const TILE_SIZE: f32 = 32.0;
@@ -83,6 +84,35 @@ pub struct Depth(pub u32);
 /// Marker for the pulsing glow pillar marking the exit.
 #[derive(Component)]
 struct ExitBeacon;
+
+/// Marker for the game's own tilemap — the corruption overlay carries a
+/// `TileStorage` too, so anything that must read exactly one storage
+/// filters on this.
+#[derive(Component)]
+struct GameTilemap;
+
+/// Marker for the vault door's amber overlay slab; carries the grid cell
+/// the door occupies (a wall in the grid while closed, so nothing routes
+/// through until it opens).
+#[derive(Component)]
+struct VaultDoor {
+    cell: (u32, u32),
+}
+
+/// Marker: the vault door is still shut.
+#[derive(Component)]
+struct DoorClosed;
+
+/// Marker for the vault door's own static body — kept separate from the
+/// wall compound so opening is a plain despawn, never a compound rebuild.
+#[derive(Component)]
+struct VaultDoorBody;
+
+/// The vault door's tint — amber, distinct from the magenta exit and the
+/// green terminals: treasure behind me.
+const DOOR_COLOUR: Color = Color::srgba(1.0, 0.68, 0.2, 0.85);
+/// An unlocked transmitter opens the door from this close.
+const DOOR_OPEN_RADIUS: f32 = TILE_SIZE * 1.5;
 
 /// Collision layer bits (avian `CollisionLayers::from_bits` memberships and
 /// filters). Allegiance filtering keeps enemy shots off enemies and reflected
@@ -182,6 +212,8 @@ impl Plugin for WorldMapPlugin {
                 Update,
                 (
                     pulse_exit_beacon,
+                    pulse_vault_door,
+                    open_doors,
                     update_flow,
                     descend.run_if(in_state(crate::skills::GameState::Playing)),
                 )
@@ -273,6 +305,8 @@ fn descend(
         Query<Entity, With<WallBody>>,
         Query<Entity, With<CrackedWallBody>>,
         Query<Entity, With<ExitBeacon>>,
+        Query<Entity, With<VaultDoor>>,
+        Query<Entity, With<VaultDoorBody>>,
         Query<Entity, With<crate::enemies::Enemy>>,
         Query<Entity, With<crate::projectiles::Projectile>>,
         Query<Entity, With<crate::projectiles::Grenade>>,
@@ -286,6 +320,8 @@ fn descend(
         walls,
         cracked_walls,
         beacons,
+        vault_doors,
+        vault_bodies,
         enemies,
         projectiles,
         grenades,
@@ -308,6 +344,8 @@ fn descend(
         .chain(walls.iter())
         .chain(cracked_walls.iter())
         .chain(beacons.iter())
+        .chain(vault_doors.iter())
+        .chain(vault_bodies.iter())
         .chain(enemies.iter())
         .chain(projectiles.iter())
         .chain(grenades.iter())
@@ -337,6 +375,59 @@ fn descend(
     tracing::info!(depth = depth.0, "descended to the next depth");
 }
 
+/// Seed-family salt keeping each escalation round's attempts uncorrelated
+/// with the last (any odd stride would do).
+const GENERATION_ROUND_SALT: u64 = 0x9E37_79B9_7F4A_7C15;
+
+/// The escalation ladder: (round, walkable-floor scale). Rounds 0-3 hold
+/// the full floor on fresh seed families; round 4 halves it; round 5 drops
+/// it entirely — with floor-dominant weights a collapse always leaves some
+/// walkable cell (none of 4,650 measured attempts came back empty), so the
+/// ladder ends with generation effectively guaranteed.
+const GENERATION_LADDER: [(u64, f32); 6] = [
+    (0, 1.0),
+    (1, 1.0),
+    (2, 1.0),
+    (3, 1.0),
+    (4, 0.5),
+    (5, 0.0),
+];
+
+/// Generate a depth's map, guaranteed. The depth-derived seed runs the
+/// standard restart budget first, so well-behaved seeds keep today's maps;
+/// a seed that exhausts it escalates to an uncorrelated seed family, and
+/// the last rounds relax the walkable floor. The ratio gate is what
+/// exhausts budgets (measured: ~23% of default-config seeds reject ~98%
+/// of their collapse attempts on region size — solver contradictions
+/// never happen), and a sparser arena beats a panic mid-descent.
+fn generate_map(config: &GeneratorConfig, depth: u32) -> GeneratedMap {
+    for &(round, floor_scale) in &GENERATION_LADDER {
+        let mut generator = config.clone();
+        generator.seed = config
+            .seed
+            .wrapping_add(round.wrapping_mul(GENERATION_ROUND_SALT));
+        generator.min_walkable_ratio *= floor_scale;
+        match generate(&generator) {
+            Ok(map) => {
+                if round > 0 {
+                    tracing::warn!(
+                        depth,
+                        round,
+                        "map generation exhausted its restart budget; escalated to a fresh seed family"
+                    );
+                }
+                return map;
+            }
+            // A config bug, not seed luck — no round would fix it.
+            Err(GenerationError::GridTooSmall) => {
+                panic!("world generation config is invalid (grid too small)");
+            }
+            Err(GenerationError::ExhaustedRestarts { .. }) => {}
+        }
+    }
+    unreachable!("the final round accepts any walkable region");
+}
+
 /// Build a depth's world: run the WFC generator and materialise the map as
 /// a rendered tilemap with colliders. Returns the new spawn point and the
 /// generated map — the player body and swarm are the caller's concern
@@ -353,7 +444,7 @@ fn build_world(
     // Depth-derived seed: deterministic per (base seed, depth).
     let mut generator = config.generator.clone();
     generator.seed = generator.seed.wrapping_add(depth as u64);
-    let generated = generate(&generator).expect("world generation failed");
+    let mut generated = generate_map(&generator, depth);
     let (width, height) = (generated.grid.width(), generated.grid.height());
 
     // Class lookup built from the same generator config the map came from.
@@ -361,6 +452,10 @@ fn build_world(
         config.generator.wall_weight,
         config.generator.terminal_weight,
     );
+    // The vault: claim a qualifying island or carve a sealed room beside
+    // the main path — before anything derives from the final grid.
+    let vault = Vault::build(&mut generated, &prototypes, generator.seed, depth);
+    let door = vault.as_ref().map(|v| v.door);
     let class_of = |tile_index: u32| prototypes[tile_index as usize].prototype.class;
     let open_edges_of = |tile_index: u32| -> u32 {
         prototypes[tile_index as usize]
@@ -399,8 +494,15 @@ fn build_world(
     };
     // The cracked (destructible) walls: marked after generation, game-side
     // — the solver never knew. Drives the cracked tile rendering, the
-    // second collider body and the grenade destruction pass.
-    let cracked_tiles = CrackedWalls::build(&world_res, generator.seed);
+    // second collider body and the grenade destruction pass. The vault's
+    // seal is never cracked: grenades and dashes must not bypass the
+    // transmitter gate.
+    let mut cracked_tiles = CrackedWalls::build(&world_res, generator.seed);
+    if let Some(vault) = &vault {
+        for cell in vault.sealed_walls(&generated.grid, &prototypes) {
+            cracked_tiles.0.remove(&cell);
+        }
+    }
     let zones = CorruptedZones::build(&world_res);
     let zone_mask: Handle<Image> = images.add(build_zone_mask(&zones, width, height));
 
@@ -461,18 +563,21 @@ fn build_world(
     // depth's zone mask.
     commands
         .entity(tilemap_entity)
-        .insert(MaterialTilemapBundle::<NeonTilemapMaterial> {
-            grid_size: tile_size.into(),
-            size: map_size_wide(width, height),
-            storage: tile_storage,
-            texture: TilemapTexture::Single(atlas),
-            tile_size,
-            anchor: TilemapAnchor::Center,
-            material: MaterialTilemapHandle::from(
-                map_materials.add(NeonTilemapMaterial::new(zone_mask)),
-            ),
-            ..Default::default()
-        });
+        .insert((
+            GameTilemap,
+            MaterialTilemapBundle::<NeonTilemapMaterial> {
+                grid_size: tile_size.into(),
+                size: map_size_wide(width, height),
+                storage: tile_storage,
+                texture: TilemapTexture::Single(atlas),
+                tile_size,
+                anchor: TilemapAnchor::Center,
+                material: MaterialTilemapHandle::from(
+                    map_materials.add(NeonTilemapMaterial::new(zone_mask)),
+                ),
+                ..Default::default()
+            },
+        ));
 
     // The corruption overlay: a second, sparse tilemap holding a tile on
     // every corrupted cell — its shader draws the static and data rain just
@@ -517,6 +622,7 @@ fn build_world(
         .filter(|&(x, y)| {
             class_of(generated.grid.get(x, y).expect("fully collapsed")) == TileClass::Wall
                 && !cracked_tiles.0.contains(&(x, y))
+                && Some((x, y)) != door
         })
         .map(|(x, y)| {
             (
@@ -545,6 +651,32 @@ fn build_world(
             )),
             CollisionLayers::from_bits(LAYER_CRACKED_WALL, u32::MAX),
         ));
+    }
+
+    // The vault's door and contents: an amber slab over the door cell
+    // (its own body, so opening is a despawn), the mob milling inside, and
+    // the guaranteed heal sitting at the interior's centre.
+    if let Some(vault) = &vault {
+        let door_pos = tile_world_pos((width, height), vault.door, config.tile_size);
+        commands.spawn((
+            VaultDoor { cell: vault.door },
+            DoorClosed,
+            Sprite::from_color(DOOR_COLOUR, Vec2::splat(config.tile_size * 0.9)),
+            Transform::from_xyz(door_pos.x, door_pos.y, 0.6),
+        ));
+        commands.spawn((
+            VaultDoorBody,
+            RigidBody::Static,
+            Collider::rectangle(config.tile_size, config.tile_size),
+            Transform::from_xyz(door_pos.x, door_pos.y, 0.0),
+            CollisionLayers::from_bits(LAYER_WALL, u32::MAX),
+        ));
+        crate::enemies::spawn_vault_mob(commands, vault, (width, height), config, depth);
+        let centre = vault.interior[vault.interior.len() / 2];
+        crate::drops::spawn_heal_cross(
+            commands,
+            tile_world_pos((width, height), centre, config.tile_size),
+        );
     }
 
     let spawn_pos = tile_world_pos((width, height), generated.spawn, config.tile_size);
@@ -604,6 +736,89 @@ fn update_flow(
 fn pulse_exit_beacon(time: Res<Time>, mut beacon: Single<&mut Sprite, With<ExitBeacon>>) {
     let alpha = 0.2 + 0.15 * (time.elapsed_secs() * 3.0).sin();
     beacon.color.set_alpha(alpha);
+}
+
+/// Gentle sine pulse on a closed vault door's alpha — a slow, deliberate
+/// sweep that reads as "this opens somehow".
+fn pulse_vault_door(time: Res<Time>, mut door: Single<&mut Sprite, With<DoorClosed>>) {
+    let alpha = 0.65 + 0.2 * (time.elapsed_secs() * 2.5).sin();
+    door.color.set_alpha(alpha);
+}
+
+/// The transmitter is the vault key: an unlocked player walking near a
+/// closed door broadcasts the code and the door opens — the grid cell
+/// flips to floor (pathing and sight route through at once), the slab and
+/// body despawn, and the vault is live.
+#[allow(clippy::too_many_arguments)]
+fn open_doors(
+    mut commands: Commands,
+    player: Single<&Position, With<crate::Player>>,
+    unlocks: Res<crate::skills::AbilityUnlocks>,
+    config: Res<MapConfig>,
+    mut map: ResMut<WorldMapRes>,
+    // Exactly the game tilemap — the corruption overlay's storage would
+    // make an unfiltered read ambiguous, and the door never opens.
+    mut tilemaps: Query<&mut TileStorage, With<GameTilemap>>,
+    doors: Query<(Entity, &VaultDoor), With<DoorClosed>>,
+    bodies: Query<Entity, With<VaultDoorBody>>,
+    bridge: Res<crate::bridge::BridgeTx>,
+) {
+    if !unlocks.transmitter {
+        return;
+    }
+    let (width, height) = (map.map.grid.width(), map.map.grid.height());
+    let nearby: Vec<(u32, u32)> = doors
+        .iter()
+        .filter(|(_, door)| {
+            tile_world_pos((width, height), door.cell, config.tile_size)
+                .distance(player.0)
+                <= DOOR_OPEN_RADIUS
+        })
+        .map(|(_, door)| door.cell)
+        .collect();
+    if nearby.is_empty() {
+        return;
+    }
+    let Ok(mut storage) = tilemaps.single_mut() else {
+        return;
+    };
+    for cell in nearby {
+        open_vault_door(&mut commands, &mut map, &mut storage, cell);
+        for body in &bodies {
+            if let Ok(mut entity_commands) = commands.get_entity(body) {
+                entity_commands.despawn();
+            }
+        }
+        for (entity, _) in &doors {
+            if let Ok(mut entity_commands) = commands.get_entity(entity) {
+                entity_commands.despawn();
+            }
+        }
+        bridge.send(crate::bridge::GameAudioEvent::VaultOpen);
+        tracing::info!(cell = ?cell, "the transmitter opened the vault door");
+    }
+}
+
+/// Flip a closed door's grid cell to the floor it becomes and retexture the
+/// hole plus its wall neighbours — the same pass as blast destruction, and
+/// the flow field rebuilds off the map change.
+fn open_vault_door(
+    commands: &mut Commands,
+    map: &mut WorldMapRes,
+    storage: &mut TileStorage,
+    cell: (u32, u32),
+) {
+    let (width, height) = (map.map.grid.width(), map.map.grid.height());
+    let (x, y) = cell;
+    let mask = floor_facing_mask(&map.map.grid, &map.prototypes, (width, height), cell) as u32;
+    map.map.grid.set(x, y, mask);
+    let pos = TilePos { x, y };
+    if let Some(entity) = storage.checked_get(&pos)
+        && let Ok(mut entity_commands) = commands.get_entity(entity)
+    {
+        entity_commands.insert(TileTextureIndex(FLOOR_ATLAS_INDEX));
+    }
+    retexture_after_destruction(commands, map, storage, &[cell]);
 }
 
 /// World-space centre of a tile for an anchor-centred map whose tilemap
@@ -982,6 +1197,7 @@ pub fn build_atlas(tile_size: f32) -> Image {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wfc::walkable_distances;
 
     /// A generated map (fixed seed) plus its config for the cracked-wall
     /// tests.
@@ -1005,6 +1221,188 @@ mod tests {
             integrity: 1.0,
         };
         (map, config)
+    }
+
+    /// The main region's share of the interior: BFS from the spawn covers
+    /// exactly the region the exit was picked from.
+    fn main_region_ratio(map: &GeneratedMap, config: &GeneratorConfig) -> f32 {
+        let prototypes = prototype_set(config.wall_weight, config.terminal_weight);
+        let distances = walkable_distances(&map.grid, &prototypes, map.spawn);
+        let reachable = distances.iter().filter(|d| d.is_some()).count();
+        let interior = ((config.width - 2) * (config.height - 2)) as f32;
+        reachable as f32 / interior
+    }
+
+    #[test]
+    fn a_budget_exhausting_seed_still_yields_a_map() {
+        // Seed 7 exhausted the 100-restart budget at the default config
+        // before the escalation ladder existed — the descent panic. The
+        // ladder lands it on a fresh seed family without touching the
+        // walkable floor, so the main region still meets the full ratio.
+        let config = GeneratorConfig {
+            seed: 7,
+            ..Default::default()
+        };
+        let generated = generate_map(&config, 7);
+        assert!(
+            main_region_ratio(&generated, &config) >= config.min_walkable_ratio,
+            "the fallback round kept the full walkable floor"
+        );
+    }
+
+    #[test]
+    fn every_seed_yields_a_map() {
+        for seed in 0..20u64 {
+            let config = GeneratorConfig {
+                width: 24,
+                height: 24,
+                seed,
+                ..Default::default()
+            };
+            let generated = generate_map(&config, seed as u32);
+            // The spawn lives in the main region by construction; the
+            // invariant under test is simply that generation came back.
+            assert!(main_region_ratio(&generated, &config) > 0.0);
+        }
+    }
+
+    /// A 13x9 map split by a wall column at x=6: the left half is the main
+    /// region, the right a 35-cell island. Tile entities exist for every
+    /// cell (walls textured as walls), so door-open retexturing has a real
+    /// storage to work on.
+    fn split_map() -> (WorldMapRes, crate::vault::Vault, TileStorage) {
+        let prototypes = prototype_set(0.25, 0.02);
+        let floor = prototypes
+            .iter()
+            .position(|p| p.prototype.class.walkable())
+            .expect("the set has walkable tiles") as u32;
+        let wall = prototypes
+            .iter()
+            .position(|p| !p.prototype.class.walkable())
+            .expect("the set has a wall") as u32;
+        let (width, height) = (13u32, 9u32);
+        let mut grid = wfc::Grid::new(width, height);
+        for y in 0..height {
+            for x in 0..width {
+                grid.set(
+                    x,
+                    y,
+                    if x == 0 || y == 0 || x + 1 == width || y + 1 == height || x == 6 {
+                        wall
+                    } else {
+                        floor
+                    },
+                );
+            }
+        }
+        let mut map = GeneratedMap {
+            grid,
+            spawn: (1, 1),
+            exit: (11, 1),
+        };
+        let vault = crate::vault::Vault::build(&mut map, &prototypes, 7, 0)
+            .expect("the island qualifies for a vault");
+        let world_res = WorldMapRes {
+            map,
+            prototypes,
+            integrity: 1.0,
+        };
+        let storage = TileStorage::empty(map_size_wide(width, height));
+        (world_res, vault, storage)
+    }
+
+    #[test]
+    fn opening_the_door_routes_the_flow_into_the_vault() {
+        let (mut map, vault, mut storage) = split_map();
+        let (width, height) = (map.map.grid.width(), map.map.grid.height());
+        let prototypes = map.prototypes.clone();
+
+        // Behind the closed door the island is unreachable from the spawn.
+        let before = FlowField::build(&map.map.grid, &prototypes, map.map.spawn);
+        let island_centre = (8.5, 4.5);
+        assert_eq!(before.steps(island_centre), None);
+        assert_eq!(
+            map.map.grid.get(vault.door.0, vault.door.1),
+            map.map.grid.get(0, 0),
+            "the closed door is still a wall"
+        );
+
+        // The door opens: the cell becomes walkable floor and the vault is
+        // reachable from the spawn at last.
+        let mut world = World::new();
+        let tilemap_entity = world.spawn_empty().id();
+        for y in 0..height {
+            for x in 0..width {
+                let pos = TilePos { x, y };
+                let entity = world.spawn(TileBundle {
+                    position: pos,
+                    tilemap_id: TilemapId(tilemap_entity),
+                    ..Default::default()
+                });
+                storage.set(&pos, entity.id());
+            }
+        }
+        {
+            let mut commands = world.commands();
+            open_vault_door(&mut commands, &mut map, &mut storage, vault.door);
+        }
+        world.flush();
+
+        let opened = map.map.grid.get(vault.door.0, vault.door.1).unwrap();
+        assert!(
+            prototypes[opened as usize].prototype.class.walkable(),
+            "the opened door is floor now"
+        );
+        let after = FlowField::build(&map.map.grid, &prototypes, map.map.spawn);
+        assert!(
+            after.steps(island_centre).is_some(),
+            "the vault is reachable once the door is open"
+        );
+    }
+
+    #[test]
+    fn the_door_opener_sees_exactly_one_tile_storage() {
+        let mut world = World::new();
+        // A real depth carries two tile storages: the game tilemap and the
+        // corruption overlay. Only the game tilemap is marked — the
+        // unfiltered read the door opener used to make was ambiguous and
+        // the door never opened.
+        world.spawn((TileStorage::empty(map_size_wide(4, 4)), GameTilemap));
+        world.spawn(TileStorage::empty(map_size_wide(4, 4)));
+
+        let unfiltered = world.query::<&TileStorage>().iter(&world).count();
+        let game_only = world
+            .query_filtered::<&TileStorage, With<GameTilemap>>()
+            .iter(&world)
+            .count();
+        assert_eq!(unfiltered, 2);
+        assert_eq!(
+            game_only, 1,
+            "the door opener must read exactly one tile storage"
+        );
+    }
+
+    #[test]
+    fn cracked_marking_never_breaks_the_vault_seal() {
+        let (map, vault, _storage) = split_map();
+        let config = MapConfig {
+            generator: GeneratorConfig {
+                width: 13,
+                height: 9,
+                seed: 7,
+                ..Default::default()
+            },
+            tile_size: TILE_SIZE,
+        };
+        let mut cracked = CrackedWalls::build(&map, config.generator.seed);
+        for cell in vault.sealed_walls(&map.map.grid, &map.prototypes) {
+            cracked.0.remove(&cell);
+        }
+        // No cell of the vault's seal is cracked — grenades and dashes can
+        // never open a second way in.
+        for cell in vault.sealed_walls(&map.map.grid, &map.prototypes) {
+            assert!(!cracked.0.contains(&cell), "the seal holds at {cell:?}");
+        }
     }
 
     #[test]

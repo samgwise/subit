@@ -19,6 +19,10 @@ const XP_THROWER: u32 = 25;
 const HEAL_CHANCE: f64 = 0.15;
 /// HP restored by a cross.
 const HEAL_AMOUNT: i32 = 25;
+/// An HP cross's tint.
+const HEAL_COLOUR: Color = Color::srgba(0.3, 1.0, 0.45, 0.95);
+/// An HP cross's sprite size.
+const HEAL_SPRITE: f32 = 12.0;
 
 /// Drift toward the player inside this radius.
 const MAGNET_RADIUS: f32 = TILE_SIZE * 2.0;
@@ -72,7 +76,7 @@ pub fn spawn_drops(commands: &mut Commands, position: Vec2, thrower: bool, rng: 
         let offset = Vec2::from_angle(angle) * rng.random_range(0.0..8.0);
         let (colour, size) = match kind {
             PickupKind::Xp(_) => (Color::srgba(0.4, 0.9, 1.0, 0.95), 10.0),
-            PickupKind::Heal(_) => (Color::srgba(0.3, 1.0, 0.45, 0.95), 12.0),
+            PickupKind::Heal(_) => (HEAL_COLOUR, HEAL_SPRITE),
         };
         commands.spawn((
             Pickup(kind),
@@ -80,6 +84,16 @@ pub fn spawn_drops(commands: &mut Commands, position: Vec2, thrower: bool, rng: 
             Transform::from_xyz(position.x + offset.x, position.y + offset.y, 0.5),
         ));
     }
+}
+
+/// Spawn a single guaranteed HP cross — the vault's treasure, sitting in
+/// the middle of the room until the player fights their way in.
+pub fn spawn_heal_cross(commands: &mut Commands, position: Vec2) {
+    commands.spawn((
+        Pickup(PickupKind::Heal(HEAL_AMOUNT)),
+        Sprite::from_color(HEAL_COLOUR, Vec2::splat(HEAL_SPRITE)),
+        Transform::from_xyz(position.x, position.y, 0.5),
+    ));
 }
 
 /// Drift pickups toward the player inside the magnet radius, pulsing

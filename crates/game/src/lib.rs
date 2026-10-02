@@ -20,6 +20,7 @@ pub mod progression;
 pub mod projectiles;
 pub mod shield_fx;
 pub mod skills;
+pub mod vault;
 pub mod world;
 
 use bevy::asset::AssetPlugin;

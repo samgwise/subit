@@ -172,8 +172,9 @@ pub const GRENADE_LEVEL_CAP: u32 = 6;
 pub const CLOAK_SNEAK_CAP: u32 = 4;
 pub const CLOAK_DURATION_CAP: u32 = 4;
 pub const FLEET_MAX_DRONES: u32 = 4;
-/// Purchase cap for the fleet skill: one point per extra drone.
-pub const FLEET_LEVEL_CAP: u32 = FLEET_MAX_DRONES - 1;
+/// Purchase cap for the fleet skill: one point per drone, and the unlock
+/// fields none of its own — the fleet is the only drone source.
+pub const FLEET_LEVEL_CAP: u32 = FLEET_MAX_DRONES;
 
 // --- Costs -----------------------------------------------------------------
 
@@ -182,14 +183,16 @@ pub const DASH_UNLOCK_COST: u32 = 2;
 pub const GRENADE_UNLOCK_COST: u32 = 3;
 pub const BARRIER_UNLOCK_COST: u32 = 3;
 pub const NOVA_UNLOCK_COST: u32 = 4;
-pub const TRANSMITTER_UNLOCK_COST: u32 = 4;
+/// The transmitter is cheap because it is the vault key first and a weapon
+/// second: it opens sealed vaults and fields no drones by itself.
+pub const TRANSMITTER_UNLOCK_COST: u32 = 2;
 pub const VOLLEY_UNLOCK_COST: u32 = 5;
 pub const CLOAK_UNLOCK_COST: u32 = 5;
 
 /// Drones the transmitter fields at the current fleet level: the unlock
-/// comes with one, each fleet point adds another, capped.
+/// fields none, each fleet point adds one, capped.
 pub fn fleet_count(levels: &SkillLevels) -> usize {
-    1 + levels.drone_fleet.min(FLEET_LEVEL_CAP) as usize
+    levels.drone_fleet.min(FLEET_MAX_DRONES) as usize
 }
 
 // --- Dash state (the ability itself lives with movement) -------------------
@@ -457,9 +460,12 @@ impl SkillRow {
                 unlock_label("grenade", Some("G"), unlocks.grenade, GRENADE_UNLOCK_COST)
             }
             SkillRow::Nova => unlock_label("nova", Some("E"), unlocks.nova, NOVA_UNLOCK_COST),
-            SkillRow::Transmitter => {
-                unlock_label("transmitter", None, unlocks.transmitter, TRANSMITTER_UNLOCK_COST)
-            }
+            SkillRow::Transmitter => unlock_label(
+                "transmitter — opens vaults",
+                None,
+                unlocks.transmitter,
+                TRANSMITTER_UNLOCK_COST,
+            ),
             SkillRow::DroneFleet => {
                 if !unlocks.transmitter {
                     "Drone fleet +1  (needs transmitter)".to_string()
@@ -802,11 +808,13 @@ mod tests {
     }
 
     #[test]
-    fn fleet_grows_from_one_and_caps_at_four_drones() {
+    fn fleet_starts_at_zero_and_caps_at_four_drones() {
         let mut levels = SkillLevels::default();
-        assert_eq!(fleet_count(&levels), 1);
+        // The unlock is the vault key and fields nothing itself — drones
+        // come only from the fleet skill.
+        assert_eq!(fleet_count(&levels), 0);
         levels.drone_fleet = 2;
-        assert_eq!(fleet_count(&levels), 3);
+        assert_eq!(fleet_count(&levels), 2);
         levels.drone_fleet = FLEET_LEVEL_CAP;
         assert_eq!(fleet_count(&levels), FLEET_MAX_DRONES as usize);
         // Past the cap the fleet stops growing.
@@ -884,6 +892,16 @@ mod tests {
         );
         levels.grenade = GRENADE_LEVEL_CAP;
         assert_eq!(SkillRow::GrenadeDamage.cost(&levels, &unlocks), None);
+
+        // The transmitter is the cheap vault key: two points, then never
+        // again.
+        assert_eq!(
+            SkillRow::Transmitter.cost(&levels, &unlocks),
+            Some(TRANSMITTER_UNLOCK_COST)
+        );
+        assert_eq!(TRANSMITTER_UNLOCK_COST, 2);
+        unlocks.transmitter = true;
+        assert_eq!(SkillRow::Transmitter.cost(&levels, &unlocks), None);
 
         // Unlocks cost their price once, then never again.
         assert_eq!(

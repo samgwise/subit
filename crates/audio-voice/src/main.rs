@@ -136,6 +136,7 @@ fn parse_event(payload: &BTreeMap<String, Value>) -> Option<GameEvent> {
         "drone_shot" => Some(GameEvent::DroneShot),
         "drone_down" => Some(GameEvent::DroneDown),
         "drone_online" => Some(GameEvent::DroneOnline),
+        "vault_open" => Some(GameEvent::VaultOpen),
         _ => None,
     }
 }

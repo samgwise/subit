@@ -90,6 +90,8 @@ pub enum GameEvent {
     DroneDown,
     /// A transmitter drone finished its reboot — rising blip.
     DroneOnline,
+    /// The transmitter opened a locked vault door — unlock-and-slide chime.
+    VaultOpen,
 }
 
 /// A MIDI-ready note event.
@@ -199,6 +201,12 @@ pub fn perform_event(event: GameEvent) -> NoteEvent {
             note: 76,
             velocity: 85,
             duration_secs: 0.2,
+        },
+        GameEvent::VaultOpen => NoteEvent {
+            channel: 0,
+            note: 70,
+            velocity: 90,
+            duration_secs: 0.3,
         },
     }
 }

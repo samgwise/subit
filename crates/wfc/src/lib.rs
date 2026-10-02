@@ -12,7 +12,7 @@ mod socket;
 mod solver;
 mod tiles;
 
-pub use reachability::{FlowField, line_of_sight, walkable_distances};
+pub use reachability::{FlowField, line_of_sight, walkable_distances, walkable_regions};
 pub use socket::{Direction, Socket};
 pub use tiles::{TileClass, TilePrototype, WeightedPrototype, prototype_set, tiles_are_compatible};
 
@@ -87,7 +87,12 @@ impl Default for GeneratorConfig {
             // Measured ceiling: shares at or above ~0.3 let wall adjacency
             // escalate (each wall neighbour eliminates open floor variants),
             // fragmenting the walkable space below the ratio threshold.
-            // Robust at the default 48x48; lower to ~0.15 for 64x64+ grids.
+            // Even at 0.25 most collapses reject on region size (mean
+            // rejected region ~13% of interior against the 30% floor), so
+            // the restart budget does heavy lifting and callers need a
+            // fallback for exhausted budgets — the game escalates to a
+            // fresh seed family rather than panicking. Lower to ~0.15 for
+            // 64x64+ grids.
             wall_weight: 0.25,
             terminal_weight: 0.02,
             min_walkable_ratio: 0.3,

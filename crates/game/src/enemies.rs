@@ -396,70 +396,121 @@ pub fn spawn_swarm(
 
     let roles = roles_for(picked.len(), depth, &mut rng);
     for (i, (&cell, &role)) in picked.iter().zip(roles.iter()).enumerate() {
-        let (hp, colour, size_tiles) = match role {
-            Role::Chaser => (CHASER_HP, CHASER_COLOUR, ENEMY_SIZE_TILES),
-            Role::Thrower => (THROWER_HP, THROWER_COLOUR, ENEMY_SIZE_TILES),
-            Role::Tank => (TANK_HP, TANK_COLOUR, TANK_SIZE_TILES),
-        };
         let pos = tile_world_pos((width, height), cell, config.tile_size);
-        let size = config.tile_size * size_tiles;
-        let mut enemy = commands.spawn((
-            Enemy,
-            Health { hp, max: hp },
-            BaseColour(colour),
-            Sprite::from_color(colour, Vec2::splat(size)),
-            Transform::from_xyz(pos.x, pos.y, 1.0),
-            // Un-alerted until the player comes close; the wander state
-            // mills them around home while they wait.
-            Wander {
-                home: pos,
-                dir: Vec2::from_angle(rng.random_range(0.0..core::f32::consts::TAU)),
-                repick: Timer::from_seconds(
-                    WANDER_REPICK_SECS + rng.random_range(-0.5..0.5),
-                    TimerMode::Once,
-                ),
-            },
-            RigidBody::Dynamic,
-            // Circles, not boxes: round agents glide around tile corners
-            // instead of snagging on their vertices.
-            Collider::circle(size * 0.5),
-            LockedAxes::ROTATION_LOCKED,
-            SleepingDisabled,
-            CollisionLayers::from_bits(
-                crate::world::LAYER_ENEMY,
-                crate::world::LAYER_WALL
-                    | crate::world::LAYER_CRACKED_WALL
-                    | crate::world::LAYER_ENEMY
-                    | crate::world::LAYER_PLAYER
-                    | crate::world::LAYER_PLAYER_SHOT,
-            ),
-        ));
-        match role {
-            Role::Chaser => {
-                enemy.insert(Speed(ENEMY_SPEED));
-            }
-            Role::Tank => {
-                enemy.insert(Tank).insert(Speed(TANK_SPEED));
-            }
-            Role::Thrower => {
-                enemy
-                    .insert(Thrower)
-                    // Stagger the first throws so the mob does not fire in
-                    // lockstep; deterministic per seed.
-                    .insert(ThrowTimer(Timer::from_seconds(
-                        throw_stagger_secs(i),
-                        TimerMode::Once,
-                    )));
-            }
-        }
-        if shielded_roll(&mut rng, depth) {
-            enemy.insert(Shield {
-                plates: ENEMY_SHIELD_PLATES,
-                regen: Timer::from_seconds(PLATE_REGEN_SECS, TimerMode::Once),
-            });
-        }
+        spawn_enemy(commands, pos, role, i, depth, &mut rng, config.tile_size);
     }
     tracing::info!("spawned {} enemies", picked.len());
+}
+
+/// Spawn one enemy at `position` with its role's stats, milling around home
+/// there, the depth's shield roll and (for throwers) the staggered first
+/// throw of spawn index `index`.
+fn spawn_enemy(
+    commands: &mut Commands,
+    position: Vec2,
+    role: Role,
+    index: usize,
+    depth: u32,
+    rng: &mut SmallRng,
+    tile_size: f32,
+) {
+    let (hp, colour, size_tiles) = match role {
+        Role::Chaser => (CHASER_HP, CHASER_COLOUR, ENEMY_SIZE_TILES),
+        Role::Thrower => (THROWER_HP, THROWER_COLOUR, ENEMY_SIZE_TILES),
+        Role::Tank => (TANK_HP, TANK_COLOUR, TANK_SIZE_TILES),
+    };
+    let size = tile_size * size_tiles;
+    let mut enemy = commands.spawn((
+        Enemy,
+        Health { hp, max: hp },
+        BaseColour(colour),
+        Sprite::from_color(colour, Vec2::splat(size)),
+        Transform::from_xyz(position.x, position.y, 1.0),
+        // Un-alerted until the player comes close; the wander state
+        // mills them around home while they wait.
+        Wander {
+            home: position,
+            dir: Vec2::from_angle(rng.random_range(0.0..core::f32::consts::TAU)),
+            repick: Timer::from_seconds(
+                WANDER_REPICK_SECS + rng.random_range(-0.5..0.5),
+                TimerMode::Once,
+            ),
+        },
+        RigidBody::Dynamic,
+        // Circles, not boxes: round agents glide around tile corners
+        // instead of snagging on their vertices.
+        Collider::circle(size * 0.5),
+        LockedAxes::ROTATION_LOCKED,
+        SleepingDisabled,
+        CollisionLayers::from_bits(
+            crate::world::LAYER_ENEMY,
+            crate::world::LAYER_WALL
+                | crate::world::LAYER_CRACKED_WALL
+                | crate::world::LAYER_ENEMY
+                | crate::world::LAYER_PLAYER
+                | crate::world::LAYER_PLAYER_SHOT,
+        ),
+    ));
+    match role {
+        Role::Chaser => {
+            enemy.insert(Speed(ENEMY_SPEED));
+        }
+        Role::Tank => {
+            enemy.insert(Tank).insert(Speed(TANK_SPEED));
+        }
+        Role::Thrower => {
+            enemy
+                .insert(Thrower)
+                // Stagger the first throws so the mob does not fire in
+                // lockstep; deterministic per seed.
+                .insert(ThrowTimer(Timer::from_seconds(
+                    throw_stagger_secs(index),
+                    TimerMode::Once,
+                )));
+        }
+    }
+    if shielded_roll(rng, depth) {
+        enemy.insert(Shield {
+            plates: ENEMY_SHIELD_PLATES,
+            regen: Timer::from_seconds(PLATE_REGEN_SECS, TimerMode::Once),
+        });
+    }
+}
+
+/// Salt keeping the vault mob's rolls uncorrelated with the main swarm's.
+const VAULT_MOB_SALT: u64 = 0x6A7_BA1E;
+
+/// Spawn the vault mob inside the vault's interior: `vault_mob_for(depth)`
+/// enemies on distinct interior cells. They stay calm behind the closed
+/// door — the cells are BFS-unreachable from the player until it opens —
+/// and mill around their cells waiting for the fight. Called by the world
+/// build, so startup and descent get one alike.
+pub fn spawn_vault_mob(
+    commands: &mut Commands,
+    vault: &crate::vault::Vault,
+    map_size: (u32, u32),
+    config: &MapConfig,
+    depth: u32,
+) {
+    // Deterministic per (seed, depth), like the main swarm's placement.
+    let seed = config.generator.seed
+        ^ VAULT_MOB_SALT
+        ^ ((depth as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+    let mut rng = SmallRng::seed_from_u64(seed);
+
+    let count = crate::vault::vault_mob_for(depth).min(vault.interior.len());
+    let mut pool = vault.interior.clone();
+    let mut picked = Vec::with_capacity(count);
+    while picked.len() < count && !pool.is_empty() {
+        let i = rng.random_range(0..pool.len());
+        picked.push(pool.swap_remove(i));
+    }
+    let roles = roles_for(picked.len(), depth, &mut rng);
+    for (i, (&cell, &role)) in picked.iter().zip(roles.iter()).enumerate() {
+        let pos = tile_world_pos(map_size, cell, config.tile_size);
+        spawn_enemy(commands, pos, role, i, depth, &mut rng, config.tile_size);
+    }
+    tracing::info!("spawned {count} vault enemies");
 }
 
 /// Alert enemies that come within aggro range of the player — by path steps
@@ -748,7 +799,9 @@ mod tests {
 
     #[test]
     fn the_spawn_floor_sits_outside_aggro_reach() {
-        assert!(MIN_SPAWN_DISTANCE > AGGRO_RANGE_STEPS);
+        // The relation between the two tuning constants is a compile-time
+        // invariant: the build refuses a spawn floor inside aggro reach.
+        const _: () = assert!(MIN_SPAWN_DISTANCE > AGGRO_RANGE_STEPS);
         // An un-alerted enemy on the minimum spawn distance can never flip
         // aggro while the player stands at the spawn.
         assert_eq!(
