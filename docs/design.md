@@ -85,9 +85,11 @@ depth, where the mob grows and the run continues with all progression intact.
   floor (tinted from the depth's stored integrity), the surviving walls'
   autotile masks recompute around the hole, the cracked compound rebuilds
   (vanishing when the last one goes), and the flow field rebuilds through
-  the new route. The blast is loud too — every enemy within 10 tiles
-  (euclidean, so sound passes through walls) is provoked: a forced ~10 s
-  hunt that ignores the aggro hysteresis until it lapses.
+  the new route — and the downed walls dissolve as wall-grey corpses in
+  the same corruption language the enemies get. The blast is loud too —
+  every enemy within 10 tiles (euclidean, so sound passes through walls)
+  is provoked: a forced ~10 s hunt that ignores the aggro hysteresis
+  until it lapses.
 - Locked vaults: every depth seals one room off the main path — a natural
   island when one qualifies (at least 12 cells with a single thin wall
   facing the main region), otherwise a carved 5×3 room inside a 7×5 wall
@@ -283,6 +285,15 @@ depth, where the mob grows and the run continues with all progression intact.
   empty.
 - Enemies darken with damage — sprite brightness scales with their HP
   fraction (floor 45%) — so remaining hits read at a glance.
+- **Death:** corpses don't vanish — they dissolve in the corruption's
+  own glitch language: hash-blocked dropout eats the sprite, scanlines
+  tear out whole rows, blocks jitter brightness and occasionally rotate
+  the colour channels, and the eating edge glows corruption-green (the
+  bloom spreads it). The corpse keeps its own colour — the damage tint
+  it died in — and takes ~0.5 s to go, dissolving behind the drops it
+  scatters (a custom `Material2d` over a quad per corpse,
+  `assets/shaders/dissolve.wgsl`; broken cracked walls dissolve the
+  same way in wall grey).
 
 ## Drops and progression
 
@@ -352,6 +363,7 @@ until the hub clock protocol lands); telemetry bypasses quantisation.
 ||| Transmitter drone: damage / cadence / range / speed / standoff / reboot | 34 / 2 s / 6 tiles / 180 u/s / 2 tiles / 8 s |
 ||| Transmitter unlock / fleet | 2 pts / +1 drone per point (cap 4, none at unlock) |
 ||| Vault: min island / carved interior / mob / door open radius | 12 cells / 5×3 / 3 + 1 per 3 depths (cap 5) / 1.5 tiles |
+||| Death dissolve | ~0.5 s, corruption-green eating edge |
 || Aggro: notice range / stand-down range / wander speed / leash | 8 steps / 10 / 30 u/s / 1.5 tiles |
 | Cloak: unlock / sneak per point (floor) / duration per point (cap) / cooldown | 5 pts / −1 step (2) / +1 s (cap 4) / 10 s |
 | Corruption: burst interval / burst length / drain / stealth | ~3 s / ~0.3 s / 1 plate per s / −2 steps |

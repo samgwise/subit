@@ -231,15 +231,18 @@ fn projectile_impacts(
     // Bounces count against solid and cracked walls alike.
     walls: Query<(), Or<(With<crate::world::WallBody>, With<CrackedWallBody>)>>,
     player: Single<(Entity, &Position), With<crate::Player>>,
+    // Without<Projectile> proves the enemy sprite read disjoint from the
+    // projectile sprite write above (a corpse never rides a projectile).
     mut enemies: Query<
         (
             Entity,
             &Position,
             Option<&crate::enemies::Thrower>,
+            &Sprite,
             &mut Health,
             Option<&mut Shield>,
         ),
-        With<crate::enemies::Enemy>,
+        (With<crate::enemies::Enemy>, Without<Projectile>),
     >,
     mut vitals: ResMut<PlayerVitals>,
     mut barrier: ResMut<crate::combat::Barrier>,
@@ -308,7 +311,9 @@ fn projectile_impacts(
             if !is_player_shot {
                 continue;
             }
-            let Ok((_, enemy_pos, thrower, mut health, mut shield)) = enemies.get_mut(other) else {
+            let Ok((_, enemy_pos, thrower, enemy_sprite, mut health, mut shield)) =
+                enemies.get_mut(other)
+            else {
                 continue;
             };
             let damage = projectiles
@@ -328,6 +333,7 @@ fn projectile_impacts(
                 kill_enemy(
                     &mut commands,
                     other,
+                    enemy_sprite,
                     enemy_pos.0,
                     thrower.is_some(),
                     &mut rng.0,
@@ -550,6 +556,7 @@ fn grenade_detonate(
             Entity,
             &Position,
             Option<&crate::enemies::Thrower>,
+            &Sprite,
             &mut Health,
             Option<&mut Shield>,
         ),
@@ -645,7 +652,7 @@ fn grenade_detonate(
         blasts.0.push(centre);
 
         let mut killed = 0usize;
-        for (enemy_entity, pos, thrower, mut health, mut shield) in &mut enemies {
+        for (enemy_entity, pos, thrower, enemy_sprite, mut health, mut shield) in &mut enemies {
             if pos.0.distance(centre) > GRENADE_RADIUS {
                 continue;
             }
@@ -664,6 +671,7 @@ fn grenade_detonate(
                 kill_enemy(
                     &mut commands,
                     enemy_entity,
+                    enemy_sprite,
                     pos.0,
                     thrower.is_some(),
                     &mut rng.0,

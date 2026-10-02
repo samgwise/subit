@@ -129,16 +129,28 @@ pub struct Health {
     pub max: i32,
 }
 
-/// Kill an enemy: scatter its drops and despawn it. Combo and event batching
-/// is the caller's concern (a cleave batches a whole swing).
+/// Kill an enemy: scatter its drops, queue a corruption dissolve of the
+/// corpse and despawn the body. Combo and event batching is the caller's
+/// concern (a cleave batches a whole swing). The corpse carries the
+/// sprite's own colour — what the player was looking at, damage tint and
+/// all.
 pub fn kill_enemy(
     commands: &mut Commands,
     entity: Entity,
+    sprite: &Sprite,
     position: Vec2,
     thrower: bool,
     rng: &mut SmallRng,
 ) {
     spawn_drops(commands, position, thrower, rng);
+    commands.spawn(crate::dissolve::CorpseFx {
+        position,
+        size: sprite
+            .custom_size
+            .unwrap_or(Vec2::splat(crate::world::TILE_SIZE)),
+        tint: sprite.color,
+        seed: rng.random::<f32>() * 100.0,
+    });
     if let Ok(mut entity_commands) = commands.get_entity(entity) {
         entity_commands.despawn();
     }

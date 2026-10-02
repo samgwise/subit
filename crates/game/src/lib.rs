@@ -9,6 +9,7 @@
 pub mod bridge;
 pub mod combat;
 pub mod corruption;
+pub mod dissolve;
 pub mod drones;
 pub mod drops;
 pub mod enemies;
@@ -57,6 +58,7 @@ pub fn run() {
             combat::CombatPlugin,
             projectiles::ProjectilePlugin,
             drones::DronePlugin,
+            dissolve::DissolvePlugin,
             progression::ProgressionPlugin,
             drops::DropsPlugin,
             skills::SkillsPlugin,

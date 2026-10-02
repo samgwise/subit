@@ -282,3 +282,20 @@ every sprite in the world whenever the player crossed corruption), and
 the jam now rides on the player's position alone — a drone hovering over
 corruption flies on fine instead of stranding itself in a zone it could
 never leave offline.
+
+## Milestone 23 — Corruption-style death dissolve
+
+Death stopped being a vanishing act. Every corpse now dissolves in the
+corruption's own glitch language — hash-blocked dropout eating the sprite
+in scattered chunks, scanlines tearing out whole rows, blocks jittering
+brightness and occasionally rotating the colour channels — while the
+eating edge glows corruption-green, unclamped so the camera's bloom
+spreads it into a brief neon rim. The corpse keeps the colour it died in
+(the damage tint, not the base), takes about half a second to go, and
+dissolves behind the drops it scatters. Broken cracked walls join the
+same send-off in wall grey. A per-corpse `Material2d` over a quad (the
+shield-dome pattern, `assets/shaders/dissolve.wgsl`) carries progress,
+seed and tint as plain f32 uniforms; the kill funnel queues detached
+corpse records and a small fx system turns them into dissolving quads
+just above the enemy layer — no combat path changed shape beyond passing
+the sprite along.

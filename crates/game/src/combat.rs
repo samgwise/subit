@@ -291,6 +291,7 @@ fn player_attack(
             Entity,
             &Position,
             Option<&Thrower>,
+            &Sprite,
             &mut Health,
             Option<&mut Shield>,
         ),
@@ -332,7 +333,7 @@ fn player_attack(
     let radius = cleave_radius(&levels);
     let half_angle = cleave_half_angle(&levels);
     let mut killed = 0usize;
-    for (entity, pos, thrower, mut health, mut shield) in &mut enemies {
+    for (entity, pos, thrower, sprite, mut health, mut shield) in &mut enemies {
         if !in_cleave_arc(origin, aim, pos.0, radius, half_angle)
             || !line_of_sight(&map.map.grid, &map.prototypes, origin_units, {
                 let units = tile_units((width, height), config.tile_size, pos.0);
@@ -352,7 +353,14 @@ fn player_attack(
         health.hp -= to_health;
         if health.hp <= 0 {
             killed += 1;
-            kill_enemy(&mut commands, entity, pos.0, thrower.is_some(), &mut rng.0);
+            kill_enemy(
+                &mut commands,
+                entity,
+                sprite,
+                pos.0,
+                thrower.is_some(),
+                &mut rng.0,
+            );
         }
     }
 
@@ -658,6 +666,7 @@ fn nova_trigger(
             Entity,
             &Position,
             Option<&Thrower>,
+            &Sprite,
             &mut Health,
             Option<&mut Shield>,
         ),
@@ -684,7 +693,7 @@ fn nova_trigger(
 
     let origin = player.0;
     let mut killed = 0usize;
-    for (entity, pos, thrower, mut health, mut shield) in &mut enemies {
+    for (entity, pos, thrower, sprite, mut health, mut shield) in &mut enemies {
         let distance = pos.0.distance(origin);
         if distance > NOVA_RADIUS {
             continue;
@@ -710,7 +719,14 @@ fn nova_trigger(
         health.hp -= to_health;
         if health.hp <= 0 {
             killed += 1;
-            kill_enemy(&mut commands, entity, pos.0, thrower.is_some(), &mut rng.0);
+            kill_enemy(
+                &mut commands,
+                entity,
+                sprite,
+                pos.0,
+                thrower.is_some(),
+                &mut rng.0,
+            );
         }
     }
     if killed > 0 {

@@ -1033,6 +1033,14 @@ pub(crate) fn destroy_cracked_walls(
         return destroyed;
     }
     for &(x, y) in &destroyed {
+        // The wall's ghost: a grey corpse dissolving in the corruption's
+        // language, like everything else that dies around here.
+        commands.spawn(crate::dissolve::CorpseFx {
+            position: tile_world_pos(size, (x, y), tile_size),
+            size: Vec2::splat(tile_size * 0.9),
+            tint: crate::dissolve::WALL_CORPSE_TINT,
+            seed: ((x * 31 + y * 7) % 100) as f32,
+        });
         // Flip the cell to a walkable floor prototype; the exact variant
         // (how many faces it leaves on walkable space) settles in the
         // retexture pass once every hole in the blast exists.
