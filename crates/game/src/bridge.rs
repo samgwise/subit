@@ -51,6 +51,8 @@ pub enum GameAudioEvent {
     PlayerTelemetry { speed: f32, max_speed: f32 },
     /// World-integrity ratio of the generated map (walkable fraction).
     WorldTelemetry { integrity: f32 },
+    /// Live aggro-lock count for the generative score's conductor.
+    AggroTelemetry { locks: u32 },
 }
 
 impl GameAudioEvent {
@@ -74,6 +76,7 @@ impl GameAudioEvent {
             GameAudioEvent::MobSweep { .. } => "/subit/game/event/combat",
             GameAudioEvent::PlayerTelemetry { .. } => "/subit/game/telemetry/player",
             GameAudioEvent::WorldTelemetry { .. } => "/subit/game/telemetry/world",
+            GameAudioEvent::AggroTelemetry { .. } => "/subit/game/telemetry/aggro",
         }
     }
 
@@ -96,6 +99,7 @@ impl GameAudioEvent {
             | GameAudioEvent::VaultOpen
             | GameAudioEvent::MobSweep { .. } => SignalType::Event,
             GameAudioEvent::PlayerTelemetry { .. } => SignalType::Stream,
+            GameAudioEvent::AggroTelemetry { .. } => SignalType::Stream,
             GameAudioEvent::WorldTelemetry { .. } => SignalType::Param,
         }
     }
@@ -173,6 +177,10 @@ impl GameAudioEvent {
                     Value::Float(FloatValue::new(*integrity as f64)),
                 );
             }
+            GameAudioEvent::AggroTelemetry { locks } => {
+                fields.insert("type".into(), Value::String("aggro_locks".into()));
+                fields.insert("locks".into(), Value::Integer(*locks as i64));
+            }
         }
         Value::Map(fields)
     }
@@ -230,5 +238,22 @@ async fn bridge_task(mut rx: mpsc::Receiver<GameAudioEvent>) {
         if let Err(err) = hub.send_action(msg).await {
             tracing::error!("failed to publish game event: {err:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn aggro_telemetry_streams_the_lock_count() {
+        let event = GameAudioEvent::AggroTelemetry { locks: 3 };
+        assert_eq!(event.address(), "/subit/game/telemetry/aggro");
+        assert_eq!(event.signal_type(), SignalType::Stream);
+        let Value::Map(fields) = event.payload() else {
+            panic!("expected map payload");
+        };
+        assert_eq!(get_string(&fields, "type"), Some("aggro_locks".into()));
+        assert_eq!(get_integer(&fields, "locks"), Some(3));
     }
 }

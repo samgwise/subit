@@ -323,7 +323,8 @@ depth, where the mob grows and the run continues with all progression intact.
 
 Chain: game bridge → Ensemble hub → audio-voice daemon → MIDI bridge →
 REAPER. The voice quantises discrete events to 1/16ths at 120 BPM (stub tempo
-until the hub clock protocol lands); telemetry bypasses quantisation.
+until the hub clock protocol lands); telemetry bypasses quantisation. A
+generative score runs continuously underneath the one-shot stabs (below).
 
 | Game moment | Address / signal | Voice output |
 | --- | --- | --- |
@@ -344,7 +345,34 @@ until the hub clock protocol lands); telemetry bypasses quantisation.
 | Transmitter drone rejoins | `/subit/game/event/action` `drone_online` (event) | Rising blip — note 76, vel 85, 0.2 s |
 | Vault door opens | `/subit/game/event/action` `vault_open` (event) | Unlock-and-slide chime — note 70, vel 90, 0.3 s |
 | Player speed (≈10 Hz) | `/subit/game/telemetry/player` `player_speed` (stream) | Mod-wheel CC1, full scale at 240 u/s |
+| Aggro locks (≈10 Hz, on change) | `/subit/game/telemetry/aggro` `aggro_locks` (stream) | Conducts the generative score (below) |
 | World integrity (per map) | `/subit/game/telemetry/world` `world_integrity` (param) | Logged only — harmonic mode shift pending |
+
+### The generative score
+
+Underneath the one-shots, the voice performs a continuous score built on a
+chromatic ↔ scale ↔ harmony layer stack (`scalevec`): the harmony cycle
+spells nine chord slots as degrees of a D major/minor mixture collection
+(with the borrowed G# the dim7 needs), the scale layer resolves degrees to
+semitones, and the chromatic ladder hands them to MIDI as note numbers.
+The cycle — Dm, Bm, D, B, F#, C#m4-3, B/D, E, G#dim7 — puts E major
+penultimate to prepare the dim7 (the shared G# and B make the slide smooth),
+and the dim7 resolves home to Dm. The bass is locked to the cycle in
+lockstep, one note per chord slot sounding that slot's designated bass (the
+D under B/D included) — every pairing is intentional, and later harmonic
+disintegration can be a deliberate transformation of a single layer while
+the others hold.
+
+The live aggro-lock count conducts three knobs off a compressor-smoothed
+intensity (fast attack, slow release, so boundaries never strobe): pattern
+gating (pattern A joins at 1 lock, pattern B at 3), note density (dropout
+thins from full 16ths at max intensity to quarter-note pulses at rest), and
+harmonic rhythm (1 chord per bar at rest, 2–4 in combat — the bass doubles
+with it, always coherent).
+
+Channel map (one synth each in REAPER): 1 bass, 2 chords, 3 pattern A,
+4 pattern B, 5 one-shot combat fx. The mod wheel (player speed) stays on
+channel 1 — the bass synth's filter tracks motion.
 
 ## Tuning reference
 
@@ -363,7 +391,8 @@ until the hub clock protocol lands); telemetry bypasses quantisation.
 ||| Transmitter drone: damage / cadence / range / speed / standoff / reboot | 34 / 2 s / 6 tiles / 180 u/s / 2 tiles / 8 s |
 ||| Transmitter unlock / fleet | 2 pts / +1 drone per point (cap 4, none at unlock) |
 ||| Vault: min island / carved interior / mob / door open radius | 12 cells / 5×3 / 3 + 1 per 3 depths (cap 5) / 1.5 tiles |
-||| Death dissolve | ~0.5 s, corruption-green eating edge |
+| Death dissolve | ~0.5 s, corruption-green eating edge |
+| Score: bar / pattern gates / harmonic rhythm / smoothing | 2.0 s (stub 120 BPM) / A ≥1 lock, B ≥3 / 1→4 chords per bar / τ 0.5 s attack, 8 s release |
 || Aggro: notice range / stand-down range / wander speed / leash | 8 steps / 10 / 30 u/s / 1.5 tiles |
 | Cloak: unlock / sneak per point (floor) / duration per point (cap) / cooldown | 5 pts / −1 step (2) / +1 s (cap 4) / 10 s |
 | Corruption: burst interval / burst length / drain / stealth | ~3 s / ~0.3 s / 1 plate per s / −2 steps |

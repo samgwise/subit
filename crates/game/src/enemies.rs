@@ -13,6 +13,7 @@ use rand::SeedableRng;
 use rand::rngs::SmallRng;
 use wfc::{FlowField, GeneratedMap, prototype_set, walkable_distances};
 
+use crate::bridge::{BridgeTx, GameAudioEvent};
 use crate::corruption::{CorruptedZones, zone_notice};
 use crate::drops::spawn_drops;
 use crate::world::{MapConfig, TILE_SIZE, WorldMapRes, tile_units, tile_world_pos};
@@ -355,6 +356,7 @@ impl Plugin for EnemyPlugin {
             Update,
             (
                 aggro_gate,
+                aggro_telemetry,
                 wander_seek,
                 enemy_seek,
                 thrower_seek,
@@ -604,6 +606,30 @@ fn aggro_gate(
             }
             None => {}
         }
+    }
+}
+
+/// Stream the live aggro-lock count to the audio chain — the generative
+/// score's conductor. Throttled like the speed stream and change-gated: the
+/// conductor only needs to hear the count move.
+fn aggro_telemetry(
+    bridge: Res<BridgeTx>,
+    time: Res<Time>,
+    mut last_send: Local<Option<f32>>,
+    mut last_count: Local<u32>,
+    locks: Query<(), (With<Enemy>, With<Aggro>)>,
+) {
+    // ~10 Hz is plenty for the conductor and keeps the channel cheap.
+    let elapsed = time.elapsed_secs();
+    let last = last_send.unwrap_or(f32::INFINITY);
+    if elapsed - last < 0.1 {
+        return;
+    }
+    *last_send = Some(elapsed);
+    let count = locks.iter().count() as u32;
+    if count != *last_count {
+        *last_count = count;
+        bridge.send(GameAudioEvent::AggroTelemetry { locks: count });
     }
 }
 

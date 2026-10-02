@@ -299,3 +299,21 @@ seed and tint as plain f32 uniforms; the kill funnel queues detached
 corpse records and a small fx system turns them into dissolving quads
 just above the enemy layer — no combat path changed shape beyond passing
 the sprite along.
+
+## Milestone 24 — The generative score
+
+The soundtrack became a performer. The audio-voice now plays continuously: a
+nine-chord harmonic cycle (Dm, Bm, D, B, F#, C#m4-3, B/D, E, G#dim7 — E
+major prepared the dim7, which resolves home) spelled as scale degrees over
+a D major/minor mixture collection, resolved through a
+chromatic ↔ scale ↔ harmony stack of scalevec layers down to MIDI note
+numbers. The bass is locked to the cycle in lockstep — one note per chord
+slot, the D under B/D included — so every pairing is intentional, and future
+disintegration effects can transform one layer while the others hold. The
+live aggro-lock count (a new change-gated 10 Hz telemetry stream) conducts:
+pattern A joins at one lock, pattern B at three; density dropout thins the
+16ths as it calms; harmonic rhythm runs 1 chord per bar at rest up to 4 in
+combat, the bass doubling with it. Intensity smooths compressor-style (0.5 s
+attack, 8 s release) so the boundaries never strobe. One-shot combat stabs
+moved to their own MIDI channel — five synths now in REAPER (bass, chords,
+pattern A, pattern B, fx), the mod wheel staying on the bass channel.

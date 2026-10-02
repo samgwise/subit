@@ -6,6 +6,12 @@
 //! binary target (`src/main.rs`) provides the standalone daemon role from the
 //! GDD.
 
+pub mod music;
+
+/// MIDI channel the one-shot combat fx perform on — the generative score
+/// owns 0–3 (bass, chords, pattern A, pattern B).
+pub const FX_CHANNEL: u8 = 4;
+
 /// Musical subdivisions the voice quantises incoming events to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Subdivision {
@@ -104,12 +110,12 @@ pub struct NoteEvent {
     pub duration_secs: f64,
 }
 
-/// Performance mapping: choose a note for a game event. Milestone 5
-/// replaces this with scale-aware harmonic selection.
+/// Performance mapping: choose a note for a game event — one-shot combat fx
+/// on the fx channel, riding over the generative score.
 pub fn perform_event(event: GameEvent) -> NoteEvent {
     match event {
         GameEvent::AttackPrimary => NoteEvent {
-            channel: 0,
+            channel: FX_CHANNEL,
             note: 60,
             velocity: 100,
             duration_secs: 0.25,
@@ -118,92 +124,92 @@ pub fn perform_event(event: GameEvent) -> NoteEvent {
             // Longer combos hit harder: velocity climbs with the chain.
             let velocity = (100 + combo.saturating_sub(1) * 5).min(127) as u8;
             NoteEvent {
-                channel: 0,
+                channel: FX_CHANNEL,
                 note: 72 + kill_count.clamp(0, 12) as u8,
                 velocity,
                 duration_secs: 0.5,
             }
         }
         GameEvent::ProjectileThrow => NoteEvent {
-            channel: 0,
+            channel: FX_CHANNEL,
             note: 45,
             velocity: 60,
             duration_secs: 0.1,
         },
         GameEvent::ShieldReflect => NoteEvent {
-            channel: 0,
+            channel: FX_CHANNEL,
             note: 79,
             velocity: 110,
             duration_secs: 0.15,
         },
         GameEvent::LevelUp => NoteEvent {
-            channel: 0,
+            channel: FX_CHANNEL,
             note: 84,
             velocity: 90,
             duration_secs: 0.3,
         },
         GameEvent::Dash => NoteEvent {
-            channel: 0,
+            channel: FX_CHANNEL,
             note: 91,
             velocity: 70,
             duration_secs: 0.08,
         },
         GameEvent::GrenadeBlast => NoteEvent {
-            channel: 0,
+            channel: FX_CHANNEL,
             note: 36,
             velocity: 127,
             duration_secs: 0.4,
         },
         GameEvent::Nova => NoteEvent {
-            channel: 0,
+            channel: FX_CHANNEL,
             note: 38,
             velocity: 127,
             duration_secs: 0.45,
         },
         GameEvent::Cloak => NoteEvent {
-            channel: 0,
+            channel: FX_CHANNEL,
             note: 67,
             velocity: 75,
             duration_secs: 0.3,
         },
         GameEvent::CorruptionEnter => NoteEvent {
-            channel: 0,
+            channel: FX_CHANNEL,
             note: 46,
             velocity: 95,
             duration_secs: 0.3,
         },
         GameEvent::CorruptionExit => NoteEvent {
-            channel: 0,
+            channel: FX_CHANNEL,
             note: 52,
             velocity: 60,
             duration_secs: 0.15,
         },
         GameEvent::Descent => NoteEvent {
-            channel: 0,
+            channel: FX_CHANNEL,
             note: 43,
             velocity: 100,
             duration_secs: 0.4,
         },
         GameEvent::DroneShot => NoteEvent {
-            channel: 0,
+            channel: FX_CHANNEL,
             note: 64,
             velocity: 55,
             duration_secs: 0.1,
         },
         GameEvent::DroneDown => NoteEvent {
-            channel: 0,
+            channel: FX_CHANNEL,
             note: 40,
             velocity: 100,
             duration_secs: 0.35,
         },
         GameEvent::DroneOnline => NoteEvent {
-            channel: 0,
+            channel: FX_CHANNEL,
             note: 76,
             velocity: 85,
             duration_secs: 0.2,
         },
         GameEvent::VaultOpen => NoteEvent {
-            channel: 0,
+            channel: FX_CHANNEL,
             note: 70,
             velocity: 90,
             duration_secs: 0.3,
