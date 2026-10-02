@@ -379,6 +379,16 @@ it short there (a note-off silences the bass and pad at the boundary), one
 landing past the note's end leaves it to ring and changes at the end of the
 note.
 
+Harmonic degradation: while the player stands in a corrupted data zone,
+every chromatic mapping mutates — each chord tone's pitch class rotates by
+a noise-like hash (deterministic, ±3 semitones) before it lands, so the
+harmony comes out wrong the same way every time while different pitches
+scatter differently — the corruption's glitch language applied to the
+pitch resolution chain. The bass stays clean (it never passes through the
+chromatic layer — the corrupted upper structure over an anchored bass is
+the instability), and the patterns inherit the rotation by walking the
+mutated voicings. Crossing back out restores the harmony.
+
 Channel map (one synth each in REAPER): 1 bass, 2 chords, 3 pattern A,
 4 pattern B, 5 one-shot combat fx. The mod wheel (player speed) stays on
 channel 1 — the bass synth's filter tracks motion.
@@ -403,6 +413,7 @@ channel 1 — the bass synth's filter tracks motion.
 | Death dissolve | ~0.5 s, corruption-green eating edge |
 | Score: chord period / pattern gates / rhythm hold / smoothing | 8 → 6 → 4 → 2 crotchets, then 3+2 / 3+3+2 / 3+2+2 quavers (additive past 0.95 intensity) / A ≥1 lock, B ≥3 / 3 s before dropping down / τ 0.5 s attack, 8 s release |
 | Bass: pulse rate / relaxed figure / gate | quavers / 6 then rest (periods of 3+ beats), continuous below / 0.6 × quaver |
+| Degraded zone: chromatic rotation | ±3 semitones per mapping, hash of the pitch class |
 || Aggro: notice range / stand-down range / wander speed / leash | 8 steps / 10 / 30 u/s / 1.5 tiles |
 | Cloak: unlock / sneak per point (floor) / duration per point (cap) / cooldown | 5 pts / −1 step (2) / +1 s (cap 4) / 10 s |
 | Corruption: burst interval / burst length / drain / stealth | ~3 s / ~0.3 s / 1 plate per s / −2 steps |

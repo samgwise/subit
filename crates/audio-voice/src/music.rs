@@ -22,7 +22,9 @@
 //! the drive doesn't collapse on the spot. Patterns A and B gate on raw
 //! locks (A at one, B at three) with density dropout thinning as it calms,
 //! all off a compressor-smoothed intensity (fast attack, slow release) so
-//! the boundaries never strobe.
+//! the boundaries never strobe. While the player stands in degraded data,
+//! every chromatic mapping mutates — a noise-like rotation scatters the
+//! harmony around the cycle, deterministically wrong.
 
 use scalevec::{Scale, ScaleVec, Stack};
 
@@ -55,6 +57,10 @@ const BASS_PULSES: usize = 6;
 /// room to fire before the next pulse: the bridge drops a re-play while the
 /// key is still down (and the bumped-away note-off would stick the note).
 const BASS_PULSE_GATE: f64 = 0.6;
+/// The degraded zone's rotation spread: a mutated mapping lands within
+/// ±`DEGRADATION_SEMITONES` of its clean pitch class — enough to mangle the
+/// intervals, never enough to lose the gesture.
+const DEGRADATION_SEMITONES: i64 = 3;
 /// Fast attack time constant (seconds) for the intensity smoother.
 const ATTACK_TAU: f32 = 0.5;
 /// Slow release time constant (seconds) — combat fades out over bars.
@@ -145,18 +151,44 @@ fn bass_note(slot: u32) -> u8 {
     BASS_CYCLE[(slot as usize) % CYCLE_LEN]
 }
 
+/// The noise-like rotation: a splitmix64 finaliser over the pitch class —
+/// cheap, deterministic, and uncorrelated between neighbouring pitches.
+fn noise_hash(pc: i64) -> i64 {
+    let mut z = (pc as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    (z ^ (z >> 31)) as i64
+}
+
+/// The chromatic layer's mapping for a chord tone: the semitone lands in
+/// the pad's register as-is — and when the player stands in degraded data,
+/// its pitch class rotates by the noise-like mutation first (the octave
+/// part carries through, so the voicing keeps its shape). Every mapping
+/// operation mutates, so a voicing comes out wrong the same way every time
+/// while different pitches scatter differently.
+fn chromatic_map(semitone: f64, degraded: bool) -> f64 {
+    if !degraded {
+        return semitone;
+    }
+    let pc = semitone.rem_euclid(12.0);
+    let octave = semitone - pc;
+    let rotation = noise_hash(pc as i64).rem_euclid(DEGRADATION_SEMITONES * 2 + 1) as f64
+        - DEGRADATION_SEMITONES as f64;
+    octave + (pc + rotation).rem_euclid(12.0)
+}
+
 /// The slot's pad voicing: the root degree walks the harmony cycle, the
 /// pitch stack turns the degree into semitones from the tonic, and the
-/// quality stacks intervals above it — each tone folded into the pad's
-/// octave by its pitch class.
-fn chord_voicing(slot: u32) -> Vec<u8> {
+/// quality stacks intervals above it — each tone mapped through the
+/// chromatic layer into the pad's octave (mutated when degraded).
+fn chord_voicing(slot: u32, degraded: bool) -> Vec<u8> {
     let (degree, quality) = HARMONY_CYCLE[(slot as usize) % CYCLE_LEN];
     let root_semitone = pitch_stack().step(degree);
     let root_pc = root_semitone.rem_euclid(12.0);
     quality
         .intervals()
         .iter()
-        .map(|&interval| (PAD_BASE + root_pc + interval) as u8)
+        .map(|&interval| (PAD_BASE + chromatic_map(root_pc + interval, degraded)) as u8)
         .collect()
 }
 
@@ -275,6 +307,8 @@ pub fn change_point(
 pub struct MusicState {
     /// Live aggro locks streamed from the game (0 at rest).
     pub aggro_locks: u32,
+    /// The player stands in a degraded data zone — the harmony rotates.
+    pub degraded: bool,
     /// Compressor-smoothed 0–1 intensity.
     pub intensity: f32,
     /// Chord slots elapsed — the harmonic cycle's phase.
@@ -298,6 +332,7 @@ impl Default for MusicState {
     fn default() -> Self {
         Self {
             aggro_locks: 0,
+            degraded: false,
             intensity: 0.0,
             slot: 0,
             rhythm_intensity: 0.0,
@@ -405,8 +440,8 @@ impl Engine {
             ));
         }
 
-        // Pad voicing.
-        for &tone in &chord_voicing(state.slot) {
+        // Pad voicing — mutated by the degraded zone's noise.
+        for &tone in &chord_voicing(state.slot, state.degraded) {
             notes.push((
                 0.0,
                 NoteEvent {
@@ -424,7 +459,7 @@ impl Engine {
         // eighth-note shadow under A's sixteenths.
         if state.aggro_locks >= 1 {
             let mask = density_mask(state.intensity);
-            let voicing = chord_voicing(state.slot);
+            let voicing = chord_voicing(state.slot, state.degraded);
             let steps = (duration_secs / STEP_SECS).round() as usize;
             for k in 0..steps {
                 let global = state.pattern_step + k;
@@ -499,7 +534,7 @@ mod tests {
         for slot in 0..(CYCLE_LEN as u32 * 3) {
             let next = slot + CYCLE_LEN as u32;
             assert_eq!(bass_note(next), bass_note(slot));
-            assert_eq!(chord_voicing(next), chord_voicing(slot));
+            assert_eq!(chord_voicing(next, false), chord_voicing(slot, false));
         }
     }
 
@@ -515,9 +550,38 @@ mod tests {
 
     #[test]
     fn e_major_prepares_the_dim7_which_resolves_home() {
-        assert_eq!(chord_voicing(7), vec![52, 56, 59]); // E3 G#3 B3
-        assert_eq!(chord_voicing(8), vec![56, 59, 62, 65]); // G#3 B3 D4 F4
-        assert_eq!(chord_voicing(0), vec![50, 53, 57]); // Dm, home again
+        assert_eq!(chord_voicing(7, false), vec![52, 56, 59]); // E3 G#3 B3
+        assert_eq!(chord_voicing(8, false), vec![56, 59, 62, 65]); // G#3 B3 D4 F4
+        assert_eq!(chord_voicing(0, false), vec![50, 53, 57]); // Dm, home again
+    }
+
+    #[test]
+    fn degradation_rotates_the_harmony_deterministically() {
+        // Every mapping mutates, so the degraded voicing differs from the
+        // clean one — but the same way every time.
+        let clean = chord_voicing(0, false);
+        let degraded = chord_voicing(0, true);
+        assert_ne!(degraded, clean, "the corruption is heard");
+        assert_eq!(degraded, chord_voicing(0, true), "deterministic");
+
+        // Each tone lands within the rotation spread of its clean pitch
+        // class (mod the octave), still inside the pad's register.
+        for (dirty, &clean_tone) in degraded.iter().zip(clean.iter()) {
+            let shift = (*dirty as i64 - clean_tone as i64).rem_euclid(12);
+            let shift = shift.min(12 - shift); // fold to the signed distance
+            assert!(
+                shift <= DEGRADATION_SEMITONES,
+                "tone moved {shift} semitones"
+            );
+            // The octave part carries through: the tone stays in the pad's
+            // two-octave band.
+            assert!(*dirty >= PAD_BASE as u8 && *dirty < PAD_BASE as u8 + 24);
+        }
+
+        // The mutation is per mapping operation: a different chord's
+        // degradation scatters differently, and the patterns inherit it by
+        // walking the rotated voicing.
+        assert_ne!(chord_voicing(7, true), chord_voicing(7, false));
     }
 
     #[test]

@@ -147,6 +147,21 @@ async fn main() {
                             continue;
                         };
 
+                        // The corruption boundary is the harmony's: while
+                        // the player stands in degraded data, every
+                        // chromatic mapping mutates.
+                        match event {
+                            GameEvent::CorruptionEnter if !score.degraded => {
+                                score.degraded = true;
+                                tracing::info!("the harmony degrades in the corrupted zone");
+                            }
+                            GameEvent::CorruptionExit if score.degraded => {
+                                score.degraded = false;
+                                tracing::info!("the harmony restores");
+                            }
+                            _ => {}
+                        }
+
                         let note = perform_event(event);
                         let when = quantiser.next_boundary(hub.now().await);
                         match hub.send_action(midi_play(&note, when)).await {

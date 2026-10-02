@@ -346,3 +346,17 @@ additive cycle), so the busier harmonic rhythms carry the bass drive with
 them. Pulses gate at 60% of a quaver: the bridge drops a re-play while the
 key is still down — and a bumped-away note-off would stick the note — so
 every pulse leaves the note-off room to fire between pulses.
+
+## Milestone 27 — Harmonic degradation in the corrupted zones
+
+The disintegration arrived, wearing the corruption's own trigger. While
+the player stands in a degraded data zone, every chromatic mapping in the
+score's pitch chain mutates: each chord tone's pitch class rotates by a
+noise-like hash — deterministic, within ±3 semitones — before it lands, so
+the harmony comes out wrong the same way every time while different
+pitches scatter differently: recognisable gestures, mangled intervals.
+The bass stays clean (it never passes through the chromatic layer — the
+corrupted upper structure over an anchored bass is the instability), the
+patterns inherit the rotation by walking the mutated voicings, and
+crossing back out of the zone restores the harmony. The daemon tracks the
+degraded state from the corruption boundary events it already received.
