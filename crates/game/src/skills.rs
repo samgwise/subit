@@ -4,6 +4,7 @@
 
 use std::time::Duration;
 
+use bevy::input::gamepad::GamepadButton;
 use bevy::prelude::*;
 
 use crate::combat::{BARRIER_PLATES, BASE_MAX_HP, Barrier, PlayerShield};
@@ -286,10 +287,12 @@ impl Plugin for SkillsPlugin {
 
 fn toggle_menu(
     input: Res<ButtonInput<KeyCode>>,
+    pads: Query<&bevy::input::gamepad::Gamepad>,
     state: Res<State<GameState>>,
     mut next: ResMut<NextState<GameState>>,
 ) {
-    if input.just_pressed(KeyCode::Tab) {
+    let pad_start = crate::input::just_pressed(&pads, &[GamepadButton::Start]);
+    if input.just_pressed(KeyCode::Tab) || pad_start {
         next.set(match state.get() {
             GameState::Playing => GameState::Menu,
             GameState::Menu => GameState::Playing,
@@ -544,7 +547,7 @@ fn spawn_menu(mut commands: Commands) {
             ))
             .with_children(|panel| {
                 panel.spawn(Node::default()).with_children(|header| {
-                    header.spawn(Text::new("SIGNAL BREACH — SKILLS (Tab to resume)"));
+                    header.spawn(Text::new("SIGNAL BREACH — SKILLS (Tab/Start to resume)"));
                 });
                 for row in MENU_ROWS {
                     panel

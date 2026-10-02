@@ -63,17 +63,17 @@ and keeps the last good look.
 
 ## Controls
 
-| Input | Action |
-| --- | --- |
-| WASD | Move |
-| Left mouse | Cleave toward the cursor (kills in a 60° arc, wall-occluded; the reach skill widens and extends it) |
-| Right mouse | Raise the shield — blocks contact, reflects projectiles in the ring |
-| Space | Dash (once unlocked) — short burst with i-frames; phases silently through cracked walls |
-| E | Nova (once unlocked) — 360° burst that damages and shoves the swarm |
-| C | Cloak (once unlocked) — sneak past enemies; attacking breaks it |
-| G | Grenade (once unlocked) — wall-bouncing lob; the blast destroys cracked walls and provokes the neighbourhood |
-| Walk onto the magenta exit | Descend to the next depth (the mob grows; progression carries over) |
-| Tab | Pause and open the skills menu |
+| Input | Controller | Action |
+| --- | --- | --- |
+| WASD | Left stick | Move |
+| Left mouse | RT (or A) | Cleave toward the cursor / aim stick (kills in a 60° arc, wall-occluded; the reach skill widens and extends it) |
+| Right mouse | LT | Raise the shield — blocks contact, reflects projectiles in the ring |
+| Space | LB (or B) | Dash (once unlocked) — short burst with i-frames; phases silently through cracked walls |
+| E | Y | Nova (once unlocked) — 360° burst that damages and shoves the swarm |
+| C | L3 | Cloak (once unlocked) — sneak past enemies; attacking breaks it (the drone firing doesn't) |
+| G | RB (or X) | Grenade (once unlocked) — wall-bouncing lob; the blast destroys cracked walls and provokes the neighbourhood (and downs a nearby drone) |
+| Walk onto the magenta exit | Walk onto the magenta exit | Descend to the next depth (the mob grows; progression carries over) |
+| Tab | Start | Pause and open the skills menu (rows stay mouse-driven) |
 
 ## Running the audio chain
 

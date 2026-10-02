@@ -221,3 +221,22 @@ the audio chain. The fleet respawns from the player's physics position on
 descent (the transform lags the teleport — a stale-position spawn could
 embed a drone in a fresh wall), and a drone stranded where no path reads
 recalls to the player rather than hanging forever.
+
+## Milestone 20 — Twin-stick controller support
+
+The game learned the pad: WASD and the left stick merge into one move
+intent (analog half-tilts walk), the cursor and the right stick arbitrate
+one shared aim direction — a displaced stick owns the aim and holds it
+recentred, a moved mouse claims it back — and the four sites that used to
+unproject the cursor inline (cleave, dash fallback, grenade lob, shield
+reflection) read it instead. Every ability trigger ORs a pad edge with its
+key or mouse, with the combat verbs on triggers and bumpers (the right
+thumb lives on the aim stick — face buttons stay as aliases): RT cleave,
+LT shield, LB dash, RB grenade, Y nova, L3 cloak, Start menu.
+the input writers run in PreUpdate so consumers always read the current
+frame. With the stick resting and the player moving, the aim drifts toward
+the direction of travel (8 rad/s, settling on it). The skills menu's rows
+stay mouse-driven (pad nav is the deferred tail), the Steam Deck needs
+nothing special (it is just a standard pad), and rumble is unexplored. A
+pad-only aim line runs out to the cleave's current reach — the stick
+player's cursor, and a range hint in one.

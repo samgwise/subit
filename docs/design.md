@@ -122,6 +122,33 @@ depth, where the mob grows and the run continues with all progression intact.
   drops.
 - Death: respawn at the map spawn with full HP; the combo resets.
 
+## Input and controls
+
+- Twin-stick beside the mouse: WASD or the left stick moves (magnitudes
+  merge — a half-tilted stick walks), the right stick aims where the cursor
+  would. Whichever device last produced input owns the aim — a displaced
+  stick holds its last direction once recentred, a moved mouse claims it
+  back — and every consumer reads one shared `Aim` direction.
+- Sticks run through a radial deadzone (rescaled from the zone's edge, so
+  neutral never snaps); bevy's per-axis settings sit underneath. While the
+  pad owns the aim and the stick rests, the aim drifts toward the direction
+  of travel (8 rad/s, settling on it) — the character faces where they're
+  walking, so re-engaging the trigger starts near where you expect.
+- Mapping: RT cleave, LT shield, LB dash, RB grenade, Y nova, L3 cloak,
+  Start the skills menu — the combat verbs sit on triggers and bumpers
+  because the right thumb lives on the aim stick; the face buttons stay as
+  aliases (A cleave, B dash, X grenade, Y nova) for when it isn't. Each
+  ability's trigger is the pad edge OR'd with its key/mouse counterpart.
+  The menu's rows stay mouse-driven (a known gap, shared with keyboard
+  navigation).
+- Aim indicator: while the pad owns the aim, a thin cyan line runs from
+  the player out to the cleave's current reach with a small end cap — the
+  stick player's cursor, and a range hint in one. The mouse's cursor makes
+  it invisible to mouse play.
+- Standard-gamepad only — no Deck-specific code: the Steam Deck (native or
+  through Proton's Steam Input) and any XInput pad land in the same input
+  stack.
+
 ## Combat
 
 - **Cleave (left mouse):** a 60° cone (the reach skill widens it by 5° per

@@ -8,7 +8,7 @@ edition = "2024"
 
 [workspace.dependencies]
 # Engine
-bevy = { version = "0.19", default-features = false, features = ["2d", "ui", "default_font", "file_watcher"] }
+bevy = { version = "0.19", default-features = false, features = ["2d", "ui", "default_font", "file_watcher", "gamepad"] }
 bevy_ecs_tilemap = "0.19"
 avian2d = "0.7"
 # Ensemble audio bridge (local sibling checkout)

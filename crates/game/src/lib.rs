@@ -13,6 +13,7 @@ pub mod drones;
 pub mod drops;
 pub mod enemies;
 pub mod hud;
+pub mod input;
 pub mod neon_material;
 pub mod player;
 pub mod progression;
@@ -46,7 +47,10 @@ pub fn run() {
                 .set(ImagePlugin::default_nearest()),
             bevy_ecs_tilemap::prelude::TilemapPlugin,
             avian2d::PhysicsPlugins::default(),
+        ))
+        .add_plugins((
             bridge::EnsembleBridgePlugin,
+            input::InputPlugin,
             world::WorldMapPlugin,
             enemies::EnemyPlugin,
             combat::CombatPlugin,

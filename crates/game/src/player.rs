@@ -35,7 +35,8 @@ pub(crate) fn setup(mut commands: Commands) {
     ));
 }
 
-/// WASD movement direction, normalised; zero when idle.
+/// Keyboard movement direction (the keyboard half of the shared move
+/// intent), normalised; zero when idle.
 pub fn move_direction(input: &ButtonInput<KeyCode>) -> Vec2 {
     let mut direction = Vec2::ZERO;
     if input.pressed(KeyCode::KeyW) {
@@ -56,10 +57,11 @@ pub fn move_direction(input: &ButtonInput<KeyCode>) -> Vec2 {
     direction
 }
 
-/// Physics-driven WASD movement: write the desired velocity and let the
-/// solver resolve wall collisions. An active dash overrides input.
+/// Physics-driven movement: write the desired velocity (the shared move
+/// intent — keyboard and left stick merged, see input) and let the solver
+/// resolve wall collisions. An active dash overrides input.
 pub(crate) fn player_movement(
-    input: Res<ButtonInput<KeyCode>>,
+    intent: Res<crate::input::MoveIntent>,
     dash: Res<skills::DashState>,
     mut player: Single<&mut LinearVelocity, With<Player>>,
 ) {
@@ -67,7 +69,7 @@ pub(crate) fn player_movement(
         player.0 = dash.dir * skills::DASH_SPEED;
         return;
     }
-    player.0 = move_direction(&input) * crate::world::PLAYER_SPEED;
+    player.0 = intent.0 * crate::world::PLAYER_SPEED;
 }
 
 pub(crate) fn camera_follow(

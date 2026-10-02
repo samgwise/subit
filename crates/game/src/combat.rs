@@ -7,6 +7,7 @@
 use std::time::Duration;
 
 use avian2d::prelude::{CollidingEntities, LinearVelocity, Position};
+use bevy::input::gamepad::GamepadButton;
 use bevy::math::{Isometry2d, Rot2};
 use bevy::prelude::*;
 
@@ -227,6 +228,7 @@ impl Plugin for CombatPlugin {
             (
                 player_attack,
                 cleave_fx,
+                aim_indicator,
                 update_shield,
                 nova_trigger,
                 nova_fx,
@@ -267,8 +269,9 @@ fn advance_combo(current: u32, since_last_kill: Option<Duration>, window: Durati
     }
 }
 
-/// Left-click cleave: aim from the player to the cursor, kill every enemy in
-/// the arc, batch the kills into one mob-sweep event.
+/// Left-click or A cleave: aim along the shared aim direction (the cursor
+/// or the right stick — see input), kill every enemy in the arc, batch the
+/// kills into one mob-sweep event.
 // Bevy systems routinely carry more than clippy's default parameter budget.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn player_attack(
@@ -280,8 +283,8 @@ fn player_attack(
     bridge: Res<BridgeTx>,
     time: Res<Time>,
     mouse: Res<ButtonInput<MouseButton>>,
-    window: Single<&Window>,
-    camera: Single<(&Camera, &GlobalTransform), With<Camera2d>>,
+    pads: Query<&Gamepad>,
+    aim: Res<crate::input::Aim>,
     player: Single<&Position, With<crate::Player>>,
     mut enemies: Query<
         (
@@ -299,67 +302,67 @@ fn player_attack(
     mut rng: ResMut<crate::drops::DropRng>,
 ) {
     cooldown.0.tick(time.delta());
-    if !mouse.just_pressed(MouseButton::Left) || !cooldown.0.is_finished() {
+    let pressed = mouse.just_pressed(MouseButton::Left)
+        || crate::input::just_pressed(&pads, &[
+            GamepadButton::RightTrigger,
+            GamepadButton::South,
+        ]);
+    if !pressed || !cooldown.0.is_finished() {
         return;
     }
 
-    // Aim: player -> cursor, both in world space. The camera transform must
-    // be propagated before this runs, which Update ordering guarantees for a
-    // camera that only moves in Update.
-    if let Some(cursor) = window.cursor_position()
-        && let Ok(cursor_world) = camera.0.viewport_to_world_2d(camera.1, cursor)
-    {
-        let origin = player.0;
-        let aim = cursor_world - origin;
+    // Aim: the shared direction (cursor or right stick — see input).
+    // Zero aim degenerates to a radial cleave.
+    let origin = player.0;
+    let aim = aim.dir;
 
-        cooldown.0.reset();
-        cloak.end(); // swinging gives the player away
-        bridge.send(GameAudioEvent::AttackPrimary);
-        *fx = CleaveFx(Some(CleaveFxActive {
-            origin,
-            aim,
-            timer: Timer::from_seconds(ATTACK_FX_SECS, TimerMode::Once),
-        }));
+    cooldown.0.reset();
+    cloak.end(); // swinging gives the player away
+    bridge.send(GameAudioEvent::AttackPrimary);
+    *fx = CleaveFx(Some(CleaveFxActive {
+        origin,
+        aim,
+        timer: Timer::from_seconds(ATTACK_FX_SECS, TimerMode::Once),
+    }));
 
-        let (width, height) = (map.map.grid.width(), map.map.grid.height());
-        let origin_units = tile_units((width, height), config.tile_size, origin);
-        let origin_units = (origin_units.x, origin_units.y);
-        let damage = cleave_damage(&levels);
-        let radius = cleave_radius(&levels);
-        let half_angle = cleave_half_angle(&levels);
-        let mut killed = 0usize;
-        for (entity, pos, thrower, mut health, mut shield) in &mut enemies {
-            if !in_cleave_arc(origin, aim, pos.0, radius, half_angle)
-                || !line_of_sight(&map.map.grid, &map.prototypes, origin_units, {
-                    let units = tile_units((width, height), config.tile_size, pos.0);
-                    (units.x, units.y)
-                })
-            {
-                continue;
-            }
-            // Shields soak their plates first; the leak lands on health.
-            let to_health = match shield.as_mut() {
-                Some(shield) => {
-                    let Shield { plates, regen } = &mut **shield;
-                    absorb_damage(plates, regen, damage)
-                }
-                None => damage,
-            };
-            health.hp -= to_health;
-            if health.hp <= 0 {
-                killed += 1;
-                kill_enemy(&mut commands, entity, pos.0, thrower.is_some(), &mut rng.0);
-            }
+    let (width, height) = (map.map.grid.width(), map.map.grid.height());
+    let origin_units = tile_units((width, height), config.tile_size, origin);
+    let origin_units = (origin_units.x, origin_units.y);
+    let damage = cleave_damage(&levels);
+    let radius = cleave_radius(&levels);
+    let half_angle = cleave_half_angle(&levels);
+    let mut killed = 0usize;
+    for (entity, pos, thrower, mut health, mut shield) in &mut enemies {
+        if !in_cleave_arc(origin, aim, pos.0, radius, half_angle)
+            || !line_of_sight(&map.map.grid, &map.prototypes, origin_units, {
+                let units = tile_units((width, height), config.tile_size, pos.0);
+                (units.x, units.y)
+            })
+        {
+            continue;
         }
-
-        if killed > 0 {
-            combo.register_kill(time.elapsed());
-            bridge.send(GameAudioEvent::MobSweep {
-                kill_count: killed as u32,
-                combo: combo.count,
-            });
-            tracing::info!(kill_count = killed, combo = combo.count, "mob swept");
+        // Shields soak their plates first; the leak lands on health.
+        let to_health = match shield.as_mut() {
+            Some(shield) => {
+                let Shield { plates, regen } = &mut **shield;
+                absorb_damage(plates, regen, damage)
+            }
+            None => damage,
+        };
+        health.hp -= to_health;
+        if health.hp <= 0 {
+            killed += 1;
+            kill_enemy(&mut commands, entity, pos.0, thrower.is_some(), &mut rng.0);
         }
+    }
+
+    if killed > 0 {
+        combo.register_kill(time.elapsed());
+        bridge.send(GameAudioEvent::MobSweep {
+            kill_count: killed as u32,
+            combo: combo.count,
+        });
+        tracing::info!(kill_count = killed, combo = combo.count, "mob swept");
     }
 }
 
@@ -408,6 +411,26 @@ fn cleave_fx(
             colour,
         );
     }
+}
+
+/// A thin aim line while the pad owns the aim — the mouse has its cursor;
+/// the stick needs something to point with. The line runs out to the
+/// cleave's current reach, so it doubles as a range hint, and the little
+/// end cap marks the swing's centre-line.
+fn aim_indicator(
+    aim: Res<crate::input::Aim>,
+    player: Single<&Position, With<crate::Player>>,
+    levels: Res<crate::skills::SkillLevels>,
+    mut gizmos: Gizmos,
+) {
+    if !aim.is_pad() || aim.dir == Vec2::ZERO {
+        return;
+    }
+    let origin = player.0;
+    let end = origin + aim.dir * cleave_radius(&levels);
+    let colour = Color::srgba(0.4, 0.9, 1.0, 0.35);
+    gizmos.line_2d(origin, end, colour);
+    gizmos.circle_2d(end, 4.0, colour);
 }
 
 /// Whether a dash along `dir` from `position` may phase through cracked
@@ -460,20 +483,22 @@ fn phase_allowed(
     tile_at(rest).is_some_and(|tile| class_at(tile).walkable())
 }
 
-/// Trigger the dash on Space: unlocked, off cooldown, with a direction from
-/// the current WASD input falling back to the cursor. The dash doubles as
-/// i-frames — it resets the invulnerability window, so the blink shows it.
+/// Trigger the dash on Space or B: unlocked, off cooldown, with a direction
+/// from the move intent falling back to the aim direction. The dash doubles
+/// as i-frames — it resets the invulnerability window, so the blink shows
+/// it.
 #[allow(clippy::too_many_arguments)]
 fn dash_trigger(
     mut commands: Commands,
     input: Res<ButtonInput<KeyCode>>,
+    pads: Query<&Gamepad>,
     unlocks: Res<crate::skills::AbilityUnlocks>,
     mut dash: ResMut<DashState>,
     mut vitals: ResMut<PlayerVitals>,
     bridge: Res<BridgeTx>,
     time: Res<Time>,
-    window: Single<&Window>,
-    camera: Single<(&Camera, &GlobalTransform), With<Camera2d>>,
+    intent: Res<crate::input::MoveIntent>,
+    aim: Res<crate::input::Aim>,
     player: Single<(Entity, &Position), With<crate::Player>>,
     map: Res<WorldMapRes>,
     cracked: Res<CrackedWalls>,
@@ -488,20 +513,24 @@ fn dash_trigger(
     if was_active && dash.active.is_finished() {
         crate::world::swap_player_layers(&mut commands, player_entity, false);
     }
-    if !input.just_pressed(KeyCode::Space) || !unlocks.dash || !dash.cooldown.is_finished() {
+    if !(input.just_pressed(KeyCode::Space)
+        || crate::input::just_pressed(&pads, &[
+            GamepadButton::LeftTrigger2,
+            GamepadButton::East,
+        ]))
+        || !unlocks.dash
+        || !dash.cooldown.is_finished()
+    {
         return;
     }
 
-    // Direction: current WASD input, falling back to the cursor direction.
-    let mut dir = crate::move_direction(&input);
-    if dir == Vec2::ZERO
-        && let Some(cursor) = window.cursor_position()
-        && let Ok(cursor_world) = camera.0.viewport_to_world_2d(camera.1, cursor)
-    {
-        dir = (cursor_world - player_pos.0).normalize_or_zero();
+    // Direction: the move intent, falling back to the aim direction.
+    let mut dir = intent.0.normalize_or_zero();
+    if dir == Vec2::ZERO {
+        dir = aim.dir.normalize_or_zero();
     }
     if dir == Vec2::ZERO {
-        return; // standing still with no cursor — nothing to dash along
+        return; // standing still with no aim — nothing to dash along
     }
 
     dash.dir = dir;
@@ -538,51 +567,57 @@ fn player_vitals_fx(
     }
 }
 
-/// Right-mouse toggles the shield: click up (it stays up for at most the
-/// duration skill's window), click again to drop it early — the cooldown
-/// starts the moment it's down. While it is up the reflect dome (spawned
-/// and toggled by shield_fx) shows the reach.
+/// Right-mouse or RB toggles the shield: click up (it stays up for at most
+/// the duration skill's window), click again to drop it early — the
+/// cooldown starts the moment it's down. While it is up the reflect dome
+/// (spawned and toggled by shield_fx) shows the reach.
 fn update_shield(
     time: Res<Time>,
     mouse: Res<ButtonInput<MouseButton>>,
+    pads: Query<&Gamepad>,
     mut shield: ResMut<PlayerShield>,
 ) {
+    let pressed = mouse.just_pressed(MouseButton::Right)
+        || crate::input::just_pressed(&pads, &[GamepadButton::LeftTrigger]);
     if shield.is_active() {
         shield.active.tick(time.delta());
-        // A second click drops it early; the duration ends it regardless —
+        // A second press drops it early; the duration ends it regardless —
         // either way the cooldown begins now.
-        if shield.active.is_finished() || mouse.just_pressed(MouseButton::Right) {
+        if shield.active.is_finished() || pressed {
             shield.lower();
         }
     } else {
         shield.cooldown.tick(time.delta());
-        if mouse.just_pressed(MouseButton::Right) && shield.cooldown.is_finished() {
+        if pressed && shield.cooldown.is_finished() {
             shield.raise();
         }
     }
 }
 
-/// C toggles the cloak: engage while off cooldown (enemies then evaluate
-/// their aggro with the sneak range — see the aggro gate — and the
-/// player's sprite dims), press again to drop it early. The duration ends
-/// it regardless, and the cooldown starts the moment it's down. Attacking
-/// breaks it too.
+/// C or L3 toggles the cloak: engage while off cooldown (enemies then
+/// evaluate their aggro with the sneak range — see the aggro gate — and
+/// the player's sprite dims), press again to drop it early. The duration
+/// ends it regardless, and the cooldown starts the moment it's down.
+/// Attacking breaks it too (the drone firing doesn't).
 fn cloak_trigger(
     input: Res<ButtonInput<KeyCode>>,
+    pads: Query<&Gamepad>,
     unlocks: Res<crate::skills::AbilityUnlocks>,
     mut cloak: ResMut<CloakState>,
     time: Res<Time>,
     bridge: Res<BridgeTx>,
 ) {
+    let pressed = input.just_pressed(KeyCode::KeyC)
+        || crate::input::just_pressed(&pads, &[GamepadButton::LeftThumb]);
     if cloak.is_active() {
         cloak.active.tick(time.delta());
-        if cloak.active.is_finished() || input.just_pressed(KeyCode::KeyC) {
+        if cloak.active.is_finished() || pressed {
             cloak.end();
         }
         return;
     }
     cloak.cooldown.tick(time.delta());
-    if !input.just_pressed(KeyCode::KeyC) || !unlocks.cloak || !cloak.cooldown.is_finished() {
+    if !pressed || !unlocks.cloak || !cloak.cooldown.is_finished() {
         return;
     }
     cloak.engage();
@@ -612,6 +647,7 @@ fn cloak_fx(
 fn nova_trigger(
     mut commands: Commands,
     input: Res<ButtonInput<KeyCode>>,
+    pads: Query<&Gamepad>,
     unlocks: Res<crate::skills::AbilityUnlocks>,
     mut nova: ResMut<NovaState>,
     mut cloak: ResMut<CloakState>,
@@ -633,7 +669,9 @@ fn nova_trigger(
     mut rng: ResMut<crate::drops::DropRng>,
 ) {
     nova.0.tick(time.delta());
-    if !input.just_pressed(KeyCode::KeyE) || !unlocks.nova || !nova.0.is_finished() {
+    let pressed = input.just_pressed(KeyCode::KeyE)
+        || crate::input::just_pressed(&pads, &[GamepadButton::North]);
+    if !pressed || !unlocks.nova || !nova.0.is_finished() {
         return;
     }
     nova.0.reset();

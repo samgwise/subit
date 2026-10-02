@@ -12,6 +12,7 @@ use avian2d::prelude::{
     Collider, CollisionEventsEnabled, CollisionLayers, CollisionStart, Friction, LinearVelocity,
     LockedAxes, Position, Restitution, RigidBody, SleepingDisabled,
 };
+use bevy::input::gamepad::GamepadButton;
 use bevy::prelude::*;
 
 use bevy_ecs_tilemap::prelude::{MaterialTilemapHandle, TileStorage};
@@ -379,10 +380,9 @@ fn shield_reflection(
     shield: Res<PlayerShield>,
     unlocks: Res<AbilityUnlocks>,
     levels: Res<crate::skills::SkillLevels>,
+    aim: Res<crate::input::Aim>,
     enemies: Query<&Position, With<crate::enemies::Enemy>>,
     bridge: Res<BridgeTx>,
-    window: Single<&Window>,
-    camera: Single<(&Camera, &GlobalTransform), With<Camera2d>>,
 ) {
     if !shield.is_active() {
         return;
@@ -401,20 +401,17 @@ fn shield_reflection(
             &mut velocity,
             &mut sprite,
             &mut lifetime,
-            player_pos,
+            aim.dir,
             cleave_damage(&levels),
-            *window,
-            camera.0,
-            camera.1,
         );
         if unlocks.deflect_volley {
             let reflected_dir = velocity.0.normalize_or_zero();
             let enemy_positions: Vec<Vec2> = enemies.iter().map(|pos| pos.0).collect();
-            for aim in volley_aims(player_pos, &enemy_positions, reflected_dir, VOLLEY_SHOTS) {
+            for aim_at in volley_aims(player_pos, &enemy_positions, reflected_dir, VOLLEY_SHOTS) {
                 spawn_projectile(
                     &mut commands,
-                    player_pos + aim * 12.0,
-                    aim * PROJECTILE_SPEED,
+                    player_pos + aim_at * 12.0,
+                    aim_at * PROJECTILE_SPEED,
                     ProjectileAllegiance::Player,
                     cleave_damage(&levels),
                 );
@@ -456,8 +453,9 @@ fn volley_aims(
     aims
 }
 
-/// Reflect a projectile off the shield: re-aim along the cursor, restore the
-/// bounce budget, refresh the lifetime, and flip allegiance.
+/// Reflect a projectile off the shield: re-aim along the shared aim
+/// direction, restore the bounce budget, refresh the lifetime, and flip
+/// allegiance.
 #[allow(clippy::too_many_arguments)]
 fn apply_reflection(
     commands: &mut Commands,
@@ -466,18 +464,9 @@ fn apply_reflection(
     velocity: &mut LinearVelocity,
     sprite: &mut Sprite,
     lifetime: &mut Lifetime,
-    player_pos: Vec2,
+    aim: Vec2,
     damage: i32,
-    window: &Window,
-    camera: &Camera,
-    camera_transform: &GlobalTransform,
 ) {
-    let aim = window
-        .cursor_position()
-        .and_then(|cursor| camera.viewport_to_world_2d(camera_transform, cursor).ok())
-        .map(|cursor_world| cursor_world - player_pos)
-        .unwrap_or(Vec2::ZERO);
-
     velocity.0 = reflected_velocity(velocity.0, aim);
     projectile.bounces = MAX_BOUNCES;
     projectile.allegiance = ProjectileAllegiance::Player;
@@ -491,55 +480,57 @@ fn apply_reflection(
     }
 }
 
-/// Throw a grenade on G: unlock-gated, off cooldown, aimed along the
-/// cursor. The lob bounces off walls and detonates on fuse — or when its
-/// bounce budget runs out.
+/// Throw a grenade on G or X: unlock-gated, off cooldown, aimed along the
+/// shared aim direction (cursor or right stick — see input). The lob
+/// bounces off walls and detonates on fuse — or when its bounce budget
+/// runs out.
 #[allow(clippy::too_many_arguments)]
 fn grenade_throw(
     mut commands: Commands,
     input: Res<ButtonInput<KeyCode>>,
+    pads: Query<&Gamepad>,
     unlocks: Res<AbilityUnlocks>,
     mut cooldown: ResMut<GrenadeCooldown>,
     mut cloak: ResMut<CloakState>,
     time: Res<Time>,
-    window: Single<&Window>,
-    camera: Single<(&Camera, &GlobalTransform), With<Camera2d>>,
+    aim: Res<crate::input::Aim>,
     player: Single<&Position, With<crate::Player>>,
 ) {
     cooldown.0.tick(time.delta());
-    if !input.just_pressed(KeyCode::KeyG) || !unlocks.grenade || !cooldown.0.is_finished() {
+    let pressed = input.just_pressed(KeyCode::KeyG)
+        || crate::input::just_pressed(&pads, &[
+            GamepadButton::RightTrigger2,
+            GamepadButton::West,
+        ]);
+    if !pressed || !unlocks.grenade || !cooldown.0.is_finished() {
         return;
     }
-    if let Some(cursor) = window.cursor_position()
-        && let Ok(cursor_world) = camera.0.viewport_to_world_2d(camera.1, cursor)
-    {
-        let dir = (cursor_world - player.0).normalize_or_zero();
-        if dir == Vec2::ZERO {
-            return;
-        }
-        cooldown.0.reset();
-        cloak.end(); // lobbing gives the player away
-        commands.spawn((
-            Grenade {
-                bounces: GRENADE_BOUNCES,
-            },
-            Sprite::from_color(Color::srgb(0.85, 0.55, 0.15), Vec2::splat(9.0)),
-            Transform::from_xyz(player.0.x, player.0.y, 2.0),
-            RigidBody::Dynamic,
-            Collider::circle(4.0),
-            // Walls (solid or cracked) block the lob — it bounces off
-            // them — while everything else is ignored.
-            CollisionLayers::from_bits(LAYER_GRENADE, LAYER_WALL | LAYER_CRACKED_WALL),
-            Restitution::new(1.0),
-            Friction::ZERO,
-            LinearVelocity(dir * GRENADE_SPEED),
-            LockedAxes::ROTATION_LOCKED,
-            SleepingDisabled,
-            CollisionEventsEnabled,
-            Fuse(Timer::from_seconds(GRENADE_FUSE_SECS, TimerMode::Once)),
-        ));
-        tracing::info!(dir = ?dir, "grenade thrown");
+    let dir = aim.dir.normalize_or_zero();
+    if dir == Vec2::ZERO {
+        return;
     }
+    cooldown.0.reset();
+    cloak.end(); // lobbing gives the player away
+    commands.spawn((
+        Grenade {
+            bounces: GRENADE_BOUNCES,
+        },
+        Sprite::from_color(Color::srgb(0.85, 0.55, 0.15), Vec2::splat(9.0)),
+        Transform::from_xyz(player.0.x, player.0.y, 2.0),
+        RigidBody::Dynamic,
+        Collider::circle(4.0),
+        // Walls (solid or cracked) block the lob — it bounces off
+        // them — while everything else is ignored.
+        CollisionLayers::from_bits(LAYER_GRENADE, LAYER_WALL | LAYER_CRACKED_WALL),
+        Restitution::new(1.0),
+        Friction::ZERO,
+        LinearVelocity(dir * GRENADE_SPEED),
+        LockedAxes::ROTATION_LOCKED,
+        SleepingDisabled,
+        CollisionEventsEnabled,
+        Fuse(Timer::from_seconds(GRENADE_FUSE_SECS, TimerMode::Once)),
+    ));
+    tracing::info!(dir = ?dir, "grenade thrown");
 }
 
 /// Detonate grenades whose fuse expired or whose wall-bounce budget ran
