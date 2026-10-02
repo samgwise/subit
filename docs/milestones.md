@@ -335,3 +335,14 @@ cancels the hold), so the end of a fight eases rather than collapses. The
 scheduler now wakes per chord slot instead of per bar, and the patterns
 ride the global 16th grid across the odd-length additive slots, figures
 carrying mid-stride.
+
+## Milestone 26 — The bass learns to pulse
+
+The bass stopped sustaining and started driving: it articulates its slot's
+designated bass as quaver pulses — six of them, then rest until the next
+change in the relaxed regimes (periods of three beats or more), and
+continuous quavers through the short ones (the two-crotchet band and the
+additive cycle), so the busier harmonic rhythms carry the bass drive with
+them. Pulses gate at 60% of a quaver: the bridge drops a re-play while the
+key is still down — and a bumped-away note-off would stick the note — so
+every pulse leaves the note-off room to fire between pulses.

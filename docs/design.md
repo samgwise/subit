@@ -358,10 +358,12 @@ semitones, and the chromatic ladder hands them to MIDI as note numbers.
 The cycle — Dm, Bm, D, B, F#, C#m4-3, B/D, E, G#dim7 — puts E major
 penultimate to prepare the dim7 (the shared G# and B make the slide smooth),
 and the dim7 resolves home to Dm. The bass is locked to the cycle in
-lockstep, one note per chord slot sounding that slot's designated bass (the
-D under B/D included) — every pairing is intentional, and later harmonic
-disintegration can be a deliberate transformation of a single layer while
-the others hold.
+lockstep, sounding its slot's designated bass (the D under B/D included) as
+quaver pulses — six of them and then rest until the next change in the
+relaxed regimes (3+ beats per chord), continuous quavers through the short
+ones, so the busier harmonic rhythms carry the bass drive with them — every
+pairing is intentional, and later harmonic disintegration can be a
+deliberate transformation of a single layer while the others hold.
 
 The live aggro-lock count conducts three knobs off a compressor-smoothed
 intensity (fast attack, slow release, so boundaries never strobe): pattern
@@ -400,6 +402,7 @@ channel 1 — the bass synth's filter tracks motion.
 ||| Vault: min island / carved interior / mob / door open radius | 12 cells / 5×3 / 3 + 1 per 3 depths (cap 5) / 1.5 tiles |
 | Death dissolve | ~0.5 s, corruption-green eating edge |
 | Score: chord period / pattern gates / rhythm hold / smoothing | 8 → 6 → 4 → 2 crotchets, then 3+2 / 3+3+2 / 3+2+2 quavers (additive past 0.95 intensity) / A ≥1 lock, B ≥3 / 3 s before dropping down / τ 0.5 s attack, 8 s release |
+| Bass: pulse rate / relaxed figure / gate | quavers / 6 then rest (periods of 3+ beats), continuous below / 0.6 × quaver |
 || Aggro: notice range / stand-down range / wander speed / leash | 8 steps / 10 / 30 u/s / 1.5 tiles |
 | Cloak: unlock / sneak per point (floor) / duration per point (cap) / cooldown | 5 pts / −1 step (2) / +1 s (cap 4) / 10 s |
 | Corruption: burst interval / burst length / drain / stealth | ~3 s / ~0.3 s / 1 plate per s / −2 steps |

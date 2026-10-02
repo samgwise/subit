@@ -12,7 +12,9 @@
 //! The live aggro-lock count (streamed from the game) conducts the harmonic
 //! rhythm and the patterns. Chord slots start at eight crotchets and shed
 //! two beats at a time down to two; at full flight the rhythm goes additive
-//! in quavers, cycling 3+2, 3+3+2 and 3+2+2. A recalculated rhythm never
+//! in quavers, cycling 3+2, 3+3+2 and 3+2+2. The bass pulses in quavers —
+//! six and then rest in the relaxed regimes, continuous through the short
+//! ones. A recalculated rhythm never
 //! stretches a sounding chord — the change lands at the new period's
 //! boundary when that falls inside the slot (a cut, note-offs silencing the
 //! chord there), or at the end of the note when it falls past. Descents
@@ -47,6 +49,12 @@ pub const CHANNEL_PATTERN_B: u8 = 3;
 const ADDITIVE_THRESHOLD: f32 = 0.95;
 /// Seconds the harmonic rhythm holds its rung before dropping down.
 const RHYTHM_HOLD_SECS: f32 = 3.0;
+/// Quaver pulses the bass states in the relaxed regimes before resting.
+const BASS_PULSES: usize = 6;
+/// The bass pulse's gate as a fraction of a quaver. The note-off must have
+/// room to fire before the next pulse: the bridge drops a re-play while the
+/// key is still down (and the bumped-away note-off would stick the note).
+const BASS_PULSE_GATE: f64 = 0.6;
 /// Fast attack time constant (seconds) for the intensity smoother.
 const ATTACK_TAU: f32 = 0.5;
 /// Slow release time constant (seconds) — combat fades out over bars.
@@ -373,16 +381,29 @@ impl Engine {
 
         let mut notes = Vec::new();
 
-        // Bass, locked to the harmony.
-        notes.push((
-            0.0,
-            NoteEvent {
-                channel: CHANNEL_BASS,
-                note: bass_note(state.slot),
-                velocity: 88,
-                duration_secs: duration_secs * 0.8,
-            },
-        ));
+        // Bass, locked to the harmony, pulsing in quavers: six and then
+        // rest until the next change in the relaxed regimes (3+ beats per
+        // chord); continuous through the short ones, so the busier harmonic
+        // rhythms carry the bass drive with them.
+        let slot_quavers = (duration_secs / QUAVER_SECS).round() as usize;
+        let pulses = if !is_additive(state.rhythm_intensity)
+            && harmonic_period_beats(state.rhythm_intensity) >= 3.0
+        {
+            BASS_PULSES.min(slot_quavers)
+        } else {
+            slot_quavers
+        };
+        for k in 0..pulses {
+            notes.push((
+                k as f64 * QUAVER_SECS,
+                NoteEvent {
+                    channel: CHANNEL_BASS,
+                    note: bass_note(state.slot),
+                    velocity: 88,
+                    duration_secs: QUAVER_SECS * BASS_PULSE_GATE,
+                },
+            ));
+        }
 
         // Pad voicing.
         for &tone in &chord_voicing(state.slot) {
@@ -528,13 +549,83 @@ mod tests {
     }
 
     #[test]
-    fn a_calm_slot_is_bass_and_pad_over_eight_crotchets() {
+    fn a_calm_slot_is_bass_pulses_and_pad_over_eight_crotchets() {
         let mut state = MusicState::default();
         let (notes, end) = Engine::slot_notes(&mut state, 0.0);
-        assert_eq!(notes.len(), 1 + 3); // one bass note, one three-tone pad
+        assert_eq!(notes.len(), BASS_PULSES + 3); // six bass pulses, one pad
         assert!(notes.iter().all(|(_, n)| n.channel <= CHANNEL_CHORDS));
         assert_secs(end, 8.0 * CROTCHET_SECS);
         assert_eq!(state.slot, 1);
+    }
+
+    #[test]
+    fn the_bass_pulses_six_then_rests_or_drives_continuously() {
+        // Relaxed regime (eight crotchets): six quaver pulses on the slot's
+        // designated bass, evenly spaced, gated short of a quaver, then
+        // nothing until the next change.
+        let mut calm = MusicState::default();
+        let (notes, end) = Engine::slot_notes(&mut calm, 0.0);
+        let bass: Vec<(f64, u8)> = notes
+            .iter()
+            .filter(|(_, n)| n.channel == CHANNEL_BASS)
+            .map(|(at, n)| (*at, n.note))
+            .collect();
+        assert_eq!(bass.len(), BASS_PULSES);
+        for (k, (at, note)) in bass.iter().enumerate() {
+            assert_secs(*at, k as f64 * QUAVER_SECS);
+            assert_eq!(*note, 38); // the D under Dm
+        }
+        for (_, n) in notes
+            .iter()
+            .filter(|(_, n)| n.channel == CHANNEL_BASS)
+        {
+            assert_secs(n.duration_secs, QUAVER_SECS * BASS_PULSE_GATE);
+        }
+        // The last pulse ends well before the change: the rest is heard.
+        assert!(bass.last().unwrap().0 + QUAVER_SECS * BASS_PULSE_GATE < end);
+
+        // Short regime (two crotchets): continuous quaver pulses — four
+        // across the slot.
+        let mut driving = MusicState {
+            aggro_locks: 4,
+            intensity: 0.8,
+            rhythm_intensity: 0.8,
+            ..MusicState::default()
+        };
+        let (notes, _) = Engine::slot_notes(&mut driving, 0.0);
+        assert_eq!(
+            notes
+                .iter()
+                .filter(|(_, n)| n.channel == CHANNEL_BASS)
+                .count(),
+            4
+        );
+
+        // Additive: each slot's quavers pulse one for one — three in a
+        // 3-quaver slot, two in a 2-quaver slot.
+        let mut additive = MusicState {
+            aggro_locks: 6,
+            intensity: 1.0,
+            rhythm_intensity: 1.0,
+            ..MusicState::default()
+        };
+        let (notes, _) = Engine::slot_notes(&mut additive, 0.0);
+        assert_eq!(
+            notes
+                .iter()
+                .filter(|(_, n)| n.channel == CHANNEL_BASS)
+                .count(),
+            3
+        );
+        // The next slot in the additive cycle is 2 quavers: two pulses.
+        let (notes, _) = Engine::slot_notes(&mut additive, 0.0);
+        assert_eq!(
+            notes
+                .iter()
+                .filter(|(_, n)| n.channel == CHANNEL_BASS)
+                .count(),
+            2
+        );
     }
 
     #[test]
