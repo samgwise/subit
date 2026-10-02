@@ -620,8 +620,9 @@ fn aggro_telemetry(
     locks: Query<(), (With<Enemy>, With<Aggro>)>,
 ) {
     // ~10 Hz is plenty for the conductor and keeps the channel cheap.
+    // Never-sent is minus infinity, so the first call passes the throttle.
     let elapsed = time.elapsed_secs();
-    let last = last_send.unwrap_or(f32::INFINITY);
+    let last = last_send.unwrap_or(f32::NEG_INFINITY);
     if elapsed - last < 0.1 {
         return;
     }

@@ -367,8 +367,15 @@ The live aggro-lock count conducts three knobs off a compressor-smoothed
 intensity (fast attack, slow release, so boundaries never strobe): pattern
 gating (pattern A joins at 1 lock, pattern B at 3), note density (dropout
 thins from full 16ths at max intensity to quarter-note pulses at rest), and
-harmonic rhythm (1 chord per bar at rest, 2–4 in combat — the bass doubles
-with it, always coherent).
+harmonic rhythm — one chord per eight crotchets at rest, shedding two beats
+at a time down to two, then going additive in quavers at full flight
+(3+2, 3+3+2, 3+2+2, cycling). Descents hold their rung for 3 s before
+dropping down — a fight ends, the drive eases rather than collapses (and a
+recovering fight cancels the hold and follows straight back up). The rhythm
+recalculates mid-chord: a new period landing inside the sounding chord cuts
+it short there (a note-off silences the bass and pad at the boundary), one
+landing past the note's end leaves it to ring and changes at the end of the
+note.
 
 Channel map (one synth each in REAPER): 1 bass, 2 chords, 3 pattern A,
 4 pattern B, 5 one-shot combat fx. The mod wheel (player speed) stays on
@@ -392,7 +399,7 @@ channel 1 — the bass synth's filter tracks motion.
 ||| Transmitter unlock / fleet | 2 pts / +1 drone per point (cap 4, none at unlock) |
 ||| Vault: min island / carved interior / mob / door open radius | 12 cells / 5×3 / 3 + 1 per 3 depths (cap 5) / 1.5 tiles |
 | Death dissolve | ~0.5 s, corruption-green eating edge |
-| Score: bar / pattern gates / harmonic rhythm / smoothing | 2.0 s (stub 120 BPM) / A ≥1 lock, B ≥3 / 1→4 chords per bar / τ 0.5 s attack, 8 s release |
+| Score: chord period / pattern gates / rhythm hold / smoothing | 8 → 6 → 4 → 2 crotchets, then 3+2 / 3+3+2 / 3+2+2 quavers (additive past 0.95 intensity) / A ≥1 lock, B ≥3 / 3 s before dropping down / τ 0.5 s attack, 8 s release |
 || Aggro: notice range / stand-down range / wander speed / leash | 8 steps / 10 / 30 u/s / 1.5 tiles |
 | Cloak: unlock / sneak per point (floor) / duration per point (cap) / cooldown | 5 pts / −1 step (2) / +1 s (cap 4) / 10 s |
 | Corruption: burst interval / burst length / drain / stealth | ~3 s / ~0.3 s / 1 plate per s / −2 steps |

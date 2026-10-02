@@ -9,22 +9,32 @@
 //! and later harmonic disintegration can be a deliberate transformation of
 //! any single layer while the others hold.
 //!
-//! The live aggro-lock count (streamed from the game) conducts three knobs:
-//! pattern gating (A joins at one lock, B at three), note density
-//! (subdivision dropout thins as it calms), and harmonic rhythm (one chord
-//! per bar at rest, up to four in full combat). Intensity is smoothed
-//! compressor-style — fast attack, slow release — so the boundaries never
-//! strobe.
+//! The live aggro-lock count (streamed from the game) conducts the harmonic
+//! rhythm and the patterns. Chord slots start at eight crotchets and shed
+//! two beats at a time down to two; at full flight the rhythm goes additive
+//! in quavers, cycling 3+2, 3+3+2 and 3+2+2. A recalculated rhythm never
+//! stretches a sounding chord — the change lands at the new period's
+//! boundary when that falls inside the slot (a cut, note-offs silencing the
+//! chord there), or at the end of the note when it falls past. Descents
+//! hold their rung for a few seconds before dropping down — a fight ends,
+//! the drive doesn't collapse on the spot. Patterns A and B gate on raw
+//! locks (A at one, B at three) with density dropout thinning as it calms,
+//! all off a compressor-smoothed intensity (fast attack, slow release) so
+//! the boundaries never strobe.
 
 use scalevec::{Scale, ScaleVec, Stack};
 
 use crate::NoteEvent;
 
-/// Bar length at the stub tempo: four beats at 120 BPM.
-pub const BAR_SECS: f64 = 2.0;
+/// Stub tempo the score performs at (the hub tempo protocol stays deferred).
+pub const STUB_BPM: f64 = 120.0;
 
-/// 16th-note steps in a bar.
-pub const STEPS_PER_BAR: usize = 16;
+/// Seconds per crotchet at the stub tempo.
+pub const CROTCHET_SECS: f64 = 60.0 / STUB_BPM;
+/// Seconds per quaver.
+pub const QUAVER_SECS: f64 = CROTCHET_SECS / 2.0;
+/// Seconds per 16th.
+pub const STEP_SECS: f64 = CROTCHET_SECS / 4.0;
 
 /// MIDI channels — one synth each in REAPER, with the one-shot combat fx on
 /// their own channel (see `FX_CHANNEL` in the crate root).
@@ -33,6 +43,10 @@ pub const CHANNEL_CHORDS: u8 = 1;
 pub const CHANNEL_PATTERN_A: u8 = 2;
 pub const CHANNEL_PATTERN_B: u8 = 3;
 
+/// Smoothed intensity past which the harmonic rhythm goes additive.
+const ADDITIVE_THRESHOLD: f32 = 0.95;
+/// Seconds the harmonic rhythm holds its rung before dropping down.
+const RHYTHM_HOLD_SECS: f32 = 3.0;
 /// Fast attack time constant (seconds) for the intensity smoother.
 const ATTACK_TAU: f32 = 0.5;
 /// Slow release time constant (seconds) — combat fades out over bars.
@@ -95,7 +109,7 @@ fn pitch_stack() -> Stack {
 /// The harmony layer: the nine chord slots as (scale degree of the root,
 /// quality). E major sits penultimate to prepare G#dim7 — the shared G# and
 /// B make the slide into the diminished smooth, and the dim7 resolves home
-/// to Dm. The bass follows this cycle in lockstep (see `bass_cycle`).
+/// to Dm. The bass follows this cycle in lockstep (see `BASS_CYCLE`).
 const HARMONY_CYCLE: [(f64, Quality); 9] = [
     (0.0, Quality::Minor),       // Dm
     (7.0, Quality::Minor),       // Bm
@@ -143,8 +157,8 @@ const FIGURE_A: [usize; 4] = [0, 1, 2, 3];
 /// Pattern B's figure: a sparser contour leaning back down the chord.
 const FIGURE_B: [usize; 4] = [2, 1, 0, 1];
 
-/// A pattern note for bar step `step`: the figure walks the slot's voicing,
-/// `octave` above the pad.
+/// A pattern note for global 16th step `step`: the figure walks the slot's
+/// voicing, `octave` above the pad.
 fn pattern_note(voicing: &[u8], figure: &[usize; 4], step: usize, octave: f64) -> u8 {
     let tone = voicing[figure[step % figure.len()] % voicing.len()];
     (tone as f64 + octave) as u8
@@ -165,21 +179,47 @@ pub fn intensity_target(locks: u32) -> f32 {
     (locks as f32 / FULL_INTENSITY_LOCKS).min(1.0)
 }
 
-/// Chord slots per bar at this smoothed intensity: one at rest, then two,
-/// then four in full combat.
-pub fn harmonic_rhythm(smoothed: f32) -> u32 {
-    if smoothed < 1.0 / 3.0 {
-        1
-    } else if smoothed < 2.0 / 3.0 {
-        2
+/// Whether this smoothed intensity sits in the additive regime.
+pub fn is_additive(intensity: f32) -> bool {
+    intensity >= ADDITIVE_THRESHOLD
+}
+
+/// The harmonic period in crotchets at this smoothed intensity: eight at
+/// rest, shedding two beats at a time down to two, before the additive
+/// regime takes over (see `is_additive`).
+pub fn harmonic_period_beats(intensity: f32) -> f32 {
+    if intensity < 0.25 {
+        8.0
+    } else if intensity < 0.5 {
+        6.0
+    } else if intensity < 0.75 {
+        4.0
     } else {
-        4
+        2.0
     }
 }
 
-/// The density dropout: which 16th steps of the bar sound at this smoothed
+/// The additive harmonic cycle at full flight: chord durations in quavers,
+/// flattening 3+2, 3+3+2 and 3+2+2. Changes land on every group boundary.
+const ADDITIVE_CYCLE_QUAVERS: [u32; 8] = [3, 2, 3, 3, 2, 3, 2, 2];
+
+/// The period the CURRENT slot would take under this smoothed intensity —
+/// the mid-slot recalculation's new period. In the additive regime the
+/// first entry (3 quavers) stands in; against a shorter additive chord the
+/// min in `change_point` makes that a no-op.
+pub fn current_slot_period_secs(intensity: f32) -> f64 {
+    if is_additive(intensity) {
+        ADDITIVE_CYCLE_QUAVERS[0] as f64 * QUAVER_SECS
+    } else {
+        harmonic_period_beats(intensity) as f64 * CROTCHET_SECS
+    }
+}
+
+/// The density dropout: which 16th steps of the cycle sound at this smoothed
 /// intensity — quarter-note pulses when quiet, everything at full combat.
-pub fn density_mask(smoothed: f32) -> [bool; STEPS_PER_BAR] {
+/// Indexed by the global step modulo the cycle length, so the rhythm keeps
+/// flowing across slots of any length.
+pub fn density_mask(smoothed: f32) -> [bool; 16] {
     let keep = if smoothed < 0.25 {
         2
     } else if smoothed < 0.55 {
@@ -187,19 +227,38 @@ pub fn density_mask(smoothed: f32) -> [bool; STEPS_PER_BAR] {
     } else if smoothed < 0.85 {
         8
     } else {
-        STEPS_PER_BAR
+        16
     };
-    let mut mask = [false; STEPS_PER_BAR];
-    for step in (0..STEPS_PER_BAR).step_by(STEPS_PER_BAR / keep) {
+    let mut mask = [false; 16];
+    for step in (0..16).step_by(16 / keep) {
         mask[step] = true;
     }
     mask
 }
 
-/// The first bar boundary strictly after `now` — bar starts quantise to the
-/// hub clock so scheduled notes never land in the past.
-pub fn next_bar_boundary(now: f64, bar_secs: f64) -> f64 {
-    ((now / bar_secs).floor() + 1.0) * bar_secs
+/// The first grid boundary strictly after `now`.
+pub fn next_grid_boundary(now: f64, grid_secs: f64) -> f64 {
+    ((now / grid_secs).floor() + 1.0) * grid_secs
+}
+
+/// Where a mid-slot recalculation moves the change point: the new period's
+/// boundary when it lands inside the slot (a cut), otherwise the end of the
+/// note. An overdue boundary — the recalculation arrived after the chord
+/// should already have changed — snaps to the next grid point first.
+pub fn change_point(
+    slot_start: f64,
+    scheduled_end: f64,
+    new_period_secs: f64,
+    grid_secs: f64,
+    now: f64,
+) -> f64 {
+    let intended = slot_start + new_period_secs;
+    let intended = if intended <= now {
+        next_grid_boundary(now, grid_secs)
+    } else {
+        intended
+    };
+    intended.min(scheduled_end)
 }
 
 /// Everything the conductor knows: the raw locks, the smoothed intensity
@@ -210,11 +269,21 @@ pub struct MusicState {
     pub aggro_locks: u32,
     /// Compressor-smoothed 0–1 intensity.
     pub intensity: f32,
-    /// Chord slots elapsed since the score started — the shared phase of
-    /// both cycles.
+    /// Chord slots elapsed — the harmonic cycle's phase.
     pub slot: u32,
-    /// Bars elapsed (bookkeeping for tests and logs).
-    pub bars: u32,
+    /// The intensity the harmonic rhythm plays at — it follows the smoothed
+    /// intensity up instantly, but holds its rung before dropping down.
+    pub rhythm_intensity: f32,
+    /// Seconds left on the rhythm's hold (0 = not holding).
+    pub rhythm_hold: f32,
+    /// Position in the additive duration cycle (advances only in the
+    /// additive regime).
+    pub additive_pos: usize,
+    /// Global 16th counter — the patterns' continuous figure and density
+    /// phase across slots of any length.
+    pub pattern_step: usize,
+    /// The previous slot's duration — the smoother's tick between slots.
+    pub last_slot_secs: f64,
 }
 
 impl Default for MusicState {
@@ -223,99 +292,152 @@ impl Default for MusicState {
             aggro_locks: 0,
             intensity: 0.0,
             slot: 0,
-            bars: 0,
+            rhythm_intensity: 0.0,
+            rhythm_hold: 0.0,
+            additive_pos: 0,
+            pattern_step: 0,
+            last_slot_secs: 4.0 * CROTCHET_SECS,
         }
     }
 }
 
-/// Renders whole bars deterministically from the state.
+/// Track the harmonic rhythm's intensity toward the smoothed one: follow up
+/// instantly (a fight kicking off cuts the chords straight away), but on the
+/// first drop request hold the current rung for [`RHYTHM_HOLD_SECS`] before
+/// following down — the end of a fight eases rather than collapses.
+fn follow_rhythm(state: &mut MusicState, dt_secs: f32) {
+    if dt_secs <= 0.0 {
+        return;
+    }
+    if state.intensity >= state.rhythm_intensity {
+        // Attack — and a recovering fight cancels any hold in progress.
+        state.rhythm_intensity = state.intensity;
+        state.rhythm_hold = 0.0;
+    } else if state.rhythm_hold > 0.0 {
+        // Holding the rung while the drop request persists.
+        state.rhythm_hold -= dt_secs;
+        if state.rhythm_hold <= 0.0 {
+            state.rhythm_intensity = state.intensity;
+            state.rhythm_hold = 0.0;
+        }
+    } else {
+        // First drop request: hold the rung, then follow down.
+        state.rhythm_hold = RHYTHM_HOLD_SECS;
+    }
+}
+
+/// Tick the smoother toward the raw lock count across `dt` seconds — the
+/// mid-slot recalculation path (slots normally tick it as they render).
+pub fn retune(state: &mut MusicState, locks: u32, dt_secs: f32) {
+    state.aggro_locks = locks;
+    let target = intensity_target(locks);
+    state.intensity = smooth_value(state.intensity, target, ATTACK_TAU, RELEASE_TAU, dt_secs);
+    follow_rhythm(state, dt_secs);
+}
+
+/// Renders chord slots deterministically from the state.
 pub struct Engine;
 
 impl Engine {
-    /// The notes of the next bar: bass and pad in lockstep per chord slot,
-    /// patterns gated by raw locks and thinned by density. Returns
-    /// (offset within the bar, note) pairs — same state, same notes.
-    pub fn bar_notes(state: &mut MusicState, bar_secs: f64) -> Vec<(f64, NoteEvent)> {
+    /// The chord slot starting at `slot_start` (a 16th-grid hub time): the
+    /// bass and pad in lockstep — one chord, one bass note — and the
+    /// patterns on the global 16th grid across the span. Returns
+    /// (offset within the slot, note) pairs and the slot's end (the next
+    /// change point). Same state, same notes.
+    pub fn slot_notes(state: &mut MusicState, slot_start: f64) -> (Vec<(f64, NoteEvent)>, f64) {
         // The conductor reads the room: retarget intensity from the raw
-        // locks and tick the smoother across the bar.
+        // locks and tick the smoother across the previous slot's span.
         let target = intensity_target(state.aggro_locks);
-        state.intensity =
-            smooth_value(state.intensity, target, ATTACK_TAU, RELEASE_TAU, bar_secs as f32);
+        state.intensity = smooth_value(
+            state.intensity,
+            target,
+            ATTACK_TAU,
+            RELEASE_TAU,
+            state.last_slot_secs as f32,
+        );
+        follow_rhythm(state, state.last_slot_secs as f32);
 
-        let slots = harmonic_rhythm(state.intensity);
-        let slot_secs = bar_secs / slots as f64;
-        let step_secs = bar_secs / STEPS_PER_BAR as f64;
-        let mask = density_mask(state.intensity);
+        // The slot's duration: a crotchet-band period, or the next entry of
+        // the additive cycle at full flight — the rhythm's intensity, which
+        // holds its rung on the way down, not the raw smoothed value.
+        let duration_secs = if is_additive(state.rhythm_intensity) {
+            let quavers =
+                ADDITIVE_CYCLE_QUAVERS[state.additive_pos % ADDITIVE_CYCLE_QUAVERS.len()];
+            state.additive_pos += 1;
+            quavers as f64 * QUAVER_SECS
+        } else {
+            harmonic_period_beats(state.rhythm_intensity) as f64 * CROTCHET_SECS
+        };
+        state.last_slot_secs = duration_secs;
+        let slot_end = slot_start + duration_secs;
+
         let mut notes = Vec::new();
 
-        for s in 0..slots {
-            let slot = state.slot + s;
-            let at = s as f64 * slot_secs;
+        // Bass, locked to the harmony.
+        notes.push((
+            0.0,
+            NoteEvent {
+                channel: CHANNEL_BASS,
+                note: bass_note(state.slot),
+                velocity: 88,
+                duration_secs: duration_secs * 0.8,
+            },
+        ));
 
-            // Bass, locked to the harmony.
+        // Pad voicing.
+        for &tone in &chord_voicing(state.slot) {
             notes.push((
-                at,
+                0.0,
                 NoteEvent {
-                    channel: CHANNEL_BASS,
-                    note: bass_note(slot),
-                    velocity: 88,
-                    duration_secs: slot_secs * 0.8,
+                    channel: CHANNEL_CHORDS,
+                    note: tone,
+                    velocity: 60,
+                    duration_secs: duration_secs * 0.92,
                 },
             ));
-
-            // Pad voicing.
-            for &tone in &chord_voicing(slot) {
-                notes.push((
-                    at,
-                    NoteEvent {
-                        channel: CHANNEL_CHORDS,
-                        note: tone,
-                        velocity: 60,
-                        duration_secs: slot_secs * 0.92,
-                    },
-                ));
-            }
         }
 
-        // Patterns ride the whole bar's 16th grid, walking whichever chord
-        // owns each step. A joins at one lock; B at three, on even steps
-        // only — an eighth-note shadow under A's sixteenths.
+        // Patterns ride the global 16th grid across the slot's span —
+        // odd-length additive slots land mid-figure and the figure carries.
+        // A joins at one lock; B at three, on even steps only — an
+        // eighth-note shadow under A's sixteenths.
         if state.aggro_locks >= 1 {
-            for (step, &on) in mask.iter().enumerate() {
-                if !on {
+            let mask = density_mask(state.intensity);
+            let voicing = chord_voicing(state.slot);
+            let steps = (duration_secs / STEP_SECS).round() as usize;
+            for k in 0..steps {
+                let global = state.pattern_step + k;
+                if !mask[global % mask.len()] {
                     continue;
                 }
-                let at = step as f64 * step_secs;
-                let step_slot =
-                    state.slot + (step * slots as usize / STEPS_PER_BAR) as u32;
-                let voicing = chord_voicing(step_slot);
+                let at = k as f64 * STEP_SECS;
                 notes.push((
                     at,
                     NoteEvent {
                         channel: CHANNEL_PATTERN_A,
-                        note: pattern_note(&voicing, &FIGURE_A, step, PATTERN_A_OCTAVE),
+                        note: pattern_note(&voicing, &FIGURE_A, global, PATTERN_A_OCTAVE),
                         velocity: 72,
                         duration_secs: 0.11,
                     },
                 ));
-                if state.aggro_locks >= 3 && step % 2 == 0 {
+                if state.aggro_locks >= 3 && global.is_multiple_of(2) {
                     notes.push((
                         at,
                         NoteEvent {
                             channel: CHANNEL_PATTERN_B,
-                            note: pattern_note(&voicing, &FIGURE_B, step, PATTERN_B_OCTAVE),
+                            note: pattern_note(&voicing, &FIGURE_B, global, PATTERN_B_OCTAVE),
                             velocity: 78,
                             duration_secs: 0.11,
                         },
                     ));
                 }
             }
+            state.pattern_step += steps;
         }
 
-        // Advance the shared phase by however many slots the bar held.
-        state.slot += slots;
-        state.bars += 1;
-        notes
+        // Advance the harmonic cycle — one chord per slot.
+        state.slot += 1;
+        (notes, slot_end)
     }
 }
 
@@ -329,6 +451,13 @@ mod tests {
         assert!(
             (actual - expected).abs() < 1e-9,
             "expected {expected}, got {actual}"
+        );
+    }
+
+    fn assert_secs(actual: f64, expected: f64) {
+        assert!(
+            (actual - expected).abs() < 1e-9,
+            "expected {expected}s, got {actual}s"
         );
     }
 
@@ -381,19 +510,6 @@ mod tests {
     }
 
     #[test]
-    fn harmonic_rhythm_and_density_climb_with_intensity() {
-        assert_eq!(harmonic_rhythm(0.0), 1);
-        assert_eq!(harmonic_rhythm(0.4), 2);
-        assert_eq!(harmonic_rhythm(0.9), 4);
-        let calm = density_mask(0.1);
-        assert_eq!(calm.iter().filter(|&&on| on).count(), 2);
-        let mid = density_mask(0.4);
-        assert_eq!(mid.iter().filter(|&&on| on).count(), 4);
-        let hot = density_mask(1.0);
-        assert!(hot.iter().all(|&on| on));
-    }
-
-    #[test]
     fn intensity_saturates_at_six_locks() {
         assert_eq!(intensity_target(0), 0.0);
         assert!((intensity_target(3) - 0.5).abs() < 1e-6);
@@ -402,22 +518,51 @@ mod tests {
     }
 
     #[test]
-    fn a_calm_bar_is_bass_and_pad_only() {
-        let mut state = MusicState::default();
-        let notes = Engine::bar_notes(&mut state, BAR_SECS);
-        assert_eq!(notes.len(), 1 + 3); // one bass note, one three-tone pad
-        assert!(notes.iter().all(|(_, n)| n.channel <= CHANNEL_CHORDS));
-        assert_eq!(state.slot, 1);
-        assert_eq!(state.bars, 1);
+    fn harmonic_period_sheds_two_beats_at_a_time() {
+        assert_eq!(harmonic_period_beats(0.0), 8.0);
+        assert_eq!(harmonic_period_beats(0.3), 6.0);
+        assert_eq!(harmonic_period_beats(0.55), 4.0);
+        assert_eq!(harmonic_period_beats(0.8), 2.0);
+        assert!(!is_additive(0.8));
+        assert!(is_additive(1.0));
     }
 
     #[test]
-    fn combat_bars_gate_the_patterns_by_lock_count() {
+    fn a_calm_slot_is_bass_and_pad_over_eight_crotchets() {
+        let mut state = MusicState::default();
+        let (notes, end) = Engine::slot_notes(&mut state, 0.0);
+        assert_eq!(notes.len(), 1 + 3); // one bass note, one three-tone pad
+        assert!(notes.iter().all(|(_, n)| n.channel <= CHANNEL_CHORDS));
+        assert_secs(end, 8.0 * CROTCHET_SECS);
+        assert_eq!(state.slot, 1);
+    }
+
+    #[test]
+    fn full_flight_plays_the_additive_cycle() {
+        let mut state = MusicState {
+            aggro_locks: 6,
+            intensity: 1.0,
+            ..MusicState::default()
+        };
+        // 3+2, 3+3+2, 3+2+2 quavers, then the cycle wraps around again.
+        let expected = [3, 2, 3, 3, 2, 3, 2, 2, 3];
+        let mut cursor = 0.0;
+        for &quavers in &expected {
+            let (_, end) = Engine::slot_notes(&mut state, cursor);
+            assert_secs(end - cursor, quavers as f64 * QUAVER_SECS);
+            cursor = end;
+        }
+    }
+
+    #[test]
+    fn combat_slots_gate_the_patterns_by_lock_count() {
+        // One lock: pattern A joins (thin — the smoother just started),
+        // B waits for the third lock.
         let mut quiet = MusicState {
             aggro_locks: 1,
             ..MusicState::default()
         };
-        let notes = Engine::bar_notes(&mut quiet, BAR_SECS);
+        let (notes, _) = Engine::slot_notes(&mut quiet, 0.0);
         let a_notes = notes
             .iter()
             .filter(|(_, n)| n.channel == CHANNEL_PATTERN_A)
@@ -427,18 +572,24 @@ mod tests {
             .filter(|(_, n)| n.channel == CHANNEL_PATTERN_B)
             .count();
         assert!(a_notes > 0);
-        assert_eq!(b_notes, 0); // B waits for the third lock
+        assert_eq!(b_notes, 0);
 
-        // Steady combat (six locks, smoother converged): A covers all 16
-        // steps and B shadows it on the eighths.
+        // Steady combat: a 3-quaver additive slot spans six 16ths; A covers
+        // them all and B shadows on the eighths.
         let mut combat = MusicState {
             aggro_locks: 6,
+            intensity: 1.0,
             ..MusicState::default()
         };
-        let notes = (0..20)
-            .map(|_| Engine::bar_notes(&mut combat, BAR_SECS))
+        let mut cursor = 0.0;
+        let notes = (0..3)
+            .map(|_| {
+                let (notes, end) = Engine::slot_notes(&mut combat, cursor);
+                cursor = end;
+                notes
+            })
             .last()
-            .expect("at least one bar");
+            .expect("at least one slot");
         let a_notes = notes
             .iter()
             .filter(|(_, n)| n.channel == CHANNEL_PATTERN_A)
@@ -447,30 +598,96 @@ mod tests {
             .iter()
             .filter(|(_, n)| n.channel == CHANNEL_PATTERN_B)
             .count();
-        assert_eq!(a_notes, STEPS_PER_BAR); // full 16ths
-        assert_eq!(b_notes, STEPS_PER_BAR / 2); // eighth-note shadow
+        assert_eq!(a_notes, 6); // full 16ths across the 3-quaver slot
+        assert_eq!(b_notes, 3); // eighth-note shadow
     }
 
     #[test]
-    fn bars_are_deterministic() {
+    fn slots_are_deterministic() {
         let mut first = MusicState {
-            aggro_locks: 4,
+            aggro_locks: 6,
+            intensity: 1.0,
             ..MusicState::default()
         };
         let mut second = MusicState {
-            aggro_locks: 4,
+            aggro_locks: 6,
+            intensity: 1.0,
             ..MusicState::default()
         };
         assert_eq!(
-            Engine::bar_notes(&mut first, BAR_SECS),
-            Engine::bar_notes(&mut second, BAR_SECS)
+            Engine::slot_notes(&mut first, 2.0),
+            Engine::slot_notes(&mut second, 2.0)
         );
     }
 
     #[test]
-    fn bar_boundaries_quantise_forward() {
-        assert_eq!(next_bar_boundary(0.3, 2.0), 2.0);
-        assert_eq!(next_bar_boundary(2.0, 2.0), 4.0); // strictly after
-        assert_eq!(next_bar_boundary(4.1, 2.0), 6.0);
+    fn mid_slot_recalc_cuts_short_or_rides_to_the_end_of_the_note() {
+        // A boundary inside the slot cuts the chord short.
+        assert_secs(change_point(0.0, 4.0, 1.0, 0.5, 0.4), 1.0);
+        // An overdue boundary snaps to the next grid point first.
+        assert_secs(change_point(0.0, 4.0, 1.0, 0.5, 1.2), 1.5);
+        // A boundary past the end never stretches the note: it changes at
+        // the end of the note.
+        assert_secs(change_point(0.0, 4.0, 6.0, 0.5, 2.0), 4.0);
+    }
+
+    #[test]
+    fn retune_ticks_the_smoother_toward_the_locks() {
+        let mut state = MusicState::default();
+        retune(&mut state, 6, 0.5);
+        assert!(state.intensity > 0.6, "attack closes most of the gap");
+        retune(&mut state, 0, 0.5);
+        assert!(state.intensity > 0.55, "release barely falls");
+        assert_eq!(state.aggro_locks, 0);
+    }
+
+    #[test]
+    fn the_rhythm_holds_its_rung_before_dropping_down() {
+        let mut state = MusicState {
+            aggro_locks: 6,
+            intensity: 1.0,
+            rhythm_intensity: 1.0,
+            ..MusicState::default()
+        };
+        assert!(is_additive(state.rhythm_intensity));
+
+        // The fight breaks: the smoothed intensity glides down, but the
+        // rhythm holds the additive rung for the hold duration.
+        retune(&mut state, 0, 1.0);
+        assert!(is_additive(state.rhythm_intensity), "holding the rung");
+
+        // Slots tick by (short additive chords); the hold lapses within
+        // them and the rhythm follows the intensity down and out.
+        let mut cursor = 0.0;
+        for _ in 0..12 {
+            let (_, end) = Engine::slot_notes(&mut state, cursor);
+            cursor = end;
+        }
+        assert!(
+            !is_additive(state.rhythm_intensity),
+            "the rhythm dropped down after the hold"
+        );
+    }
+
+    #[test]
+    fn a_recovering_fight_cancels_the_hold_and_follows_back_up() {
+        let mut state = MusicState::default();
+        retune(&mut state, 6, 0.5);
+        assert!((state.rhythm_intensity - state.intensity).abs() < 1e-6);
+        // A dip starts a hold; a recovery cancels it and follows up.
+        state.intensity = 0.3;
+        follow_rhythm(&mut state, 0.1);
+        assert!(state.rhythm_hold > 0.0, "drop request starts the hold");
+        state.intensity = 0.9;
+        follow_rhythm(&mut state, 0.1);
+        assert_eq!(state.rhythm_hold, 0.0);
+        assert!((state.rhythm_intensity - 0.9).abs() < 1e-6);
+    }
+
+    #[test]
+    fn grid_boundaries_quantise_forward() {
+        assert_secs(next_grid_boundary(0.3, 0.5), 0.5);
+        assert_secs(next_grid_boundary(0.5, 0.5), 1.0); // strictly after
+        assert_secs(next_grid_boundary(4.1, 0.25), 4.25);
     }
 }

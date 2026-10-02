@@ -317,3 +317,21 @@ combat, the bass doubling with it. Intensity smooths compressor-style (0.5 s
 attack, 8 s release) so the boundaries never strobe. One-shot combat stabs
 moved to their own MIDI channel — five synths now in REAPER (bass, chords,
 pattern A, pattern B, fx), the mod wheel staying on the bass channel.
+
+## Milestone 25 — The aggro conductor plays the harmonic rhythm
+
+The harmonic rhythm became the conductor's instrument. Chords start at a
+lazy eight crotchets and shed two beats at a time as aggro climbs — 8, 6,
+4, 2 — before dropping into an additive regime at full flight: chord
+durations cycle 3+2, 3+3+2 and 3+2+2 quavers (a 20-quaver macro-cycle)
+with changes landing on every group boundary, the bass doubling along in
+lockstep. The rhythm recalculates mid-chord off the live aggro stream: a
+new period landing inside the sounding chord cuts it short at that
+boundary — the MIDI bridge gained a `/midi/note-off` action so the voice
+can silence the sounding bass and pad early — while one landing past the
+note's end lets it ring and changes at the end of the note. Descents hold
+their rung for three seconds before dropping down (a recovering fight
+cancels the hold), so the end of a fight eases rather than collapses. The
+scheduler now wakes per chord slot instead of per bar, and the patterns
+ride the global 16th grid across the odd-length additive slots, figures
+carrying mid-stride.

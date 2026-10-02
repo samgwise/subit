@@ -1,14 +1,24 @@
-//! Standalone audio voice daemon: performs the generative score bar by bar
-//! and subscribes to subit game events on the hub — one-shot combat moments
-//! become quantised `/midi/play` actions for the MIDI bridge, while the
-//! streamed telemetry conducts the score (aggro locks) or modulates it
-//! directly (player speed forwards immediately as `/midi/cc` so the synth
-//! filter tracks motion in real time).
+//! Standalone audio voice daemon: performs the generative score chord slot
+//! by chord slot and subscribes to subit game events on the hub — one-shot
+//! combat moments become quantised `/midi/play` actions for the MIDI bridge,
+//! while the streamed telemetry conducts the score (aggro locks) or
+//! modulates it directly (player speed forwards immediately as `/midi/cc`
+//! so the synth filter tracks motion in real time).
+//!
+//! The scheduler wakes at each harmonic change point, reads the latest lock
+//! count and renders the next chord. An aggro change mid-chord recalculates
+//! the harmonic rhythm: the change point moves earlier (a cut — the
+//! sounding bass and pad are silenced at the new boundary with
+//! `/midi/note-off`) when the new period lands inside the slot, and stays
+//! put when it lands past the note's end.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use audio_voice::music::{Engine, MusicState, next_bar_boundary, BAR_SECS};
+use audio_voice::music::{
+    self, change_point, current_slot_period_secs, retune, Engine, MusicState, CHANNEL_CHORDS,
+    CROTCHET_SECS, QUAVER_SECS, STUB_BPM,
+};
 use audio_voice::{
     GameEvent, MOD_WHEEL_CC, NoteEvent, Quantiser, Subdivision, perform_event, speed_to_cc,
 };
@@ -23,14 +33,6 @@ const GAME_EVENTS_PATTERN: &str = "/subit/game/**";
 /// (matches `world::PLAYER_SPEED` in the game crate).
 const DEFAULT_MAX_SPEED: f32 = 240.0;
 
-/// Tempo the stub voice performs at; replaced by a proper musical clock once
-/// the hub tempo protocol is wired up in Milestone 5.
-const STUB_BPM: f64 = 120.0;
-
-/// How far ahead of a bar boundary the score is scheduled, so the bridge
-/// never sees a timestamp in the past.
-const SCHEDULE_LEAD_SECS: f64 = 0.25;
-
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
@@ -44,8 +46,13 @@ async fn main() {
 
     let quantiser = Quantiser::new(STUB_BPM, Subdivision::Sixteenth);
     let mut score = MusicState::default();
-    let mut next_bar = next_bar_boundary(hub.now().await, BAR_SECS);
+    // The first chord lands on the next 16th.
+    let mut slot_start = quantiser.next_boundary(hub.now().await);
+    let mut slot_end = slot_start;
+    // The chord sounding right now: bass and pad notes a cut must silence.
+    let mut sounding: Vec<(u8, u8)> = Vec::new();
     let mut aggro_locks: u32 = 0;
+    let mut last_smooth_tick = 0.0f64;
 
     loop {
         // Hub-reported errors (e.g. rejected subscriptions) are non-fatal by
@@ -54,12 +61,10 @@ async fn main() {
             tracing::warn!(code = %err.code, "hub error: {}", err.message);
         }
 
-        // Wait on the next game event or the moment the next bar needs
-        // scheduling — whichever comes first keeps the score flowing while
-        // staying reactive to combat.
-        let lead = Duration::from_secs_f64(
-            (next_bar - SCHEDULE_LEAD_SECS - hub.now().await).max(0.0),
-        );
+        // Wait on the next game event or the next change point — whichever
+        // comes first keeps the score flowing while staying reactive to
+        // combat.
+        let wait = Duration::from_secs_f64((slot_end - hub.now().await).max(0.0));
         tokio::select! {
             msg = hub.recv_action() => {
                 let Some(msg) = msg else {
@@ -100,13 +105,40 @@ async fn main() {
                         );
                     }
                     "/subit/game/telemetry/aggro" => {
-                        // The conductor's input, read at the next bar
-                        // boundary — the smoother does the rest.
-                        if let Some(locks) = parse_aggro(&payload) {
-                            if locks != aggro_locks {
-                                tracing::info!(locks, "aggro locks updated");
-                            }
+                        if let Some(locks) = parse_aggro(&payload)
+                            && locks != aggro_locks
+                        {
+                            tracing::info!(locks, "aggro locks updated");
                             aggro_locks = locks;
+
+                            // Mid-slot recalculation: tick the smoother to
+                            // now, then move the change point if the new
+                            // harmonic rhythm calls for it.
+                            let now = hub.now().await;
+                            let dt = (now - last_smooth_tick).max(0.0) as f32;
+                            last_smooth_tick = now;
+                            retune(&mut score, locks, dt);
+
+                            let grid = if music::is_additive(score.rhythm_intensity) {
+                                QUAVER_SECS
+                            } else {
+                                CROTCHET_SECS
+                            };
+                            let new_period = current_slot_period_secs(score.rhythm_intensity);
+                            let cut = change_point(slot_start, slot_end, new_period, grid, now);
+                            if cut < slot_end {
+                                // Cut short: silence the sounding chord at
+                                // the new boundary; the next slot renders
+                                // from there.
+                                for &(channel, note) in &sounding {
+                                    let msg = midi_note_off(channel, note, cut);
+                                    if let Err(err) = hub.send_action(msg).await {
+                                        tracing::error!("failed to send note-off: {err:?}");
+                                    }
+                                }
+                                tracing::info!(when = cut, "harmonic rhythm cut the chord short");
+                                slot_end = cut;
+                            }
                         }
                     }
                     _ => {
@@ -131,24 +163,22 @@ async fn main() {
                     }
                 }
             }
-            _ = tokio::time::sleep(lead) => {
-                // Schedule every bar we owe — normally one, more if the
-                // machine stalled past a boundary (missed bars stay silent
-                // while the cycle phase keeps walking).
-                loop {
-                    let now = hub.now().await;
-                    if now < next_bar - SCHEDULE_LEAD_SECS {
-                        break;
+            _ = tokio::time::sleep(wait) => {
+                // The change point: render the next chord slot.
+                let (notes, end) = Engine::slot_notes(&mut score, slot_end);
+                sounding = notes
+                    .iter()
+                    .filter(|(_, n)| n.channel <= CHANNEL_CHORDS)
+                    .map(|(_, n)| (n.channel, n.note))
+                    .collect();
+                for (at, note) in notes {
+                    let when = slot_end + at;
+                    if let Err(err) = hub.send_action(midi_play(&note, when)).await {
+                        tracing::error!("failed to schedule score note: {err:?}");
                     }
-                    score.aggro_locks = aggro_locks;
-                    for (at, note) in Engine::bar_notes(&mut score, BAR_SECS) {
-                        let when = next_bar + at;
-                        if let Err(err) = hub.send_action(midi_play(&note, when)).await {
-                            tracing::error!("failed to schedule score note: {err:?}");
-                        }
-                    }
-                    next_bar += BAR_SECS;
                 }
+                slot_start = slot_end;
+                slot_end = end;
             }
         }
     }
@@ -209,6 +239,17 @@ fn midi_play(note: &NoteEvent, when: f64) -> WireMessage {
             Value::Integer(note.velocity as i64),
             Value::Float(FloatValue::new(note.duration_secs)),
         ]),
+    )
+}
+
+/// Build a (possibly timestamped) `/midi/note-off` action — the early cut of
+/// a note that would otherwise ring to its scheduled off.
+fn midi_note_off(channel: u8, note: u8, when: f64) -> WireMessage {
+    action(
+        "/midi/note-off",
+        SignalType::Event,
+        when,
+        Value::Tuple(vec![Value::Integer(channel as i64), Value::Integer(note as i64)]),
     )
 }
 
@@ -291,5 +332,18 @@ mod tests {
                 Value::Integer(96),
             ]
         );
+    }
+
+    #[test]
+    fn note_off_actions_carry_a_two_byte_tuple() {
+        let msg = midi_note_off(0, 38, 3.5);
+        let Value::Map(map) = &msg.payload else {
+            panic!("expected map payload");
+        };
+        assert_eq!(get_string(map, "address"), Some("/midi/note-off".into()));
+        let Value::Tuple(values) = get_value(map, "payload").unwrap() else {
+            panic!("expected tuple payload");
+        };
+        assert_eq!(values, vec![Value::Integer(0), Value::Integer(38)]);
     }
 }
