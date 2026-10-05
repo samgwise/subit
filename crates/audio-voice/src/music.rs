@@ -409,11 +409,10 @@ pub struct Arrangement {
 
 /// The arrangement for a slot: the drive layers the voices up — one at
 /// rest, two past a third of full flight (the floor plus the airy), three
-/// in combat. When sparse, the soloist rotates (two slots each) so calm
-/// exploration never sits still; the bell only joins the rotation once
-/// some ground is made (progress past 0.4 — the far outbounds alternate
-/// distant and airy), and the arrival lift (progress past 0.85) adds the
-/// airy to even a sparse slot: the goal's glow, audible from afar.
+/// in combat. When sparse, the soloist rotates through all three (two
+/// slots each) so calm exploration never sits still, and the arrival lift
+/// (progress past 0.85) adds the airy beside the soloist: the goal's
+/// glow, audible from afar.
 pub fn arrangement(intensity: f32, progress: f32, slot: u32) -> Arrangement {
     if intensity >= 0.66 {
         return Arrangement { distant: true, bell: true, airy: true };
@@ -421,7 +420,7 @@ pub fn arrangement(intensity: f32, progress: f32, slot: u32) -> Arrangement {
     if intensity >= 0.33 {
         return Arrangement { distant: true, bell: false, airy: true };
     }
-    let mut sparse = match (slot / 2) % if progress >= 0.4 { 3 } else { 2 } {
+    let mut sparse = match (slot / 2) % 3 {
         0 => Arrangement { distant: true, bell: false, airy: false },
         1 => Arrangement { distant: false, bell: false, airy: true },
         _ => Arrangement { distant: false, bell: true, airy: false },
@@ -1000,9 +999,9 @@ mod tests {
     }
 
     #[test]
-    fn the_sparse_soloist_rotates_and_the_objective_colours_it() {
-        // Far out (low progress): distant and airy alternate — the bell
-        // waits for some ground made.
+    fn the_sparse_soloist_rotates_through_all_three() {
+        // Two slots each: distant, then airy, then bell — whatever the
+        // progress (the bell is not gated behind ground made).
         assert_eq!(
             arrangement(0.0, 0.0, 0),
             Arrangement { distant: true, bell: false, airy: false }
@@ -1013,12 +1012,12 @@ mod tests {
         );
         assert_eq!(
             arrangement(0.0, 0.0, 4),
-            Arrangement { distant: true, bell: false, airy: false }
-        );
-        // Past 0.4 progress the bell joins the rotation.
-        assert_eq!(
-            arrangement(0.0, 0.5, 4),
             Arrangement { distant: false, bell: true, airy: false }
+        );
+        // And the rotation repeats.
+        assert_eq!(
+            arrangement(0.0, 0.0, 6),
+            Arrangement { distant: true, bell: false, airy: false }
         );
     }
 

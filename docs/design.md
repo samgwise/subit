@@ -490,11 +490,9 @@ a block.
 
 An arrangement pass decides who sounds: the drive layers the voices up —
 one at rest, two past a third of full flight, three in combat — and when
-sparse the soloist rotates (two slots each) so calm exploration never
-sits still. The objective colours the rotation: the bell only joins once
-some ground is made (progress past 0.4 — the far outbounds alternate
-distant and airy), and the arrival lift (progress past 0.85) adds the
-airy to even a sparse slot — the goal's glow, audible from afar.
+sparse the soloist rotates through all three (two slots each) so calm
+exploration never sits still. The arrival lift (progress past 0.85)
+adds the airy beside the soloist — the goal's glow, audible from afar.
 
 The idle bell plays polyrhythms: while the bass pulses its quavers, the
 bell lays N plinks evenly across each four-quaver window — 3:4, 5:4,
@@ -534,7 +532,7 @@ shared tones. The bass pulses and the patterns stay percussive.
 | Objective progress | 1 − BFS steps/initial, clamped 0–1, published on 1% change (Param) |
 | Form: home cycle / change chance / sequence vs episode / episode span & return | 4, 6 or 8 phrases / 60% at expiry / 60% sequence (a tone, one phrase) / 2–4 phrases, 40% return per phrase |
 | Voices: bands (distant / airy / bell) & offsets | 0–14 / 14–26 / 26–38 semitones from the tonic; entries at 0 / a quaver / three 16ths |
-| Arrangement: layer thresholds / sparse rotation / bell gate / arrival lift | 1 voice, 2 past 0.33, 3 past 0.66 / two slots each / progress 0.4 / airy added past 0.85 |
+| Arrangement: layer thresholds / sparse rotation / arrival lift | 1 voice, 2 past 0.33, 3 past 0.66 / all three rotating, two slots each / airy added past 0.85 progress |
 | Idle bell: polyrhythms / plink gate | 3:4, 5:4, 6:4 or 7:4 per bell slot (N over the bass's four-quaver window, repeating) / 0.6 × the plink spacing |
 || Aggro: notice range / stand-down range / wander speed / leash | 8 steps / 10 / 30 u/s / 1.5 tiles |
 | Cloak: unlock / sneak per point (floor) / duration per point (cap) / cooldown | 5 pts / −1 step (2) / +1 s (cap 4) / 10 s |

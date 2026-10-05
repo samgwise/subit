@@ -438,10 +438,10 @@ spreading the top two tones high, the bell plinking the topmost tone
 alone (always single, off the quaver grid) — each a thin subset of the
 same voicing revoiced into its own band. An arrangement pass decides who
 sounds: the drive layers the voices (one at rest, two past a third of
-full flight, three in combat), the sparse soloist rotates two slots at a
-time with the objective colouring the rotation (the bell waits for some
-ground made; the arrival lift adds the airy past 85% progress — the
-goal's glow audible from afar), and the voices enter rhythmically
+full flight, three in combat), the sparse soloist rotates through all
+three two slots at a time (the arrival lift adds the airy past 85%
+progress — the goal's glow audible from afar), and the voices enter
+rhythmically
 offset. Common tones hold across chord changes: the sustained voices
 schedule generously and the daemon keeps persisting tones ringing,
 trimming the strays with note-offs — the progressions smooth out
