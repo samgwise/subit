@@ -94,9 +94,9 @@ cargo run -p game
 The hub's TUI action monitor shows the published events (`/subit/game/event/*`
 combat moments, `/subit/game/telemetry/*` streams) and the scheduled
 `/midi/play` notes and `/midi/cc` mod-wheel output. The voice performs the
-generative score continuously — give REAPER five synths on channels 1–5
-(bass, chords, pattern A, pattern B, combat fx); the mod wheel rides channel
-1. On Windows, REAPER needs a
+generative score continuously — give REAPER seven synths on channels 1–7
+(bass, distant pad, bell, airy, pattern A, pattern B, combat fx); the mod
+wheel rides channel 1. On Windows, REAPER needs a
 virtual MIDI loopback (e.g. loopMIDI) to receive notes from the Ensemble MIDI
 bridge.
 

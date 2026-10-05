@@ -13,8 +13,8 @@ pub mod harmony;
 pub mod music;
 
 /// MIDI channel the one-shot combat fx perform on — the generative score
-/// owns 0–3 (bass, chords, pattern A, pattern B).
-pub const FX_CHANNEL: u8 = 4;
+/// owns 0–5 (bass, distant, bell, airy, pattern A, pattern B).
+pub const FX_CHANNEL: u8 = 6;
 
 /// Musical subdivisions the voice quantises incoming events to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

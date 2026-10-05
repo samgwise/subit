@@ -22,7 +22,7 @@ use rand::SeedableRng;
 use rand::rngs::SmallRng;
 use audio_voice::music::{
     self, change_point, current_slot_period_secs, retune, Engine, HarmonySource, MusicState,
-    CHANNEL_CHORDS, CROTCHET_SECS, QUAVER_SECS, STUB_BPM,
+    CHANNEL_AIRY, CHANNEL_DISTANT, CHANNEL_PATTERN_B, CROTCHET_SECS, QUAVER_SECS, STUB_BPM,
 };
 use audio_voice::{
     GameEvent, MOD_WHEEL_CC, NoteEvent, Quantiser, Subdivision, perform_event, speed_to_cc,
@@ -57,8 +57,10 @@ async fn main() {
     // The chord sounding right now: bass and pad notes a cut must silence.
     let mut sounding: Vec<(u8, u8)> = Vec::new();
     let mut aggro_locks: u32 = 0;
-    let mut objective: f32 = 0.0;
     let mut last_smooth_tick = 0.0f64;
+    // The sustained voices' sounding tones — the common-tone legato's
+    // memory (held tones skip the re-play; the rest get their note-offs).
+    let mut sustained: Vec<(u8, u8)> = Vec::new();
 
     // The form: the piece's tonal geography — home, sequences, episodes —
     // ticked when a phrase completes. Time-seeded so every run tells a
@@ -149,10 +151,11 @@ async fn main() {
                         );
                     }
                     "/subit/game/telemetry/objective" => {
-                        // The objective's slow field: the run's arc, read
-                        // by the composer when it next plans.
+                        // The objective's slow field: the run's arc — the
+                        // composer reads it when it next plans, and the
+                        // arrangement colours the texture with it now.
                         if let Some(progress) = get_float(&payload, "progress") {
-                            objective = (progress as f32).clamp(0.0, 1.0);
+                            score.objective = (progress as f32).clamp(0.0, 1.0);
                         }
                     }
                     "/subit/game/telemetry/aggro" => {
@@ -239,12 +242,37 @@ async fn main() {
                 let chord_vocab = score.harmony.current_vocab(score.slot);
                 let held = score.rhythm_hold > 0.0;
                 let (notes, end) = Engine::slot_notes(&mut score, slot_end);
+
+                // The common-tone legato: a sustained voice's tone still
+                // sounding from the last slot is HELD (not re-played — the
+                // bridge drops a re-play while a key is down), and the
+                // tones that don't persist get their note-offs at the
+                // boundary. The bass pulses and patterns stay percussive.
+                let next_sustained: Vec<(u8, u8)> = notes
+                    .iter()
+                    .filter(|(_, n)| n.channel == CHANNEL_DISTANT || n.channel == CHANNEL_AIRY)
+                    .map(|(_, n)| (n.channel, n.note))
+                    .collect();
+                let (held_tones, off_tones) =
+                    music::sustain_split(&sustained, &next_sustained);
+                for &(channel, note) in &off_tones {
+                    if let Err(err) = hub.send_action(midi_note_off(channel, note, slot_end)).await
+                    {
+                        tracing::error!("failed to send legato note-off: {err:?}");
+                    }
+                }
+                sustained = next_sustained;
+
+                // The cut's silencing set: every score-channel note.
                 sounding = notes
                     .iter()
-                    .filter(|(_, n)| n.channel <= CHANNEL_CHORDS)
+                    .filter(|(_, n)| n.channel <= CHANNEL_PATTERN_B)
                     .map(|(_, n)| (n.channel, n.note))
                     .collect();
                 for (at, note) in notes {
+                    if held_tones.contains(&(note.channel, note.note)) {
+                        continue; // the common tone keeps ringing
+                    }
                     let when = slot_end + at;
                     if let Err(err) = hub.send_action(midi_play(&note, when)).await {
                         tracing::error!("failed to schedule score note: {err:?}");
@@ -293,7 +321,7 @@ async fn main() {
                             tallies: drained.clone(),
                             sounding_chord: Some(chord_vocab),
                             degraded: score.degraded,
-                            progress: objective,
+                            progress: score.objective,
                             form: form.summary(),
                         }),
                         prev_chord: Some(chord_vocab),
@@ -320,12 +348,7 @@ async fn main() {
                             );
                             last_curve = Some(outcome.curve.clone());
                             score.harmony = HarmonySource::Plan {
-                                // The plan's slots carry their inversions;
-                                // a plan that drew its own contour intends
-                                // the arrangement space — the pad revoices
-                                // into it.
-                                revoice: !outcome.plan.curve_upper.is_empty()
-                                    || !outcome.plan.curve_lower.is_empty(),
+                                // The plan's slots carry their inversions.
                                 slots: outcome.plan.slots.clone(),
                                 curve: outcome.curve,
                                 cursor: 0,

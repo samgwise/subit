@@ -462,25 +462,45 @@ role: the controller owns the tonal geography; the composer composes
 within the reported key. Form transitions log ("the form moved: E
 minor, sequence").
 
-Contour and arrangement space: a plan may draw the phrase's register as
-paired upper/lower Bézier control points (semitones from the tonic) —
-and that contour is the arrangement space for everything. The patterns'
-notes clamp into the bounds at their phrase position (the arp exists
-below the curve), and the pad revoices into the band at the slot's
-parameter — a tone already inside stays put, one outside shifts by the
-smallest octave that lands it within, so the inversion falls out of the
-placement and the register survives the key moving. Consecutive curves
-stitch from the previous tail control point so phrases join without a
-seam. Plans without curves get the neutral default — a no-op, not an
-instruction: the pad keeps its home register. Env:
+Contour: a plan may draw the phrase's register as paired upper/lower
+Bézier control points (semitones from the tonic), fencing the patterns'
+notes at their phrase position — the arp exists below the curve.
+Consecutive curves stitch from the previous tail control point so
+phrases join without a seam; plans without curves get the neutral
+default, a no-op. Env:
 `OLLAMA_URL` (default `http://127.0.0.1:11434`), `OLLAMA_MODEL`
 (default `qwen3:0.6b` — verified: a validated plan in a couple of
 seconds; heavier generalists trip ollama 0.35's grammar into
 minute-long sampler rollbacks), `OLLAMA_DISABLED`.
 
-Channel map (one synth each in REAPER): 1 bass, 2 chords, 3 pattern A,
-4 pattern B, 5 one-shot combat fx. The mod wheel (player speed) stays on
-channel 1 — the bass synth's filter tracks motion.
+Channel map (one synth each in REAPER): 1 bass, 2 distant, 3 bell,
+4 airy, 5 pattern A, 6 pattern B, 7 one-shot combat fx. The mod wheel
+(player speed) stays on channel 1 — the bass synth's filter tracks
+motion.
+
+### The three voices — the pad becomes an arrangement
+
+The chord layer is three voices, each a thin subset of the same voicing
+placed into its own register band: the **distant pad** holds the full
+shape low (the harmony's floor), the **airy** spreads the top two tones
+high, and the **bell** plinks the topmost tone alone — always a single
+tone, off the quaver grid. They enter rhythmically offset (distant on
+the slot, the airy a quaver in, the bell three 16ths in) rather than as
+a block.
+
+An arrangement pass decides who sounds: the drive layers the voices up —
+one at rest, two past a third of full flight, three in combat — and when
+sparse the soloist rotates (two slots each) so calm exploration never
+sits still. The objective colours the rotation: the bell only joins once
+some ground is made (progress past 0.4 — the far outbounds alternate
+distant and airy), and the arrival lift (progress past 0.85) adds the
+airy to even a sparse slot — the goal's glow, audible from afar.
+
+Common tones hold across chord changes: the sustained voices schedule
+generously and the daemon keeps any tone that persists ringing (the
+bridge drops a re-play while a key is down), trimming the strays with
+note-offs at the boundary — the progressions smooth out through their
+shared tones. The bass pulses and the patterns stay percussive.
 
 ## Tuning reference
 
@@ -506,6 +526,8 @@ channel 1 — the bass synth's filter tracks motion.
 | Composer: phrase / replan margin / request timeout | 4–8 slots (17-chord vocabulary) / 2 slots / 30 s |
 | Objective progress | 1 − BFS steps/initial, clamped 0–1, published on 1% change (Param) |
 | Form: home cycle / change chance / sequence vs episode / episode span & return | 4, 6 or 8 phrases / 60% at expiry / 60% sequence (a tone, one phrase) / 2–4 phrases, 40% return per phrase |
+| Voices: bands (distant / airy / bell) & offsets | 0–14 / 14–26 / 26–38 semitones from the tonic; entries at 0 / a quaver / three 16ths |
+| Arrangement: layer thresholds / sparse rotation / bell gate / arrival lift | 1 voice, 2 past 0.33, 3 past 0.66 / two slots each / progress 0.4 / airy added past 0.85 |
 || Aggro: notice range / stand-down range / wander speed / leash | 8 steps / 10 / 30 u/s / 1.5 tiles |
 | Cloak: unlock / sneak per point (floor) / duration per point (cap) / cooldown | 5 pts / −1 step (2) / +1 s (cap 4) / 10 s |
 | Corruption: burst interval / burst length / drain / stealth | ~3 s / ~0.3 s / 1 plate per s / −2 steps |

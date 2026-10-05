@@ -42,12 +42,15 @@ pub const QUAVER_SECS: f64 = CROTCHET_SECS / 2.0;
 /// Seconds per 16th.
 pub const STEP_SECS: f64 = CROTCHET_SECS / 4.0;
 
-/// MIDI channels — one synth each in REAPER, with the one-shot combat fx on
-/// their own channel (see `FX_CHANNEL` in the crate root).
+/// MIDI channels — one synth each in REAPER: the score's bass, the three
+/// chord voices (distant, bell, airy), the two patterns, and the one-shot
+/// combat fx on their own channel (see `FX_CHANNEL` in the crate root).
 pub const CHANNEL_BASS: u8 = 0;
-pub const CHANNEL_CHORDS: u8 = 1;
-pub const CHANNEL_PATTERN_A: u8 = 2;
-pub const CHANNEL_PATTERN_B: u8 = 3;
+pub const CHANNEL_DISTANT: u8 = 1;
+pub const CHANNEL_BELL: u8 = 2;
+pub const CHANNEL_AIRY: u8 = 3;
+pub const CHANNEL_PATTERN_A: u8 = 4;
+pub const CHANNEL_PATTERN_B: u8 = 5;
 
 /// Smoothed intensity past which the harmonic rhythm goes additive.
 const ADDITIVE_THRESHOLD: f32 = 0.95;
@@ -69,11 +72,32 @@ const ATTACK_TAU: f32 = 0.5;
 const RELEASE_TAU: f32 = 8.0;
 /// Lock count mapped to full intensity (deep fights sit past this).
 const FULL_INTENSITY_LOCKS: f32 = 6.0;
-/// The pad registers chord tones above this (D3); the patterns sit an octave
-/// (A) or two (B) above it.
+/// The chord voices register their tones above this (D3); the patterns sit
+/// an octave (A) or two (B) above it.
 const PAD_BASE: f64 = 50.0;
 const PATTERN_A_OCTAVE: f64 = 12.0;
 const PATTERN_B_OCTAVE: f64 = 24.0;
+/// The three chord voices' register bands (semitones from the tonic): the
+/// distant pad hugs the floor, the airy spreads the top, and the bell
+/// sits above them all.
+const DISTANT_BAND: (f64, f64) = (0.0, 14.0);
+const AIRY_BAND: (f64, f64) = (14.0, 26.0);
+const BELL_BAND: (f64, f64) = (26.0, 38.0);
+/// The voices' rhythmic offsets: the distant floor lands on the slot, the
+/// airy enters a quaver in, and the bell plinks three 16ths in — off the
+/// quaver grid, pointillistic.
+const DISTANT_OFFSET: f64 = 0.0;
+const AIRY_OFFSET: f64 = QUAVER_SECS;
+const BELL_OFFSET: f64 = STEP_SECS * 3.0;
+/// The bell's gate — a pluck, not a sustain.
+const BELL_SECS: f64 = 0.3;
+/// The sustained voices' scheduled length, in slots — generously long so
+/// the daemon's common-tone legato can hold them across changes; the
+/// note-offs trim what doesn't persist.
+const SUSTAIN_SLOTS: f64 = 3.0;
+/// The objective's progress past which the arrival lift adds the airy
+/// voice to even a sparse slot — the goal's glow, audible from afar.
+const ARRIVAL_LIFT_PROGRESS: f32 = 0.85;
 
 /// The scale layer: the D-based major/minor mixture the harmony lives in, in
 /// semitones from the tonic — both thirds (F for Dm, F# for the major
@@ -221,10 +245,6 @@ pub enum HarmonySource {
         /// The phrase's voicing contour, in semitones from the tonic.
         curve: Curve,
         cursor: usize,
-        /// The plan drew its own contour — the arrangement space is
-        /// intentional, and the pad revoices into it. A plan without a
-        /// curve performs the neutral default and leaves the pad put.
-        revoice: bool,
     },
 }
 
@@ -367,6 +387,61 @@ fn revoice(semitone: f64, low: f64, high: f64) -> f64 {
         -((semitone - high) / 12.0).ceil() // the smallest drop that enters
     };
     semitone + 12.0 * octaves
+}
+
+/// Which chord voices sound this slot — the arrangement's decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Arrangement {
+    pub distant: bool,
+    pub bell: bool,
+    pub airy: bool,
+}
+
+/// The arrangement for a slot: the drive layers the voices up — one at
+/// rest, two past a third of full flight (the floor plus the airy), three
+/// in combat. When sparse, the soloist rotates (two slots each) so calm
+/// exploration never sits still; the bell only joins the rotation once
+/// some ground is made (progress past 0.4 — the far outbounds alternate
+/// distant and airy), and the arrival lift (progress past 0.85) adds the
+/// airy to even a sparse slot: the goal's glow, audible from afar.
+pub fn arrangement(intensity: f32, progress: f32, slot: u32) -> Arrangement {
+    if intensity >= 0.66 {
+        return Arrangement { distant: true, bell: true, airy: true };
+    }
+    if intensity >= 0.33 {
+        return Arrangement { distant: true, bell: false, airy: true };
+    }
+    let mut sparse = match (slot / 2) % if progress >= 0.4 { 3 } else { 2 } {
+        0 => Arrangement { distant: true, bell: false, airy: false },
+        1 => Arrangement { distant: false, bell: false, airy: true },
+        _ => Arrangement { distant: false, bell: true, airy: false },
+    };
+    if progress >= ARRIVAL_LIFT_PROGRESS {
+        sparse.airy = true;
+    }
+    sparse
+}
+
+/// A set of sounding tones: (channel, note) pairs.
+pub type ToneSet = Vec<(u8, u8)>;
+
+/// The common-tone split between the previous slot's sustained voices and
+/// the next's: tones still sounding are HELD (not re-played — the bridge
+/// drops a re-play while a key is down), tones that don't persist get
+/// their note-offs at the boundary. The bass pulses and the patterns stay
+/// percussive — the daemon only feeds the sustained voices through here.
+pub fn sustain_split(previous: &ToneSet, next: &ToneSet) -> (ToneSet, ToneSet) {
+    let held = next
+        .iter()
+        .filter(|tone| previous.contains(tone))
+        .copied()
+        .collect();
+    let off = previous
+        .iter()
+        .filter(|tone| !next.contains(tone))
+        .copied()
+        .collect();
+    (held, off)
 }
 
 /// Bend a pattern note into the contour — "the arp exists below the
@@ -517,6 +592,9 @@ pub struct MusicState {
     pub harmony: HarmonySource,
     /// The key the harmony lives in — the form controller's tonic offset.
     pub key: KeyState,
+    /// The player's slow-field progress toward the exit (0 spawn, 1
+    /// goal) — the arrangement's geography.
+    pub objective: f32,
 }
 
 impl Default for MusicState {
@@ -533,6 +611,7 @@ impl Default for MusicState {
             last_slot_secs: 4.0 * CROTCHET_SECS,
             harmony: HarmonySource::Cycle,
             key: KeyState::default(),
+            objective: 0.0,
         }
     }
 }
@@ -613,16 +692,10 @@ impl Engine {
 
         // The phrase's contour: a plan supplies the curve; the cycle plays
         // the neutral default, whose bounds never clip today's material.
-        // `t` walks the slot's own span within the phrase. A plan that
-        // drew its own curve intends the arrangement space — the pad
-        // revoices into it too.
-        let (curve, phrase_t, revoice_pad) = match &state.harmony {
-            HarmonySource::Plan {
-                curve,
-                slots,
-                cursor,
-                revoice,
-            } => {
+        // `t` walks the slot's own span within the phrase — the patterns'
+        // fence.
+        let (curve, phrase_t) = match &state.harmony {
+            HarmonySource::Plan { curve, slots, cursor } => {
                 let phrase_len = slots.len().max(1) as f64;
                 let slot_index = cursor.saturating_sub(1) as f64;
                 (
@@ -630,13 +703,11 @@ impl Engine {
                     Box::new(move |within: f64| {
                         ((slot_index + within) / phrase_len).clamp(0.0, 1.0)
                     }) as Box<dyn Fn(f64) -> f64>,
-                    *revoice,
                 )
             }
             HarmonySource::Cycle => (
                 default_curve(),
                 Box::new(|_: f64| 0.5) as Box<dyn Fn(f64) -> f64>,
-                false,
             ),
         };
 
@@ -666,35 +737,66 @@ impl Engine {
             ));
         }
 
-        // Pad voicing — transposed by the key, mutated by the degraded
-        // zone's noise. A plan's arrangement space revoices the pad into
-        // its band at the slot's parameter; without one, the pad sits at
-        // home.
-        let (band_low, band_high) = curve.contour(phrase_t(0.0));
+        // The three voices: the arrangement decides who sounds this slot —
+        // sparse and swapping at low drive (the objective colours the
+        // choice), layered up when the fight needs it. Each voice is a thin
+        // subset of the chord revoiced into its own register band, and they
+        // enter rhythmically offset rather than in a block. The sustained
+        // voices schedule generously — the daemon holds common tones
+        // across the change and trims the rest with note-offs.
+        let arrangement = arrangement(state.intensity, state.objective, state.slot);
         let voicing: Vec<u8> = voicing_for(
             slot_chord.degree,
             slot_chord.quality,
             state.key.tonic,
             state.degraded,
-        )
-        .iter()
-        .map(|&tone| {
-            if revoice_pad {
-                let placed = revoice(f64::from(tone) - PAD_BASE, band_low, band_high);
-                (PAD_BASE + placed).round() as u8
-            } else {
-                tone
+        );
+        if arrangement.distant {
+            for &tone in &voicing {
+                let placed = revoice(f64::from(tone) - PAD_BASE, DISTANT_BAND.0, DISTANT_BAND.1);
+                notes.push((
+                    DISTANT_OFFSET,
+                    NoteEvent {
+                        channel: CHANNEL_DISTANT,
+                        note: (PAD_BASE + placed) as u8,
+                        velocity: 55,
+                        duration_secs: duration_secs * SUSTAIN_SLOTS,
+                    },
+                ));
             }
-        })
-        .collect();
-        for &tone in &voicing {
+        }
+        if arrangement.airy {
+            // Layered, the airy carries the upper structure only; as the
+            // sparse soloist it carries the whole shape.
+            let top = if arrangement.distant {
+                voicing.len().saturating_sub(2)
+            } else {
+                0
+            };
+            for &tone in &voicing[top..] {
+                let placed = revoice(f64::from(tone) - PAD_BASE, AIRY_BAND.0, AIRY_BAND.1);
+                notes.push((
+                    AIRY_OFFSET,
+                    NoteEvent {
+                        channel: CHANNEL_AIRY,
+                        note: (PAD_BASE + placed) as u8,
+                        velocity: 45,
+                        duration_secs: duration_secs * SUSTAIN_SLOTS,
+                    },
+                ));
+            }
+        }
+        if arrangement.bell {
+            // Always the single topmost tone — the plink in the dark.
+            let topmost = voicing.last().expect("the chord has tones");
+            let placed = revoice(f64::from(*topmost) - PAD_BASE, BELL_BAND.0, BELL_BAND.1);
             notes.push((
-                0.0,
+                BELL_OFFSET,
                 NoteEvent {
-                    channel: CHANNEL_CHORDS,
-                    note: tone,
-                    velocity: 60,
-                    duration_secs: duration_secs * 0.92,
+                    channel: CHANNEL_BELL,
+                    note: (PAD_BASE + placed) as u8,
+                    velocity: 70,
+                    duration_secs: BELL_SECS,
                 },
             ));
         }
@@ -843,51 +945,117 @@ mod tests {
     }
 
     #[test]
-    fn the_pad_revoices_into_the_plan_s_arrangement_space() {
-        // A band above the pad's home octave: the tones lift into it, the
-        // chord's shape intact (the inversion falls out of the placement).
-        let mut state = MusicState {
-            harmony: HarmonySource::Plan {
-                slots: plan_slots(&[0, 0, 1, 0]),
-                curve: Curve {
-                    upper: vec![24.0, 26.0, 24.0],
-                    lower: vec![12.0, 12.0, 12.0],
-                },
-                cursor: 0,
-                revoice: true,
-            },
-            ..MusicState::default()
-        };
-        let (notes, _) = Engine::slot_notes(&mut state, 0.0);
-        let pad: Vec<u8> = notes
-            .iter()
-            .filter(|(_, n)| n.channel == CHANNEL_CHORDS)
-            .map(|(_, n)| n.note)
-            .collect();
-        // Dm's tones, an octave up: the same shape, the intended space.
-        assert_eq!(pad, vec![62, 65, 69]);
+    fn the_arrangement_layers_voices_with_the_drive() {
+        // At rest: one voice. Mid-drive: the floor plus the airy. Full
+        // flight: everything.
+        assert_eq!(
+            arrangement(0.0, 0.0, 0),
+            Arrangement { distant: true, bell: false, airy: false }
+        );
+        assert_eq!(
+            arrangement(0.5, 0.0, 0),
+            Arrangement { distant: true, bell: false, airy: true }
+        );
+        assert_eq!(
+            arrangement(1.0, 0.0, 0),
+            Arrangement { distant: true, bell: true, airy: true }
+        );
     }
 
     #[test]
-    fn a_plan_without_a_curve_leaves_the_pad_at_home() {
-        // The neutral default is not an arrangement instruction: the pad
-        // keeps its home register.
+    fn the_sparse_soloist_rotates_and_the_objective_colours_it() {
+        // Far out (low progress): distant and airy alternate — the bell
+        // waits for some ground made.
+        assert_eq!(
+            arrangement(0.0, 0.0, 0),
+            Arrangement { distant: true, bell: false, airy: false }
+        );
+        assert_eq!(
+            arrangement(0.0, 0.0, 2),
+            Arrangement { distant: false, bell: false, airy: true }
+        );
+        assert_eq!(
+            arrangement(0.0, 0.0, 4),
+            Arrangement { distant: true, bell: false, airy: false }
+        );
+        // Past 0.4 progress the bell joins the rotation.
+        assert_eq!(
+            arrangement(0.0, 0.5, 4),
+            Arrangement { distant: false, bell: true, airy: false }
+        );
+    }
+
+    #[test]
+    fn the_arrival_lift_adds_the_airy() {
+        // Approaching the goal: even a sparse slot carries the airy — the
+        // goal's glow, audible from afar.
+        let lift = arrangement(0.0, 0.9, 0);
+        assert!(lift.distant && lift.airy && !lift.bell);
+    }
+
+    #[test]
+    fn the_voices_take_thin_subsets_in_their_own_bands() {
+        // Full flight: all three sound — the distant holds the full shape
+        // low, the airy the top two, the bell the topmost tone alone; the
+        // offsets stagger their entries.
         let mut state = MusicState {
-            harmony: HarmonySource::Plan {
-                slots: plan_slots(&[0, 0, 1, 0]),
-                curve: default_curve(),
-                cursor: 0,
-                revoice: false,
-            },
+            aggro_locks: 6,
+            intensity: 1.0,
+            rhythm_intensity: 1.0,
             ..MusicState::default()
         };
         let (notes, _) = Engine::slot_notes(&mut state, 0.0);
-        let pad: Vec<u8> = notes
+        let distant: Vec<u8> = notes
             .iter()
-            .filter(|(_, n)| n.channel == CHANNEL_CHORDS)
+            .filter(|(_, n)| n.channel == CHANNEL_DISTANT)
             .map(|(_, n)| n.note)
             .collect();
-        assert_eq!(pad, vec![50, 53, 57]);
+        let bell: Vec<&(f64, NoteEvent)> = notes
+            .iter()
+            .filter(|(_, n)| n.channel == CHANNEL_BELL)
+            .collect();
+        let airy: Vec<u8> = notes
+            .iter()
+            .filter(|(_, n)| n.channel == CHANNEL_AIRY)
+            .map(|(_, n)| n.note)
+            .collect();
+        // Distant: the full shape in its band.
+        assert_eq!(distant.len(), 3);
+        for tone in &distant {
+            let from_tonic = f64::from(*tone) - PAD_BASE;
+            assert!((DISTANT_BAND.0..=DISTANT_BAND.1).contains(&from_tonic));
+        }
+        // Airy: the top two, in the airy band.
+        assert_eq!(airy.len(), 2);
+        for tone in &airy {
+            let from_tonic = f64::from(*tone) - PAD_BASE;
+            assert!((AIRY_BAND.0..=AIRY_BAND.1).contains(&from_tonic));
+        }
+        // Bell: a single tone, high and short, off the quaver grid.
+        assert_eq!(bell.len(), 1);
+        let (at, note) = bell[0];
+        assert_secs(*at, BELL_OFFSET);
+        assert_secs(note.duration_secs, BELL_SECS);
+        let from_tonic = f64::from(note.note) - PAD_BASE;
+        assert!((BELL_BAND.0..=BELL_BAND.1).contains(&from_tonic));
+    }
+
+    #[test]
+    fn common_tones_held_and_strays_trimmed() {
+        let previous = vec![
+            (CHANNEL_DISTANT, 50),
+            (CHANNEL_DISTANT, 57),
+            (CHANNEL_AIRY, 69),
+        ];
+        let next = vec![
+            (CHANNEL_DISTANT, 50),
+            (CHANNEL_DISTANT, 57),
+            (CHANNEL_AIRY, 67),
+        ];
+        let (held, off) = sustain_split(&previous, &next);
+        // The common tones hold (no re-play); the stray gets trimmed.
+        assert_eq!(held, vec![(CHANNEL_DISTANT, 50), (CHANNEL_DISTANT, 57)]);
+        assert_eq!(off, vec![(CHANNEL_AIRY, 69)]);
     }
 
     #[test]
@@ -951,7 +1119,6 @@ mod tests {
                 slots: plan_slots(&[9, 10, 0]),
                 curve: default_curve(),
                 cursor: 0,
-                revoice: false,
             },
             ..MusicState::default()
         };
@@ -992,7 +1159,6 @@ mod tests {
                     lower: vec![0.0, 0.0, 0.0, 0.0],
                 },
                 cursor: 0,
-                revoice: true,
             },
             ..MusicState::default()
         };
@@ -1082,11 +1248,13 @@ mod tests {
     }
 
     #[test]
-    fn a_calm_slot_is_bass_pulses_and_pad_over_eight_crotchets() {
+    fn a_calm_slot_is_bass_pulses_and_one_soloist_over_eight_crotchets() {
         let mut state = MusicState::default();
         let (notes, end) = Engine::slot_notes(&mut state, 0.0);
-        assert_eq!(notes.len(), BASS_PULSES + 3); // six bass pulses, one pad
-        assert!(notes.iter().all(|(_, n)| n.channel <= CHANNEL_CHORDS));
+        // Six bass pulses, then the sparse soloist's full shape (the
+        // distant pad, first in the rotation).
+        assert_eq!(notes.len(), BASS_PULSES + 3);
+        assert!(notes.iter().all(|(_, n)| n.channel <= CHANNEL_AIRY));
         assert_secs(end, 8.0 * CROTCHET_SECS);
         assert_eq!(state.slot, 1);
     }

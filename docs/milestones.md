@@ -429,3 +429,21 @@ falls out of the placement, and the register survives sequences and
 episodes instead of drifting out of the synth's voice. A plan without
 its own curve still gets the neutral default for the patterns, but it
 is a no-op, not an instruction: the pad keeps its home register.
+
+## Milestone 32 — Three voices: the pad becomes an arrangement
+
+The chord layer split into three voices with distinct registers and
+characters — the distant pad holding the full shape low, the airy
+spreading the top two tones high, the bell plinking the topmost tone
+alone (always single, off the quaver grid) — each a thin subset of the
+same voicing revoiced into its own band. An arrangement pass decides who
+sounds: the drive layers the voices (one at rest, two past a third of
+full flight, three in combat), the sparse soloist rotates two slots at a
+time with the objective colouring the rotation (the bell waits for some
+ground made; the arrival lift adds the airy past 85% progress — the
+goal's glow audible from afar), and the voices enter rhythmically
+offset. Common tones hold across chord changes: the sustained voices
+schedule generously and the daemon keeps persisting tones ringing,
+trimming the strays with note-offs — the progressions smooth out
+through their shared tones. Seven synths in REAPER now (bass, distant,
+bell, airy, pattern A, pattern B, fx).
