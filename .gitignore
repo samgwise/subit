@@ -1,1 +1,3 @@
 /target
+# The ollama probe's dumped request body (regenerated on each run)
+ollama_probe.body.json

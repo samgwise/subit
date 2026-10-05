@@ -360,3 +360,28 @@ corrupted upper structure over an anchored bass is the instability), the
 patterns inherit the rotation by walking the mutated voicings, and
 crossing back out of the zone restores the harmony. The daemon tracks the
 degraded state from the corruption boundary events it already received.
+
+## Milestone 28 — The composer: an LLM-planned harmony
+
+The deterministic cycle gained a composer: a slow planning tier where a
+local ollama model reads the score's recent past (the last 16 performed
+slots — chord, duration, cuts and holds) and the game's present (tallies
+since the last plan: sweeps, kills, level-ups, corruption boundaries,
+descents, aggro average and peak) and lays out the next phrase — 4–8
+chord slots from a thirteen-entry function-labelled vocabulary (the
+cycle's nine plus the submarine palette), plus optional Bézier control
+points for the phrase's voicing contour. The plan travels as flat JSON —
+it doubles as the ollama response schema — and passes the grammar in
+code before it's performed: folded voice-leaps within five semitones
+(the dim7's resolution excepted — its voices, not its root, do the
+stepping), two-repeats maximum, phrases closing on a tonic or a
+dominant. The model owns direction only — the conductor keeps the clock
+(the rhythm ladder, cuts and holds play straight through plans) — and
+the engine performs
+the patterns below the plan's curve, clamped into its bounds,
+consecutive curves stitched from the previous tail. Replans fire when
+the live plan drains to two slots or on sharp shifts (corruption,
+level-up, descent, an aggro spike); rejected plans, timeouts and an
+absent model keep the current phrase, a depleted one falls back to the
+cycle, and `OLLAMA_DISABLED=1` skips the tier entirely — the score never
+stalls on the model.

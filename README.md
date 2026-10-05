@@ -31,6 +31,9 @@ generative audio.
 - Rust stable (built and tested with 1.97)
 - The `ensemble` repository checked out as a sibling directory (`../ensemble`):
   the workspace's path dependencies and the hub/MIDI-bridge binaries live there.
+- Optional: [ollama](https://ollama.com) running locally for the LLM composer —
+  an unreachable ollama (or `OLLAMA_DISABLED=1`) just leaves the deterministic
+  score playing.
 
 ## Building and testing
 
@@ -96,3 +99,10 @@ generative score continuously — give REAPER five synths on channels 1–5
 1. On Windows, REAPER needs a
 virtual MIDI loopback (e.g. loopMIDI) to receive notes from the Ensemble MIDI
 bridge.
+
+The score's composer (an optional LLM planning tier) reads its model from
+ollama — `OLLAMA_URL` (default `http://127.0.0.1:11434`), `OLLAMA_MODEL`
+(default `qwen3:0.6b` — small instruction models are the sweet spot: a
+validated plan in a couple of seconds), and `OLLAMA_DISABLED=1` to skip
+planning entirely. The composer's plans and fallbacks are logged; the
+deterministic cycle plays whenever the model is slow, wrong or absent.

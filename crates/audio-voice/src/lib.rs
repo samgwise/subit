@@ -6,6 +6,9 @@
 //! binary target (`src/main.rs`) provides the standalone daemon role from the
 //! GDD.
 
+pub mod composer;
+pub mod curve;
+pub mod harmony;
 pub mod music;
 
 /// MIDI channel the one-shot combat fx perform on — the generative score

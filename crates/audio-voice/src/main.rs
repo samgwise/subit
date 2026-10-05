@@ -12,12 +12,14 @@
 //! `/midi/note-off`) when the new period lands inside the slot, and stays
 //! put when it lands past the note's end.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::time::Duration;
 
+use audio_voice::composer::{PlanRequest, ScoreContext, SlotRecord, Tally};
+use audio_voice::curve::Curve;
 use audio_voice::music::{
-    self, change_point, current_slot_period_secs, retune, Engine, MusicState, CHANNEL_CHORDS,
-    CROTCHET_SECS, QUAVER_SECS, STUB_BPM,
+    self, change_point, current_slot_period_secs, retune, Engine, HarmonySource, MusicState,
+    CHANNEL_CHORDS, CROTCHET_SECS, QUAVER_SECS, STUB_BPM,
 };
 use audio_voice::{
     GameEvent, MOD_WHEEL_CC, NoteEvent, Quantiser, Subdivision, perform_event, speed_to_cc,
@@ -53,6 +55,33 @@ async fn main() {
     let mut sounding: Vec<(u8, u8)> = Vec::new();
     let mut aggro_locks: u32 = 0;
     let mut last_smooth_tick = 0.0f64;
+
+    // The composer: a slow planning tier over the engine. Accepted plans
+    // arrive on the watch channel and steer the harmony until they deplete;
+    // every failure keeps the current phrase, and a depleted one falls back
+    // to the deterministic cycle. Holding our twin of the watch sender keeps
+    // the receiver's `changed()` from erroring when the model is disabled.
+    let (plan_tx, mut plan_rx) = tokio::sync::watch::channel(None);
+    let _plan_tx = plan_tx.clone();
+    let (plan_requests, plan_requests_rx) =
+        tokio::sync::mpsc::channel::<PlanRequest>(8);
+    if audio_voice::composer::enabled_from_env() {
+        audio_voice::composer::spawn(
+            audio_voice::composer::OllamaClient::from_env(),
+            plan_requests_rx,
+            plan_tx,
+        );
+        tracing::info!("the composer is listening (ollama)");
+    } else {
+        tracing::info!("the composer is disabled (OLLAMA_DISABLED=1)");
+        drop(plan_requests_rx); // requests close harmlessly
+    }
+    let mut history: VecDeque<SlotRecord> = VecDeque::new();
+    let mut tallies = Tally::default();
+    let mut last_curve: Option<Curve> = None;
+    // Set when an aggio spike cut the slot short; consumed by the next
+    // rendered slot's history record.
+    let mut pending_cut = false;
 
     loop {
         // Hub-reported errors (e.g. rejected subscriptions) are non-fatal by
@@ -110,6 +139,7 @@ async fn main() {
                         {
                             tracing::info!(locks, "aggro locks updated");
                             aggro_locks = locks;
+                            tallies.record_aggro(locks);
 
                             // Mid-slot recalculation: tick the smoother to
                             // now, then move the change point if the new
@@ -138,6 +168,7 @@ async fn main() {
                                 }
                                 tracing::info!(when = cut, "harmonic rhythm cut the chord short");
                                 slot_end = cut;
+                                pending_cut = true;
                             }
                         }
                     }
@@ -146,6 +177,9 @@ async fn main() {
                             tracing::warn!(address = %address, "unrecognised event payload");
                             continue;
                         };
+                        // The composer reads the dramatic moments — sweeps,
+                        // level-ups, corruption boundaries, descents.
+                        tallies.record_event(&event);
 
                         // The corruption boundary is the harmony's: while
                         // the player stands in degraded data, every
@@ -180,6 +214,8 @@ async fn main() {
             }
             _ = tokio::time::sleep(wait) => {
                 // The change point: render the next chord slot.
+                let chord_vocab = score.harmony.current_vocab(score.slot);
+                let held = score.rhythm_hold > 0.0;
                 let (notes, end) = Engine::slot_notes(&mut score, slot_end);
                 sounding = notes
                     .iter()
@@ -194,6 +230,69 @@ async fn main() {
                 }
                 slot_start = slot_end;
                 slot_end = end;
+
+                // The composer's memory: the slot joins the history, then
+                // the drained tallies and the plan's remaining slots decide
+                // whether to ask for the next phrase.
+                history.push_back(SlotRecord {
+                    chord: chord_vocab as u32,
+                    duration_secs: (end - slot_start) as f32,
+                    cut: pending_cut,
+                    held,
+                });
+                pending_cut = false;
+                while history.len() > audio_voice::composer::HISTORY_LEN {
+                    history.pop_front();
+                }
+                let drained = tallies.drain();
+                if let Some(reason) = audio_voice::composer::should_replan(
+                    score.harmony.slots_remaining(),
+                    &drained,
+                ) {
+                    let request = PlanRequest {
+                        context: audio_voice::composer::build_context(&ScoreContext {
+                            history: history.iter().copied().collect(),
+                            tallies: drained.clone(),
+                            sounding_chord: Some(chord_vocab),
+                            degraded: score.degraded,
+                        }),
+                        prev_chord: Some(chord_vocab),
+                        previous_curve: last_curve.clone(),
+                    };
+                    match plan_requests.try_send(request) {
+                        Ok(()) => tracing::info!(?reason, "asked the composer for the next phrase"),
+                        Err(err) => tracing::debug!(?reason, "composer busy: {err}"),
+                    }
+                }
+            }
+            plan_changed = plan_rx.changed() => {
+                // The composer published a plan — install it for the next
+                // slot boundary. The sender can't close while the daemon
+                // holds its twin, but an error shouldn't spin the loop.
+                match plan_changed {
+                    Ok(()) => {
+                        let outcome = plan_rx.borrow_and_update().clone();
+                        if let Some(outcome) = outcome {
+                            tracing::info!(
+                                slots = outcome.plan.slots.len(),
+                                intent = %outcome.plan.intent,
+                                "the composer's plan is live"
+                            );
+                            last_curve = Some(outcome.curve.clone());
+                            score.harmony = HarmonySource::Plan {
+                                slots: outcome
+                                    .plan
+                                    .slots
+                                    .iter()
+                                    .map(|slot| slot.chord)
+                                    .collect(),
+                                curve: outcome.curve,
+                                cursor: 0,
+                            };
+                        }
+                    }
+                    Err(_) => tracing::warn!("the composer's watch channel closed"),
+                }
             }
         }
     }

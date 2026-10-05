@@ -389,6 +389,51 @@ chromatic layer — the corrupted upper structure over an anchored bass is
 the instability), and the patterns inherit the rotation by walking the
 mutated voicings. Crossing back out restores the harmony.
 
+### The composer — an LLM-planned harmony
+
+The deterministic cycle is the ground truth the score falls back to; the
+voice also carries a composer — a slow planning tier over the performing
+engine. A local ollama model reads the score's recent past (the last 16
+performed slots: chord, duration, whether the conductor cut or held it)
+and the game's present (tallies since the last plan: mob sweeps, kills,
+level-ups, corruption boundaries, descents, and the aggro average and
+peak) and lays out the next phrase — 4–8 chord slots picked from a
+thirteen-entry vocabulary (the cycle's nine plus submarine's function
+palette: supertonic, subdominant, dominant, dominant seventh), each
+labelled with its harmonic function, plus optional Bézier control points
+for the phrase's voicing contour.
+
+The plan travels as flat JSON (it doubles as the ollama response schema —
+grammar-constrained sampling misbehaves on nested shapes) and must pass
+the grammar in code before it's performed: roots stay within five
+semitones of each other (folded around the octave — the dim7's resolution
+excepted, whose voices rather than its root do the stepping), no more
+than two of the same chord in a row, and the phrase closes on a tonic or
+a dominant.
+Rejected plans and transport failures keep the current phrase playing; a
+depleted plan hands back to the deterministic cycle. The model never owns
+the clock — the conductor keeps the rhythm ladder, cuts and holds (the
+schema asks for no durations at all); it owns direction only.
+
+The composer replans when the live plan drains to two slots, or on sharp
+shifts: a corruption boundary, a level-up, a descent, or the aggro peak
+racing three locks past the phrase's average. One request is in flight at
+a time (queued requests collapse to the newest), requests time out after
+30 s (a safety valve — the verified model plans in a couple of seconds),
+and `OLLAMA_DISABLED=1` hard-disables the tier — the score never stalls
+on the model.
+
+Contour: a plan may draw the phrase's register as paired upper/lower
+Bézier control points (semitones from the tonic). The patterns' notes
+clamp into the bounds at their phrase position — the arp exists below
+the curve — and consecutive curves stitch from the previous tail control
+point so phrases join without a seam. Plans without curves get the
+neutral default, whose bounds sit outside today's material. Env:
+`OLLAMA_URL` (default `http://127.0.0.1:11434`), `OLLAMA_MODEL`
+(default `qwen3:0.6b` — verified: a validated plan in a couple of
+seconds; heavier generalists trip ollama 0.35's grammar into
+minute-long sampler rollbacks), `OLLAMA_DISABLED`.
+
 Channel map (one synth each in REAPER): 1 bass, 2 chords, 3 pattern A,
 4 pattern B, 5 one-shot combat fx. The mod wheel (player speed) stays on
 channel 1 — the bass synth's filter tracks motion.
@@ -414,6 +459,7 @@ channel 1 — the bass synth's filter tracks motion.
 | Score: chord period / pattern gates / rhythm hold / smoothing | 8 → 6 → 4 → 2 crotchets, then 3+2 / 3+3+2 / 3+2+2 quavers (additive past 0.95 intensity) / A ≥1 lock, B ≥3 / 3 s before dropping down / τ 0.5 s attack, 8 s release |
 | Bass: pulse rate / relaxed figure / gate | quavers / 6 then rest (periods of 3+ beats), continuous below / 0.6 × quaver |
 | Degraded zone: chromatic rotation | ±3 semitones per mapping, hash of the pitch class |
+| Composer: phrase / replan margin / request timeout | 4–8 slots (13-chord vocabulary) / 2 slots / 30 s |
 || Aggro: notice range / stand-down range / wander speed / leash | 8 steps / 10 / 30 u/s / 1.5 tiles |
 | Cloak: unlock / sneak per point (floor) / duration per point (cap) / cooldown | 5 pts / −1 step (2) / +1 s (cap 4) / 10 s |
 | Corruption: burst interval / burst length / drain / stealth | ~3 s / ~0.3 s / 1 plate per s / −2 steps |

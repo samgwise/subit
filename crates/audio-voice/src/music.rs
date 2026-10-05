@@ -28,6 +28,8 @@
 
 use scalevec::{Scale, ScaleVec, Stack};
 
+use crate::curve::{default_curve, Curve};
+use crate::harmony::{Quality, VOCABULARY};
 use crate::NoteEvent;
 
 /// Stub tempo the score performs at (the hub tempo protocol stays deferred).
@@ -73,28 +75,6 @@ const PAD_BASE: f64 = 50.0;
 const PATTERN_A_OCTAVE: f64 = 12.0;
 const PATTERN_B_OCTAVE: f64 = 24.0;
 
-/// Chord quality: the intervals (semitones from the root) its voicing stacks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Quality {
-    Minor,
-    Major,
-    /// C# minor carrying the 4–3 suspension colour: the suspended fourth sits
-    /// beside the third until a voice resolves it.
-    MinorSus43,
-    Diminished7,
-}
-
-impl Quality {
-    fn intervals(self) -> &'static [f64] {
-        match self {
-            Quality::Minor => &[0.0, 3.0, 7.0],
-            Quality::Major => &[0.0, 4.0, 7.0],
-            Quality::MinorSus43 => &[0.0, 3.0, 4.0, 7.0],
-            Quality::Diminished7 => &[0.0, 3.0, 6.0, 9.0],
-        }
-    }
-}
-
 /// The scale layer: the D-based major/minor mixture the harmony lives in, in
 /// semitones from the tonic — both thirds (F for Dm, F# for the major
 /// colours), the natural seventh, and the borrowed G# the dim7 needs. Ten
@@ -116,7 +96,7 @@ fn chromatic_layer() -> ScaleVec {
 /// semitones. On integers the chromatic pass is the identity, but it is
 /// where octave folding lands anything fractional, and it keeps the three
 /// layers explicit in the chain.
-fn pitch_stack() -> Stack {
+pub(crate) fn pitch_stack() -> Stack {
     Stack::new(vec![Box::new(scale_layer()), Box::new(chromatic_layer())])
 }
 
@@ -151,6 +131,14 @@ fn bass_note(slot: u32) -> u8 {
     BASS_CYCLE[(slot as usize) % CYCLE_LEN]
 }
 
+/// The tonic's bass note (D2) — the plan-driven bass sits the chord root's
+/// semitones above it, the cycle's own home slot included.
+const TONIC_BASS: u8 = 38;
+
+/// The deterministic cycle's slots as vocabulary indices — the history and
+/// the composer's context speak the same numbered menu the plans do.
+const CYCLE_VOCAB: [usize; CYCLE_LEN] = [0, 2, 1, 3, 4, 5, 3, 6, 7];
+
 /// The noise-like rotation: a splitmix64 finaliser over the pitch class —
 /// cheap, deterministic, and uncorrelated between neighbouring pitches.
 fn noise_hash(pc: i64) -> i64 {
@@ -177,12 +165,102 @@ fn chromatic_map(semitone: f64, degraded: bool) -> f64 {
     octave + (pc + rotation).rem_euclid(12.0)
 }
 
-/// The slot's pad voicing: the root degree walks the harmony cycle, the
-/// pitch stack turns the degree into semitones from the tonic, and the
-/// quality stacks intervals above it — each tone mapped through the
-/// chromatic layer into the pad's octave (mutated when degraded).
-fn chord_voicing(slot: u32, degraded: bool) -> Vec<u8> {
+/// Where each chord slot's harmony comes from: the deterministic cycle, or
+/// a composer's plan consumed slot by slot. Either way the conductor keeps
+/// the clock — the rhythm ladder, cuts and holds are untouched by the
+/// source.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HarmonySource {
+    /// The nine-chord cycle — the deterministic ground truth.
+    Cycle,
+    /// A composer's plan: vocabulary chord slots, the phrase's contour, and
+    /// the next slot to perform. A depleted plan hands back to the cycle.
+    Plan {
+        slots: Vec<u32>,
+        /// The phrase's voicing contour, in semitones from the tonic.
+        curve: Curve,
+        cursor: usize,
+    },
+}
+
+impl HarmonySource {
+    /// Chord slots left in the plan (None for the cycle — it never
+    /// depletes). The replan margin reads this.
+    pub fn slots_remaining(&self) -> Option<usize> {
+        match self {
+            HarmonySource::Cycle => None,
+            HarmonySource::Plan { slots, cursor, .. } => {
+                Some(slots.len().saturating_sub(*cursor))
+            }
+        }
+    }
+
+    /// The vocabulary index of the slot about to perform — the history and
+    /// the composer's context speak the same menu the plans do.
+    pub fn current_vocab(&self, slot: u32) -> usize {
+        match self {
+            HarmonySource::Cycle => CYCLE_VOCAB[(slot as usize) % CYCLE_LEN],
+            HarmonySource::Plan { slots, cursor, .. } => slots
+                .get(*cursor)
+                .map(|&chord| chord as usize)
+                .unwrap_or_else(|| CYCLE_VOCAB[(slot as usize) % CYCLE_LEN]),
+        }
+    }
+}
+
+/// One slot's resolved chord: the root's scale degree, its quality, and the
+/// bass note that sounds beneath it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SlotChord {
+    degree: f64,
+    quality: Quality,
+    bass: u8,
+}
+
+/// The cycle's chord for a slot — the harmony and its locked bass.
+fn cycle_chord(slot: u32) -> SlotChord {
     let (degree, quality) = HARMONY_CYCLE[(slot as usize) % CYCLE_LEN];
+    SlotChord {
+        degree,
+        quality,
+        bass: bass_note(slot),
+    }
+}
+
+/// Resolve the slot's chord from the harmony source: the plan's next slot
+/// when live (advancing its cursor), else the deterministic cycle. A
+/// depleted plan hands back to the cycle first.
+fn resolve_slot(state: &mut MusicState) -> SlotChord {
+    let depleted = match &state.harmony {
+        HarmonySource::Plan { slots, cursor, .. } => *cursor >= slots.len(),
+        HarmonySource::Cycle => false,
+    };
+    if depleted {
+        state.harmony = HarmonySource::Cycle;
+    }
+    match &mut state.harmony {
+        HarmonySource::Cycle => cycle_chord(state.slot),
+        HarmonySource::Plan { slots, cursor, .. } => {
+            let entry = &VOCABULARY[slots[*cursor] as usize];
+            let chord = SlotChord {
+                degree: entry.degree,
+                quality: entry.quality,
+                // The plan's bass sounds the chord's root: the tonic bass
+                // plus the root's semitones (the cycle's own home slot
+                // included).
+                bass: TONIC_BASS + pitch_stack().step(entry.degree).round() as u8,
+            };
+            *cursor += 1;
+            chord
+        }
+    }
+}
+
+/// The pad voicing for a resolved chord: the pitch stack turns the root
+/// degree into semitones from the tonic, and the quality stacks intervals
+/// above it — each tone mapped through the chromatic layer into the pad's
+/// octave (mutated when degraded).
+fn voicing_for(degree: f64, quality: Quality, degraded: bool) -> Vec<u8> {
     let root_semitone = pitch_stack().step(degree);
     let root_pc = root_semitone.rem_euclid(12.0);
     quality
@@ -190,6 +268,15 @@ fn chord_voicing(slot: u32, degraded: bool) -> Vec<u8> {
         .iter()
         .map(|&interval| (PAD_BASE + chromatic_map(root_pc + interval, degraded)) as u8)
         .collect()
+}
+
+/// Bend a pattern note into the contour — "the arp exists below the
+/// curve": the note clamps inside the bounds at its phrase parameter. The
+/// bounds are semitones from the tonic; notes are absolute MIDI.
+fn contour_clamp(note: u8, curve: &Curve, t: f64) -> u8 {
+    let (low, high) = curve.contour(t);
+    let semitone = f64::from(note) - PAD_BASE;
+    (semitone.clamp(low, high) + PAD_BASE).round() as u8
 }
 
 /// Pattern A's figure: voicing indices walked per 16th step, up the chord.
@@ -326,6 +413,9 @@ pub struct MusicState {
     pub pattern_step: usize,
     /// The previous slot's duration — the smoother's tick between slots.
     pub last_slot_secs: f64,
+    /// Where each slot's chord comes from — the cycle, or the composer's
+    /// live plan.
+    pub harmony: HarmonySource,
 }
 
 impl Default for MusicState {
@@ -340,6 +430,7 @@ impl Default for MusicState {
             additive_pos: 0,
             pattern_step: 0,
             last_slot_secs: 4.0 * CROTCHET_SECS,
+            harmony: HarmonySource::Cycle,
         }
     }
 }
@@ -414,6 +505,30 @@ impl Engine {
         state.last_slot_secs = duration_secs;
         let slot_end = slot_start + duration_secs;
 
+        // The slot's chord: the plan's next slot when the composer is
+        // live, else the deterministic cycle.
+        let slot_chord = resolve_slot(state);
+
+        // The phrase's contour: a plan supplies the curve; the cycle plays
+        // the neutral default, whose bounds never clip today's material.
+        // `t` walks the slot's own span within the phrase.
+        let (curve, phrase_t) = match &state.harmony {
+            HarmonySource::Plan { curve, slots, cursor } => {
+                let phrase_len = slots.len().max(1) as f64;
+                let slot_index = cursor.saturating_sub(1) as f64;
+                (
+                    curve.clone(),
+                    Box::new(move |within: f64| {
+                        ((slot_index + within) / phrase_len).clamp(0.0, 1.0)
+                    }) as Box<dyn Fn(f64) -> f64>,
+                )
+            }
+            HarmonySource::Cycle => (
+                default_curve(),
+                Box::new(|_: f64| 0.5) as Box<dyn Fn(f64) -> f64>,
+            ),
+        };
+
         let mut notes = Vec::new();
 
         // Bass, locked to the harmony, pulsing in quavers: six and then
@@ -433,7 +548,7 @@ impl Engine {
                 k as f64 * QUAVER_SECS,
                 NoteEvent {
                     channel: CHANNEL_BASS,
-                    note: bass_note(state.slot),
+                    note: slot_chord.bass,
                     velocity: 88,
                     duration_secs: QUAVER_SECS * BASS_PULSE_GATE,
                 },
@@ -441,7 +556,8 @@ impl Engine {
         }
 
         // Pad voicing — mutated by the degraded zone's noise.
-        for &tone in &chord_voicing(state.slot, state.degraded) {
+        let voicing = voicing_for(slot_chord.degree, slot_chord.quality, state.degraded);
+        for &tone in &voicing {
             notes.push((
                 0.0,
                 NoteEvent {
@@ -459,7 +575,6 @@ impl Engine {
         // eighth-note shadow under A's sixteenths.
         if state.aggro_locks >= 1 {
             let mask = density_mask(state.intensity);
-            let voicing = chord_voicing(state.slot, state.degraded);
             let steps = (duration_secs / STEP_SECS).round() as usize;
             for k in 0..steps {
                 let global = state.pattern_step + k;
@@ -467,11 +582,18 @@ impl Engine {
                     continue;
                 }
                 let at = k as f64 * STEP_SECS;
+                // The patterns exist below the curve: each 16th's note
+                // clamps into the contour at its phrase parameter.
+                let t = phrase_t(k as f64 / steps.max(1) as f64);
                 notes.push((
                     at,
                     NoteEvent {
                         channel: CHANNEL_PATTERN_A,
-                        note: pattern_note(&voicing, &FIGURE_A, global, PATTERN_A_OCTAVE),
+                        note: contour_clamp(
+                            pattern_note(&voicing, &FIGURE_A, global, PATTERN_A_OCTAVE),
+                            &curve,
+                            t,
+                        ),
                         velocity: 72,
                         duration_secs: 0.11,
                     },
@@ -481,7 +603,11 @@ impl Engine {
                         at,
                         NoteEvent {
                             channel: CHANNEL_PATTERN_B,
-                            note: pattern_note(&voicing, &FIGURE_B, global, PATTERN_B_OCTAVE),
+                            note: contour_clamp(
+                                pattern_note(&voicing, &FIGURE_B, global, PATTERN_B_OCTAVE),
+                                &curve,
+                                t,
+                            ),
                             velocity: 78,
                             duration_secs: 0.11,
                         },
@@ -529,12 +655,43 @@ mod tests {
         assert_semitone(scale.step(10.0), 12.0); // the octave boundary
     }
 
+    /// The cycle's voicing for a slot — what the deterministic path plays.
+    fn cycle_voicing(slot: u32, degraded: bool) -> Vec<u8> {
+        let chord = cycle_chord(slot);
+        voicing_for(chord.degree, chord.quality, degraded)
+    }
+
+    /// The bass notes a rendered slot sounded, in order.
+    fn bass_notes(notes: &[(f64, NoteEvent)]) -> Vec<u8> {
+        notes
+            .iter()
+            .filter(|(_, n)| n.channel == CHANNEL_BASS)
+            .map(|(_, n)| n.note)
+            .collect()
+    }
+
+    /// The single bass note a slot sounded — the pulses all strike it.
+    fn slot_bass(notes: &[(f64, NoteEvent)]) -> u8 {
+        let bass = bass_notes(notes);
+        assert!(!bass.is_empty(), "the slot sounded a bass");
+        assert!(
+            bass.iter().all(|&note| note == bass[0]),
+            "the slot's bass pulses agree: {bass:?}"
+        );
+        bass[0]
+    }
+
     #[test]
     fn cycles_wrap_exactly() {
         for slot in 0..(CYCLE_LEN as u32 * 3) {
             let next = slot + CYCLE_LEN as u32;
             assert_eq!(bass_note(next), bass_note(slot));
-            assert_eq!(chord_voicing(next, false), chord_voicing(slot, false));
+            let chord = cycle_chord(slot);
+            let wrapped = cycle_chord(next);
+            assert_eq!(
+                voicing_for(chord.degree, chord.quality, false),
+                voicing_for(wrapped.degree, wrapped.quality, false)
+            );
         }
     }
 
@@ -550,19 +707,100 @@ mod tests {
 
     #[test]
     fn e_major_prepares_the_dim7_which_resolves_home() {
-        assert_eq!(chord_voicing(7, false), vec![52, 56, 59]); // E3 G#3 B3
-        assert_eq!(chord_voicing(8, false), vec![56, 59, 62, 65]); // G#3 B3 D4 F4
-        assert_eq!(chord_voicing(0, false), vec![50, 53, 57]); // Dm, home again
+        assert_eq!(cycle_voicing(7, false), vec![52, 56, 59]); // E3 G#3 B3
+        assert_eq!(cycle_voicing(8, false), vec![56, 59, 62, 65]); // G#3 B3 D4 F4
+        assert_eq!(cycle_voicing(0, false), vec![50, 53, 57]); // Dm, home again
+    }
+
+    #[test]
+    fn a_plan_drives_the_slots_until_it_depletes() {
+        // G → A → Dm from the vocabulary: the plan's bass sounds the chord
+        // roots (the tonic bass plus each root's semitones), and the
+        // depleted plan hands back to the cycle.
+        let mut state = MusicState {
+            harmony: HarmonySource::Plan {
+                slots: vec![9, 10, 0],
+                curve: default_curve(),
+                cursor: 0,
+            },
+            ..MusicState::default()
+        };
+        let (notes, _) = Engine::slot_notes(&mut state, 0.0);
+        assert_eq!(slot_bass(&notes), TONIC_BASS + 5); // G
+        assert_eq!(state.harmony.slots_remaining(), Some(2));
+
+        let (notes, _) = Engine::slot_notes(&mut state, 0.0);
+        assert_eq!(slot_bass(&notes), TONIC_BASS + 7); // A
+        assert_eq!(state.harmony.slots_remaining(), Some(1));
+
+        let (notes, _) = Engine::slot_notes(&mut state, 0.0);
+        assert_eq!(slot_bass(&notes), TONIC_BASS); // Dm, home
+        // Depleted but not yet reverted — the remaining count of zero
+        // keeps the daemon's replan trigger firing until a late plan
+        // finally lands.
+        assert_eq!(state.harmony.slots_remaining(), Some(0));
+
+        // The next slot is the deterministic cycle's again.
+        let (notes, _) = Engine::slot_notes(&mut state, 0.0);
+        assert_eq!(state.harmony, HarmonySource::Cycle);
+        assert_eq!(slot_bass(&notes), 35); // the cycle's B under B
+        assert_eq!(state.slot, 4);
+    }
+
+    #[test]
+    fn pattern_notes_bend_into_the_plan_s_contour() {
+        // A plan curve pinched low: the patterns clamp inside it instead of
+        // soaring above — the arp exists below the curve.
+        let mut pinched = MusicState {
+            aggro_locks: 6,
+            intensity: 1.0,
+            rhythm_intensity: 1.0,
+            harmony: HarmonySource::Plan {
+                slots: vec![0, 0, 1, 0, 0, 1, 0, 0],
+                curve: Curve {
+                    upper: vec![14.0, 14.0, 14.0, 14.0],
+                    lower: vec![0.0, 0.0, 0.0, 0.0],
+                },
+                cursor: 0,
+            },
+            ..MusicState::default()
+        };
+        let (notes, _) = Engine::slot_notes(&mut pinched, 0.0);
+        let highest = notes
+            .iter()
+            .filter(|(_, n)| n.channel == CHANNEL_PATTERN_A)
+            .map(|(_, n)| n.note)
+            .max()
+            .expect("full flight plays pattern A");
+        // The upper bound sits 14 semitones above the tonic: nothing climbs
+        // past the pad base plus 14 (a whisker of rounding slack).
+        assert!(f64::from(highest) <= PAD_BASE + 14.0 + 1.0, "clamped: {highest}");
+
+        // The unpinched cycle would have soared — the clamp bit.
+        let mut free = MusicState {
+            aggro_locks: 6,
+            intensity: 1.0,
+            rhythm_intensity: 1.0,
+            ..MusicState::default()
+        };
+        let (notes, _) = Engine::slot_notes(&mut free, 0.0);
+        let unclamped = notes
+            .iter()
+            .filter(|(_, n)| n.channel == CHANNEL_PATTERN_A)
+            .map(|(_, n)| n.note)
+            .max()
+            .unwrap();
+        assert!(f64::from(unclamped) > PAD_BASE + 15.0);
     }
 
     #[test]
     fn degradation_rotates_the_harmony_deterministically() {
         // Every mapping mutates, so the degraded voicing differs from the
         // clean one — but the same way every time.
-        let clean = chord_voicing(0, false);
-        let degraded = chord_voicing(0, true);
+        let clean = cycle_voicing(0, false);
+        let degraded = cycle_voicing(0, true);
         assert_ne!(degraded, clean, "the corruption is heard");
-        assert_eq!(degraded, chord_voicing(0, true), "deterministic");
+        assert_eq!(degraded, cycle_voicing(0, true), "deterministic");
 
         // Each tone lands within the rotation spread of its clean pitch
         // class (mod the octave), still inside the pad's register.
@@ -581,7 +819,7 @@ mod tests {
         // The mutation is per mapping operation: a different chord's
         // degradation scatters differently, and the patterns inherit it by
         // walking the rotated voicing.
-        assert_ne!(chord_voicing(7, true), chord_voicing(7, false));
+        assert_ne!(cycle_voicing(7, true), cycle_voicing(7, false));
     }
 
     #[test]
