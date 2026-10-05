@@ -29,7 +29,7 @@
 use scalevec::{Scale, ScaleVec, Stack};
 
 use crate::curve::{default_curve, Curve};
-use crate::harmony::{Quality, VOCABULARY};
+use crate::harmony::{PlanSlot, Quality, VOCABULARY};
 use crate::NoteEvent;
 
 /// Stub tempo the score performs at (the hub tempo protocol stays deferred).
@@ -101,39 +101,72 @@ pub(crate) fn pitch_stack() -> Stack {
 }
 
 /// The harmony layer: the nine chord slots as (scale degree of the root,
-/// quality). E major sits penultimate to prepare G#dim7 — the shared G# and
-/// B make the slide into the diminished smooth, and the dim7 resolves home
-/// to Dm. The bass follows this cycle in lockstep (see `BASS_CYCLE`).
+/// quality), in roman numerals relative to the tonic. E major sits
+/// penultimate to prepare the dim7 — the shared tones make the slide into
+/// the diminished smooth, and the dim7 resolves home to i. The bass
+/// follows this cycle in lockstep (see `BASS_CYCLE`).
 const HARMONY_CYCLE: [(f64, Quality); 9] = [
-    (0.0, Quality::Minor),       // Dm
-    (7.0, Quality::Minor),       // Bm
-    (0.0, Quality::Major),       // D
-    (7.0, Quality::Major),       // B
-    (3.0, Quality::Major),       // F#
-    (9.0, Quality::MinorSus43),  // C#m4-3
-    (7.0, Quality::Major),       // B/D (the bass sounds the D)
-    (1.0, Quality::Major),       // E — prepares the dim7
-    (5.0, Quality::Diminished7), // G#dim7 — resolves home to Dm
+    (0.0, Quality::Minor),       // i
+    (7.0, Quality::Minor),       // v
+    (0.0, Quality::Major),       // I
+    (7.0, Quality::Major),       // VI
+    (3.0, Quality::Major),       // III
+    (9.0, Quality::MinorSus43),  // #vii (4-3)
+    (7.0, Quality::Major),       // VI, first inversion (the bass sounds the D)
+    (1.0, Quality::Major),       // II — prepares the dim7
+    (5.0, Quality::Diminished7), // #v°7 — resolves home to i
 ];
 
 /// The slot count both cycles share — the harmony's ground truth the bass is
 /// locked to (and the seam later disintegration effects deform).
 const CYCLE_LEN: usize = HARMONY_CYCLE.len();
 
-/// The bass line: one absolute-MIDI note per chord slot, locked to the
-/// harmony cycle — D2 B1 D2 B1 F#2 C#2 D2 E2 G#2, with the B/D slot sounding
-/// its D. A plain sequence (ScaleVec's step() maps monotonic ladders, not
-/// ordered cycles), wrapped by the same slot arithmetic as the harmony.
-const BASS_CYCLE: [u8; 9] = [38, 35, 38, 35, 42, 37, 38, 40, 44];
+/// The bass line: one (degree, octave) per chord slot, locked to the
+/// harmony cycle — the roots with the VI slot's inversion (the bass sounds
+/// the tonic under it) and the line's written contour (the v under, the
+/// #vii below). The degrees resolve through the pitch stack like every
+/// other voice — transposed by the key, degraded with it.
+const BASS_CYCLE: [(f64, i32); 9] = [
+    (0.0, 0),
+    (7.0, -1),
+    (0.0, 0),
+    (7.0, -1),
+    (3.0, 0),
+    (9.0, -1),
+    (0.0, 0),
+    (1.0, 0),
+    (5.0, 0),
+];
 
-/// The slot's bass note — the bass cycle walks in lockstep with the harmony.
-fn bass_note(slot: u32) -> u8 {
-    BASS_CYCLE[(slot as usize) % CYCLE_LEN]
+/// The tonic's bass note (D2) — every bass note sits relative to it: the
+/// key's offset, the degree's semitones, and the line's own octave.
+const TONIC_BASS: u8 = 38;
+
+/// The bass note for a written line's (degree, octave) under the key: the
+/// stack resolves the transposed degree, the degradation rotates the pitch
+/// class like every voice, and the line's octave keeps its contour.
+fn bass_for_line(degree: f64, octave: i32, tonic: i32, degraded: bool) -> u8 {
+    let semitone = pitch_stack().step(degree) + tonic as f64;
+    (TONIC_BASS as i32 + 12 * octave + chromatic_map(semitone, degraded).rem_euclid(12.0) as i32)
+        as u8
 }
 
-/// The tonic's bass note (D2) — the plan-driven bass sits the chord root's
-/// semitones above it, the cycle's own home slot included.
-const TONIC_BASS: u8 = 38;
+/// The bass note for a planned chord, honouring an optional inversion: the
+/// named chord tone's pitch class (0 root, 1 third, 2 fifth, 3 seventh)
+/// resolves through the stack under the key. The plan's bass sits in the
+/// home octave of the register.
+fn bass_for_tone(
+    degree: f64,
+    quality: Quality,
+    tone: Option<u32>,
+    tonic: i32,
+    degraded: bool,
+) -> u8 {
+    let intervals = quality.intervals();
+    let tone = tone.map_or(0, |tone| (tone as usize).min(intervals.len() - 1));
+    let semitone = pitch_stack().step(degree) + tonic as f64 + intervals[tone];
+    TONIC_BASS + chromatic_map(semitone, degraded).rem_euclid(12.0) as u8
+}
 
 /// The deterministic cycle's slots as vocabulary indices — the history and
 /// the composer's context speak the same numbered menu the plans do.
@@ -173,10 +206,11 @@ fn chromatic_map(semitone: f64, degraded: bool) -> f64 {
 pub enum HarmonySource {
     /// The nine-chord cycle — the deterministic ground truth.
     Cycle,
-    /// A composer's plan: vocabulary chord slots, the phrase's contour, and
-    /// the next slot to perform. A depleted plan hands back to the cycle.
+    /// A composer's plan: vocabulary chord slots (bass inversions
+    /// included), the phrase's contour, and the next slot to perform. A
+    /// depleted plan hands back to the cycle.
     Plan {
-        slots: Vec<u32>,
+        slots: Vec<PlanSlot>,
         /// The phrase's voicing contour, in semitones from the tonic.
         curve: Curve,
         cursor: usize,
@@ -202,9 +236,39 @@ impl HarmonySource {
             HarmonySource::Cycle => CYCLE_VOCAB[(slot as usize) % CYCLE_LEN],
             HarmonySource::Plan { slots, cursor, .. } => slots
                 .get(*cursor)
-                .map(|&chord| chord as usize)
+                .map(|slot| slot.chord as usize)
                 .unwrap_or_else(|| CYCLE_VOCAB[(slot as usize) % CYCLE_LEN]),
         }
+    }
+}
+
+/// The key the harmony lives in: a semitone offset from home (D). The
+/// form controller moves it (sequences, episodes); every voice resolves
+/// relative to it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct KeyState {
+    pub tonic: i32,
+}
+
+impl KeyState {
+    /// The key's name for the composer's prompt — the tonic's spelling,
+    /// minor-preferred (the harmony is a minor mixture).
+    pub fn name(self) -> &'static str {
+        const NAMES: [&str; 12] = [
+            "D minor",
+            "E♭ minor",
+            "E minor",
+            "F minor",
+            "F♯ minor",
+            "G minor",
+            "G♯ minor",
+            "A minor",
+            "B♭ minor",
+            "B minor",
+            "C minor",
+            "C♯ minor",
+        ];
+        NAMES[self.tonic.rem_euclid(12) as usize]
     }
 }
 
@@ -218,12 +282,13 @@ struct SlotChord {
 }
 
 /// The cycle's chord for a slot — the harmony and its locked bass.
-fn cycle_chord(slot: u32) -> SlotChord {
+fn cycle_chord(slot: u32, tonic: i32, degraded: bool) -> SlotChord {
     let (degree, quality) = HARMONY_CYCLE[(slot as usize) % CYCLE_LEN];
+    let (bass_degree, octave) = BASS_CYCLE[(slot as usize) % CYCLE_LEN];
     SlotChord {
         degree,
         quality,
-        bass: bass_note(slot),
+        bass: bass_for_line(bass_degree, octave, tonic, degraded),
     }
 }
 
@@ -238,30 +303,36 @@ fn resolve_slot(state: &mut MusicState) -> SlotChord {
     if depleted {
         state.harmony = HarmonySource::Cycle;
     }
-    match &mut state.harmony {
-        HarmonySource::Cycle => cycle_chord(state.slot),
-        HarmonySource::Plan { slots, cursor, .. } => {
-            let entry = &VOCABULARY[slots[*cursor] as usize];
-            let chord = SlotChord {
-                degree: entry.degree,
-                quality: entry.quality,
-                // The plan's bass sounds the chord's root: the tonic bass
-                // plus the root's semitones (the cycle's own home slot
-                // included).
-                bass: TONIC_BASS + pitch_stack().step(entry.degree).round() as u8,
-            };
-            *cursor += 1;
-            chord
-        }
+    // A live plan performs its next slot — advancing the cursor — with the
+    // bass on the root unless the slot names an inversion (a mid-phrase
+    // chord tone); the key transposes and the degradation reaches it like
+    // every voice.
+    if let HarmonySource::Plan { slots, cursor, .. } = &mut state.harmony {
+        let planned = &slots[*cursor];
+        let entry = &VOCABULARY[planned.chord as usize];
+        let chord = SlotChord {
+            degree: entry.degree,
+            quality: entry.quality,
+            bass: bass_for_tone(
+                entry.degree,
+                entry.quality,
+                planned.bass,
+                state.key.tonic,
+                state.degraded,
+            ),
+        };
+        *cursor += 1;
+        return chord;
     }
+    cycle_chord(state.slot, state.key.tonic, state.degraded)
 }
 
 /// The pad voicing for a resolved chord: the pitch stack turns the root
-/// degree into semitones from the tonic, and the quality stacks intervals
-/// above it — each tone mapped through the chromatic layer into the pad's
-/// octave (mutated when degraded).
-fn voicing_for(degree: f64, quality: Quality, degraded: bool) -> Vec<u8> {
-    let root_semitone = pitch_stack().step(degree);
+/// degree (plus the key's offset) into semitones, and the quality stacks
+/// intervals above it — each tone mapped through the chromatic layer into
+/// the pad's octave (mutated when degraded).
+fn voicing_for(degree: f64, quality: Quality, tonic: i32, degraded: bool) -> Vec<u8> {
+    let root_semitone = pitch_stack().step(degree) + tonic as f64;
     let root_pc = root_semitone.rem_euclid(12.0);
     quality
         .intervals()
@@ -416,6 +487,8 @@ pub struct MusicState {
     /// Where each slot's chord comes from — the cycle, or the composer's
     /// live plan.
     pub harmony: HarmonySource,
+    /// The key the harmony lives in — the form controller's tonic offset.
+    pub key: KeyState,
 }
 
 impl Default for MusicState {
@@ -431,6 +504,7 @@ impl Default for MusicState {
             pattern_step: 0,
             last_slot_secs: 4.0 * CROTCHET_SECS,
             harmony: HarmonySource::Cycle,
+            key: KeyState::default(),
         }
     }
 }
@@ -555,8 +629,14 @@ impl Engine {
             ));
         }
 
-        // Pad voicing — mutated by the degraded zone's noise.
-        let voicing = voicing_for(slot_chord.degree, slot_chord.quality, state.degraded);
+        // Pad voicing — transposed by the key, mutated by the degraded
+        // zone's noise.
+        let voicing = voicing_for(
+            slot_chord.degree,
+            slot_chord.quality,
+            state.key.tonic,
+            state.degraded,
+        );
         for &tone in &voicing {
             notes.push((
                 0.0,
@@ -655,10 +735,18 @@ mod tests {
         assert_semitone(scale.step(10.0), 12.0); // the octave boundary
     }
 
+    /// Plan slots from chord indices, roots in the bass.
+    fn plan_slots(chords: &[u32]) -> Vec<PlanSlot> {
+        chords
+            .iter()
+            .map(|&chord| PlanSlot { chord, bass: None, suggested_beats: 0.0 })
+            .collect()
+    }
+
     /// The cycle's voicing for a slot — what the deterministic path plays.
     fn cycle_voicing(slot: u32, degraded: bool) -> Vec<u8> {
-        let chord = cycle_chord(slot);
-        voicing_for(chord.degree, chord.quality, degraded)
+        let chord = cycle_chord(slot, 0, degraded);
+        voicing_for(chord.degree, chord.quality, 0, degraded)
     }
 
     /// The bass notes a rendered slot sounded, in order.
@@ -685,24 +773,58 @@ mod tests {
     fn cycles_wrap_exactly() {
         for slot in 0..(CYCLE_LEN as u32 * 3) {
             let next = slot + CYCLE_LEN as u32;
-            assert_eq!(bass_note(next), bass_note(slot));
-            let chord = cycle_chord(slot);
-            let wrapped = cycle_chord(next);
+            let chord = cycle_chord(slot, 0, false);
+            let wrapped = cycle_chord(next, 0, false);
+            assert_eq!(chord.bass, wrapped.bass);
             assert_eq!(
-                voicing_for(chord.degree, chord.quality, false),
-                voicing_for(wrapped.degree, wrapped.quality, false)
+                voicing_for(chord.degree, chord.quality, 0, false),
+                voicing_for(wrapped.degree, wrapped.quality, 0, false)
             );
         }
+    }
+
+    #[test]
+    fn transposition_moves_every_voice_by_the_offset() {
+        // The same slot a tone higher: the voicing and the bass differ by
+        // exactly two semitones — the whole dictionary travels with the
+        // key.
+        let home = cycle_chord(4, 0, false);
+        let up = cycle_chord(4, 2, false);
+        let home_voicing = voicing_for(home.degree, home.quality, 0, false);
+        let up_voicing = voicing_for(up.degree, up.quality, 2, false);
+        for (home_tone, up_tone) in home_voicing.iter().zip(up_voicing.iter()) {
+            assert_eq!(up_tone - home_tone, 2);
+        }
+        assert_eq!(up.bass - home.bass, 2);
+    }
+
+    #[test]
+    fn degradation_reaches_the_bass_and_survives_transposition() {
+        // The bass degrades with the stack now: deterministic, within the
+        // spread, and the rotation composes with a transposed key.
+        let clean = cycle_chord(0, 0, false);
+        let degraded = cycle_chord(0, 0, true);
+        assert_ne!(degraded.bass, clean.bass, "the corrupted bass is heard");
+        assert_eq!(cycle_chord(0, 0, true).bass, degraded.bass, "deterministic");
+        let shift = (degraded.bass as i64 - clean.bass as i64).rem_euclid(12);
+        let shift = shift.min(12 - shift);
+        assert!(shift <= DEGRADATION_SEMITONES, "the bass moved {shift} semitones");
+
+        // A transposed key degrades on its own pitch classes.
+        let up_clean = cycle_chord(0, 2, false);
+        let up_degraded = cycle_chord(0, 2, true);
+        assert_ne!(up_degraded.bass, up_clean.bass);
+        assert_ne!(up_degraded.bass, degraded.bass, "the key moves the rotation");
     }
 
     #[test]
     fn bass_is_locked_to_the_harmony() {
         // Every slot sounds its designated bass: the D under B/D, the E
         // under the E major prepare, the G# under the dim7.
-        assert_eq!(bass_note(6), 38); // B/D sounds its D
-        assert_eq!(bass_note(7), 40); // E
-        assert_eq!(bass_note(8), 44); // G#
-        assert_eq!(bass_note(0), 38); // home
+        assert_eq!(cycle_chord(6, 0, false).bass, 38); // B/D sounds its D
+        assert_eq!(cycle_chord(7, 0, false).bass, 40); // E
+        assert_eq!(cycle_chord(8, 0, false).bass, 44); // G#
+        assert_eq!(cycle_chord(0, 0, false).bass, 38); // home
     }
 
     #[test]
@@ -719,7 +841,7 @@ mod tests {
         // depleted plan hands back to the cycle.
         let mut state = MusicState {
             harmony: HarmonySource::Plan {
-                slots: vec![9, 10, 0],
+                slots: plan_slots(&[9, 10, 0]),
                 curve: default_curve(),
                 cursor: 0,
             },
@@ -756,7 +878,7 @@ mod tests {
             intensity: 1.0,
             rhythm_intensity: 1.0,
             harmony: HarmonySource::Plan {
-                slots: vec![0, 0, 1, 0, 0, 1, 0, 0],
+                slots: plan_slots(&[0, 0, 1, 0, 0, 1, 0, 0]),
                 curve: Curve {
                     upper: vec![14.0, 14.0, 14.0, 14.0],
                     lower: vec![0.0, 0.0, 0.0, 0.0],

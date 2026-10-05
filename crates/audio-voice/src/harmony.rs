@@ -84,35 +84,39 @@ pub struct VocabEntry {
 /// first nine are the deterministic cycle; the rest are submarine's
 /// function palette over the D mixture.
 pub const VOCABULARY: &[VocabEntry] = &[
-    VocabEntry { degree: 0.0, quality: Quality::Minor, function: Function::Tonic, name: "Dm (tonic minor)" },
-    VocabEntry { degree: 0.0, quality: Quality::Major, function: Function::Tonic, name: "D (tonic)" },
-    VocabEntry { degree: 7.0, quality: Quality::Minor, function: Function::Colour, name: "Bm (submediant)" },
-    VocabEntry { degree: 7.0, quality: Quality::Major, function: Function::Colour, name: "B (borrowed colour)" },
-    VocabEntry { degree: 3.0, quality: Quality::Major, function: Function::Dominant, name: "F# (V of Bm)" },
-    VocabEntry { degree: 9.0, quality: Quality::MinorSus43, function: Function::Colour, name: "C#m4-3 (suspension)" },
-    VocabEntry { degree: 1.0, quality: Quality::Major, function: Function::Dominant, name: "E (V of V, prepares the dim7)" },
-    VocabEntry { degree: 5.0, quality: Quality::Diminished7, function: Function::Dominant, name: "G#dim7 (resolves home)" },
-    VocabEntry { degree: 1.0, quality: Quality::Minor, function: Function::Subdominant, name: "Em (supertonic)" },
-    VocabEntry { degree: 4.0, quality: Quality::Major, function: Function::Subdominant, name: "G (subdominant)" },
-    VocabEntry { degree: 6.0, quality: Quality::Major, function: Function::Dominant, name: "A (dominant)" },
-    VocabEntry { degree: 6.0, quality: Quality::Dominant7, function: Function::Dominant, name: "A7 (dominant seventh)" },
-    VocabEntry { degree: 5.0, quality: Quality::Minor, function: Function::Colour, name: "Gm (minor colour)" },
+    VocabEntry { degree: 0.0, quality: Quality::Minor, function: Function::Tonic, name: "i (tonic minor)" },
+    VocabEntry { degree: 0.0, quality: Quality::Major, function: Function::Tonic, name: "I (tonic)" },
+    VocabEntry { degree: 7.0, quality: Quality::Minor, function: Function::Colour, name: "vi (submediant)" },
+    VocabEntry { degree: 7.0, quality: Quality::Major, function: Function::Colour, name: "VI (borrowed colour)" },
+    VocabEntry { degree: 3.0, quality: Quality::Major, function: Function::Dominant, name: "III (V of vi)" },
+    VocabEntry { degree: 9.0, quality: Quality::MinorSus43, function: Function::Colour, name: "#vii (suspension)" },
+    VocabEntry { degree: 1.0, quality: Quality::Major, function: Function::Dominant, name: "II (V of V, prepares the dim7)" },
+    VocabEntry { degree: 5.0, quality: Quality::Diminished7, function: Function::Dominant, name: "#v°7 (resolves home)" },
+    VocabEntry { degree: 1.0, quality: Quality::Minor, function: Function::Subdominant, name: "ii (supertonic)" },
+    VocabEntry { degree: 4.0, quality: Quality::Major, function: Function::Subdominant, name: "IV (subdominant)" },
+    VocabEntry { degree: 6.0, quality: Quality::Major, function: Function::Dominant, name: "V (dominant)" },
+    VocabEntry { degree: 6.0, quality: Quality::Dominant7, function: Function::Dominant, name: "V7 (dominant seventh)" },
+    VocabEntry { degree: 5.0, quality: Quality::Minor, function: Function::Colour, name: "iv (minor colour)" },
     // The objective's palette: colours for the run's dramatic arc — hope
     // far out, mixo motion on the approach, soft tension, and the tonic's
     // own dominant seventh (the second closable dominant).
-    VocabEntry { degree: 2.0, quality: Quality::Major, function: Function::Colour, name: "F (the borrowed third)" },
-    VocabEntry { degree: 8.0, quality: Quality::Major, function: Function::Colour, name: "C (the natural seventh)" },
-    VocabEntry { degree: 6.0, quality: Quality::Minor, function: Function::Colour, name: "Am (the modal v)" },
-    VocabEntry { degree: 0.0, quality: Quality::Dominant7, function: Function::Dominant, name: "D7 (the pull to the subdominant)" },
+    VocabEntry { degree: 2.0, quality: Quality::Major, function: Function::Colour, name: "♭III (the borrowed third)" },
+    VocabEntry { degree: 8.0, quality: Quality::Major, function: Function::Colour, name: "♭VII (the natural seventh)" },
+    VocabEntry { degree: 6.0, quality: Quality::Minor, function: Function::Colour, name: "v (the modal v)" },
+    VocabEntry { degree: 0.0, quality: Quality::Dominant7, function: Function::Dominant, name: "I7 (the pull to the subdominant)" },
 ];
 
-/// One planned chord: a vocabulary index and an advisory duration. The
-/// conductor owns the clock (the M25 regime ladder, cuts, holds) — the
-/// suggestion is logged and ignored by the engine in v1, kept in the schema
-/// for a later hand-off.
+/// One planned chord: a vocabulary index, an optional bass tone (an
+/// inversion — 0 root, 1 third, 2 fifth, 3 seventh), and an advisory
+/// duration. The conductor owns the clock (the M25 regime ladder, cuts,
+/// holds) — the suggestion is logged and ignored by the engine in v1,
+/// kept in the schema for a later hand-off. The bass may invert
+/// mid-phrase; the validator pins the phrase edges to the root.
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
 pub struct PlanSlot {
     pub chord: u32,
+    #[serde(default)]
+    pub bass: Option<u32>,
     #[serde(default)]
     pub suggested_beats: f32,
 }
@@ -182,6 +186,21 @@ pub fn validate(plan: &HarmonyPlan, prev_chord: Option<usize>) -> Result<(), Str
         return Err("boundary voice leap exceeds the span".into());
     }
 
+    // The bass: a slot may invert mid-phrase (any chord tone the quality
+    // has), but the phrase edges stay rooted — stable starts and closes.
+    for (index, slot) in plan.slots.iter().enumerate() {
+        let Some(bass) = slot.bass else {
+            continue;
+        };
+        let tones = VOCABULARY[slot.chord as usize].quality.intervals().len() as u32;
+        if bass >= tones {
+            return Err(format!("bass tone {bass} is off the chord"));
+        }
+        if index == 0 || index == plan.slots.len() - 1 {
+            return Err("phrase edges stay on the root bass".into());
+        }
+    }
+
     // Restraint: the same chord at most twice in a row.
     let mut run = 1;
     for pair in plan.slots.windows(2) {
@@ -226,7 +245,7 @@ mod tests {
         HarmonyPlan {
             slots: chords
                 .iter()
-                .map(|&chord| PlanSlot { chord, suggested_beats: 0.0 })
+                .map(|&chord| PlanSlot { chord, bass: None, suggested_beats: 0.0 })
                 .collect(),
             curve_upper: vec![],
             curve_lower: vec![],
@@ -237,8 +256,26 @@ mod tests {
     #[test]
     fn the_vocabulary_is_function_labelled() {
         assert_eq!(VOCABULARY[0].function, Function::Tonic);
-        assert_eq!(VOCABULARY[6].name, "E (V of V, prepares the dim7)");
+        assert_eq!(VOCABULARY[6].name, "II (V of V, prepares the dim7)");
         assert_eq!(VOCABULARY[9].function, Function::Subdominant);
+    }
+
+    #[test]
+    fn the_bass_may_invert_mid_phrase_but_not_at_the_edges() {
+        // A mid-phrase inversion is grammatical.
+        let mut plan = plan_from(&[9, 10, 0, 0]);
+        plan.slots[1].bass = Some(2); // the dominant over its fifth
+        assert!(validate(&plan, None).is_ok());
+        // A phrase edge on an inversion is not.
+        plan.slots[0].bass = Some(1);
+        assert!(validate(&plan, None).is_err());
+        let mut closing = plan_from(&[9, 10, 0, 0]);
+        closing.slots[3].bass = Some(1);
+        assert!(validate(&closing, None).is_err());
+        // And the tone must exist on the chord: a triad has no seventh.
+        let mut seventhless = plan_from(&[9, 10, 0, 0]);
+        seventhless.slots[1].bass = Some(3);
+        assert!(validate(&seventhless, None).is_err());
     }
 
     #[test]

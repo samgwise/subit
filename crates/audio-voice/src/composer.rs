@@ -40,15 +40,19 @@ const AGGRO_JUMP_LOCKS: f32 = 3.0;
 /// The system prompt: the grammar and the game's dramatic roles. The user
 /// message carries the compact JSON context; the reply is the plan JSON.
 pub const SYSTEM_PROMPT: &str = "\
-You are the composer for subit, a generative game score in D minor with a \
-major/minor mixture (a borrowed G# colours its diminished seventh). A \
+You are the composer for subit, a generative game score in a minor \
+mixture (a borrowed colour tints its diminished seventh). A \
 deterministic conductor owns intensity: aggro locks drive the harmonic \
 rhythm, the patterns and the bass pulse. You choose direction — the next \
-phrase's chords and the register contour they play in.
+phrase's chords and the register contour they play in, in the key the \
+context reports.
 
 Reply with only a JSON plan: `slots` picks 4-8 chords from the numbered \
-vocabulary (each lists its harmonic function), optionally `curve_upper` \
-and `curve_lower` give 2-8 control points each — voicing bounds in \
+vocabulary — roman numerals relative to the key the context reports — \
+and each slot may set `bass` to a chord-tone index (0 root, 1 third, \
+2 fifth, 3 seventh) to invert mid-phrase for stepwise bass motion; the \
+phrase edges always stay on the root. Optionally `curve_upper` and \
+`curve_lower` give 2-8 control points each — voicing bounds in \
 semitones from the tonic, drawn as gentle arcs — and `intent` names the \
 dramatic aim in a few words.
 
@@ -90,7 +94,8 @@ pub const PLAN_SCHEMA: &str = r#"{
             "items": {
                 "type": "object",
                 "properties": {
-                    "chord": { "type": "integer", "minimum": 0, "maximum": 16 }
+                    "chord": { "type": "integer", "minimum": 0, "maximum": 16 },
+                    "bass": { "type": "integer", "minimum": 0, "maximum": 3 }
                 },
                 "required": ["chord"]
             },
@@ -492,7 +497,11 @@ mod tests {
         HarmonyPlan {
             slots: chords
                 .iter()
-                .map(|&chord| crate::harmony::PlanSlot { chord, suggested_beats: 0.0 })
+                .map(|&chord| crate::harmony::PlanSlot {
+                    chord,
+                    bass: None,
+                    suggested_beats: 0.0,
+                })
                 .collect(),
             curve_upper: vec![],
             curve_lower: vec![],

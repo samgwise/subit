@@ -289,12 +289,8 @@ async fn main() {
                             );
                             last_curve = Some(outcome.curve.clone());
                             score.harmony = HarmonySource::Plan {
-                                slots: outcome
-                                    .plan
-                                    .slots
-                                    .iter()
-                                    .map(|slot| slot.chord)
-                                    .collect(),
+                                // The plan's slots carry their inversions.
+                                slots: outcome.plan.slots.clone(),
                                 curve: outcome.curve,
                                 cursor: 0,
                             };

@@ -386,10 +386,10 @@ every chromatic mapping mutates — each chord tone's pitch class rotates by
 a noise-like hash (deterministic, ±3 semitones) before it lands, so the
 harmony comes out wrong the same way every time while different pitches
 scatter differently — the corruption's glitch language applied to the
-pitch resolution chain. The bass stays clean (it never passes through the
-chromatic layer — the corrupted upper structure over an anchored bass is
-the instability), and the patterns inherit the rotation by walking the
-mutated voicings. Crossing back out restores the harmony.
+pitch resolution chain, bass included: the whole stack degrades together,
+so the corruption's instability is total rather than layered against an
+anchor. The patterns inherit the rotation by walking the mutated
+voicings. Crossing back out restores the harmony.
 
 ### The composer — an LLM-planned harmony
 
@@ -407,6 +407,12 @@ points for the phrase's voicing contour. The palette stretches past the
 submarine set for the run's dramatic arc: F major (the borrowed third),
 C major (the natural seventh), Am (the modal v), and D7 (the tonic's own
 pull to the subdominant — the palette's second closable dominant).
+
+The vocabulary speaks roman numerals relative to the key, and a slot may
+set its bass to any chord tone — an inversion mid-phrase for stepwise
+bass motion (the validator pins the phrase edges to the root). The bass
+resolves through the same pitch stack as every voice — it transposes
+with the key and degrades with the corruption.
 
 The plan travels as flat JSON (it doubles as the ollama response schema —
 grammar-constrained sampling misbehaves on nested shapes) and must pass
