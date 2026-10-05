@@ -496,6 +496,14 @@ some ground is made (progress past 0.4 — the far outbounds alternate
 distant and airy), and the arrival lift (progress past 0.85) adds the
 airy to even a sparse slot — the goal's glow, audible from afar.
 
+The idle bell is a colour instrument: when the score sits sparse, its
+plinks draw from the chord's third, fifth, added sixth and natural
+seventh (chord-relative, transposed and degraded like every tone) over
+one of four rhythmic patterns — the single plink, a pair on the slot
+and off the quaver, a three-plink scatter, a late answer — rotating per
+bell slot, a new colour each plink. In combat it returns to the single
+topmost plink: stability where the drive is.
+
 Common tones hold across chord changes: the sustained voices schedule
 generously and the daemon keeps any tone that persists ringing (the
 bridge drops a re-play while a key is down), trimming the strays with
@@ -528,6 +536,7 @@ shared tones. The bass pulses and the patterns stay percussive.
 | Form: home cycle / change chance / sequence vs episode / episode span & return | 4, 6 or 8 phrases / 60% at expiry / 60% sequence (a tone, one phrase) / 2–4 phrases, 40% return per phrase |
 | Voices: bands (distant / airy / bell) & offsets | 0–14 / 14–26 / 26–38 semitones from the tonic; entries at 0 / a quaver / three 16ths |
 | Arrangement: layer thresholds / sparse rotation / bell gate / arrival lift | 1 voice, 2 past 0.33, 3 past 0.66 / two slots each / progress 0.4 / airy added past 0.85 |
+| Idle bell: colour pool / rhythmic patterns | the chord's 3rd, 5th, added 6th, natural 7th / four patterns (a single, two pairs, a three-plink scatter), rotating per bell slot |
 || Aggro: notice range / stand-down range / wander speed / leash | 8 steps / 10 / 30 u/s / 1.5 tiles |
 | Cloak: unlock / sneak per point (floor) / duration per point (cap) / cooldown | 5 pts / −1 step (2) / +1 s (cap 4) / 10 s |
 | Corruption: burst interval / burst length / drain / stealth | ~3 s / ~0.3 s / 1 plate per s / −2 steps |

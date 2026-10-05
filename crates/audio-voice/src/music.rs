@@ -91,6 +91,11 @@ const AIRY_OFFSET: f64 = QUAVER_SECS;
 const BELL_OFFSET: f64 = STEP_SECS * 3.0;
 /// The bell's gate — a pluck, not a sustain.
 const BELL_SECS: f64 = 0.3;
+/// The idle bell's rhythmic patterns, in 16th-step offsets — four shapes
+/// it walks through when the score sits in the sparse state (the single
+/// plink is the first; the others scatter pairs and a three-plink
+/// scatter).
+const BELL_PATTERNS: [&[usize]; 4] = [&[3], &[0, 6], &[2, 7, 12], &[1, 9]];
 /// The sustained voices' scheduled length, in slots — generously long so
 /// the daemon's common-tone legato can hold them across changes; the
 /// note-offs trim what doesn't persist.
@@ -787,18 +792,53 @@ impl Engine {
             }
         }
         if arrangement.bell {
-            // Always the single topmost tone — the plink in the dark.
-            let topmost = voicing.last().expect("the chord has tones");
-            let placed = revoice(f64::from(*topmost) - PAD_BASE, BELL_BAND.0, BELL_BAND.1);
-            notes.push((
-                BELL_OFFSET,
-                NoteEvent {
-                    channel: CHANNEL_BELL,
-                    note: (PAD_BASE + placed) as u8,
-                    velocity: 70,
-                    duration_secs: BELL_SECS,
-                },
-            ));
+            if state.intensity < 0.33 {
+                // The idle bell: a colour instrument — its plinks draw
+                // from the chord's third, fifth, added sixth and natural
+                // seventh (transposed and degraded like every tone), over
+                // one of four rhythmic patterns, a new colour each plink.
+                let root_pc =
+                    (pitch_stack().step(slot_chord.degree) + state.key.tonic as f64)
+                        .rem_euclid(12.0);
+                let intervals = slot_chord.quality.intervals();
+                let pool = [
+                    root_pc + intervals[1], // the third
+                    root_pc + intervals[2], // the fifth
+                    root_pc + 9.0,          // the added sixth
+                    root_pc + 10.0,         // the natural seventh
+                ];
+                let pattern = BELL_PATTERNS[(state.slot as usize / 2) % BELL_PATTERNS.len()];
+                for (plink, &step) in pattern.iter().enumerate() {
+                    let colour = chromatic_map(
+                        pool[(plink + state.slot as usize) % pool.len()],
+                        state.degraded,
+                    );
+                    let placed = revoice(colour, BELL_BAND.0, BELL_BAND.1);
+                    notes.push((
+                        step as f64 * STEP_SECS,
+                        NoteEvent {
+                            channel: CHANNEL_BELL,
+                            note: (PAD_BASE + placed) as u8,
+                            velocity: 70,
+                            duration_secs: BELL_SECS,
+                        },
+                    ));
+                }
+            } else {
+                // In combat the bell returns to the single topmost plink:
+                // stability where the drive is.
+                let topmost = voicing.last().expect("the chord has tones");
+                let placed = revoice(f64::from(*topmost) - PAD_BASE, BELL_BAND.0, BELL_BAND.1);
+                notes.push((
+                    BELL_OFFSET,
+                    NoteEvent {
+                        channel: CHANNEL_BELL,
+                        note: (PAD_BASE + placed) as u8,
+                        velocity: 70,
+                        duration_secs: BELL_SECS,
+                    },
+                ));
+            }
         }
 
         // Patterns ride the global 16th grid across the slot's span —
@@ -1038,6 +1078,49 @@ mod tests {
         assert_secs(note.duration_secs, BELL_SECS);
         let from_tonic = f64::from(note.note) - PAD_BASE;
         assert!((BELL_BAND.0..=BELL_BAND.1).contains(&from_tonic));
+    }
+
+    #[test]
+    fn the_idle_bell_plays_the_colour_pool_over_patterns() {
+        // Sparse, some ground made: slot 4 is the bell's rotation slot —
+        // pattern index 2 (the three-plink scatter), the plinks drawing
+        // from the chord's third, fifth, added sixth and natural seventh.
+        let mut state = MusicState {
+            objective: 0.5,
+            ..MusicState::default()
+        };
+        state.slot = 4;
+        let (notes, _) = Engine::slot_notes(&mut state, 0.0);
+        let bell: Vec<(f64, NoteEvent)> = notes
+            .iter()
+            .filter(|(_, n)| n.channel == CHANNEL_BELL)
+            .map(|(at, n)| (*at, n.clone()))
+            .collect();
+        // Pattern 2 = three plinks at 16th steps 2, 7 and 12; the tones
+        // rotate through the colour pool. The cycle's slot 4 is the III
+        // (F# major): its pool is the major third, the fifth, the added
+        // sixth and the natural seventh — pcs 8, 11, 1 and 2 from the
+        // tonic.
+        assert_eq!(bell.len(), 3);
+        for (k, (at, note)) in bell.iter().enumerate() {
+            assert_secs(*at, BELL_PATTERNS[2][k] as f64 * STEP_SECS);
+            let from_tonic = f64::from(note.note) - PAD_BASE;
+            assert!(
+                [8.0, 11.0, 1.0, 2.0].contains(&(from_tonic.rem_euclid(12.0))),
+                "the plink is a pool colour: {}",
+                note.note
+            );
+            assert_secs(note.duration_secs, BELL_SECS);
+        }
+
+        // The next bell slot walks to a different pattern (a pair).
+        state.slot = 10;
+        let (notes, _) = Engine::slot_notes(&mut state, 0.0);
+        let bell_count = notes
+            .iter()
+            .filter(|(_, n)| n.channel == CHANNEL_BELL)
+            .count();
+        assert_eq!(bell_count, 2);
     }
 
     #[test]
