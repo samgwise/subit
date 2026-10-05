@@ -448,12 +448,12 @@ trimming the strays with note-offs — the progressions smooth out
 through their shared tones. Seven synths in REAPER now (bass, distant,
 bell, airy, pattern A, pattern B, fx).
 
-## Milestone 33 — The idle bell learns colours
+## Milestone 33 — The idle bell phrases in the odd metres
 
-The sparse soundtrack's bell became a colour instrument: its plinks
-draw from the chord's third, fifth, added sixth and natural seventh —
-chord-relative, so the pool adapts to every chord, transposed and
-degraded like every tone — over one of four rhythmic patterns (the
-single plink, two pairs, and a three-plink scatter), rotating per bell
-slot with a new colour each plink. In combat the bell returns to the
-single topmost plink: stability where the drive is.
+The sparse soundtrack's bell started playing with time: its bars walk
+through 3/4, 5/4, 6/4 and 7/4 — one bar per bell slot, the downbeat
+plus each metre's off-quaver pushes (3+2 groupings in the fives and
+sevens) — rotating per bell slot so the plinks re-phase against the 4/4
+ground. The tones walk the chord's voicing (transposed and degraded
+like every voice). In combat the bell returns to the single topmost
+plink: stability where the drive is.

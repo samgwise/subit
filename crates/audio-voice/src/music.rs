@@ -91,11 +91,17 @@ const AIRY_OFFSET: f64 = QUAVER_SECS;
 const BELL_OFFSET: f64 = STEP_SECS * 3.0;
 /// The bell's gate — a pluck, not a sustain.
 const BELL_SECS: f64 = 0.3;
-/// The idle bell's rhythmic patterns, in 16th-step offsets — four shapes
-/// it walks through when the score sits in the sparse state (the single
-/// plink is the first; the others scatter pairs and a three-plink
-/// scatter).
-const BELL_PATTERNS: [&[usize]; 4] = [&[3], &[0, 6], &[2, 7, 12], &[1, 9]];
+/// The idle bell's metric patterns: one bar each of 3/4, 5/4, 6/4 and
+/// 7/4, in 16th-step offsets — the downbeat plus each metre's off-quaver
+/// pushes (3+2 groupings in the fives and sevens). All fit the
+/// eight-crotchet idle slot, and the bar re-phases against the 4/4
+/// ground as the pattern rotates.
+const BELL_METRE_PATTERNS: [(&str, &[usize]); 4] = [
+    ("3/4", &[0, 6, 10]),
+    ("5/4", &[0, 6, 12, 16]),
+    ("6/4", &[0, 6, 12, 18]),
+    ("7/4", &[0, 6, 12, 18, 24]),
+];
 /// The sustained voices' scheduled length, in slots — generously long so
 /// the daemon's common-tone legato can hold them across changes; the
 /// note-offs trim what doesn't persist.
@@ -793,27 +799,16 @@ impl Engine {
         }
         if arrangement.bell {
             if state.intensity < 0.33 {
-                // The idle bell: a colour instrument — its plinks draw
-                // from the chord's third, fifth, added sixth and natural
-                // seventh (transposed and degraded like every tone), over
-                // one of four rhythmic patterns, a new colour each plink.
-                let root_pc =
-                    (pitch_stack().step(slot_chord.degree) + state.key.tonic as f64)
-                        .rem_euclid(12.0);
-                let intervals = slot_chord.quality.intervals();
-                let pool = [
-                    root_pc + intervals[1], // the third
-                    root_pc + intervals[2], // the fifth
-                    root_pc + 9.0,          // the added sixth
-                    root_pc + 10.0,         // the natural seventh
-                ];
-                let pattern = BELL_PATTERNS[(state.slot as usize / 2) % BELL_PATTERNS.len()];
-                for (plink, &step) in pattern.iter().enumerate() {
-                    let colour = chromatic_map(
-                        pool[(plink + state.slot as usize) % pool.len()],
-                        state.degraded,
-                    );
-                    let placed = revoice(colour, BELL_BAND.0, BELL_BAND.1);
+                // The idle bell phrases in the odd metres: one bar of
+                // 3/4, 5/4, 6/4 or 7/4 per bell slot, rotating so the
+                // plinks re-phase against the 4/4 ground. The tones walk
+                // the chord's voicing — transposed and degraded like every
+                // voice.
+                let bar =
+                    &BELL_METRE_PATTERNS[(state.slot as usize / 2) % BELL_METRE_PATTERNS.len()];
+                for (plink, &step) in bar.1.iter().enumerate() {
+                    let tone = voicing[(plink + state.slot as usize) % voicing.len()];
+                    let placed = revoice(f64::from(tone) - PAD_BASE, BELL_BAND.0, BELL_BAND.1);
                     notes.push((
                         step as f64 * STEP_SECS,
                         NoteEvent {
@@ -1081,10 +1076,10 @@ mod tests {
     }
 
     #[test]
-    fn the_idle_bell_plays_the_colour_pool_over_patterns() {
+    fn the_idle_bell_phrases_in_the_odd_metres() {
         // Sparse, some ground made: slot 4 is the bell's rotation slot —
-        // pattern index 2 (the three-plink scatter), the plinks drawing
-        // from the chord's third, fifth, added sixth and natural seventh.
+        // pattern index 2, a 6/4 bar: plinks on the downbeat and each
+        // dotted-crotchet push after.
         let mut state = MusicState {
             objective: 0.5,
             ..MusicState::default()
@@ -1096,31 +1091,29 @@ mod tests {
             .filter(|(_, n)| n.channel == CHANNEL_BELL)
             .map(|(at, n)| (*at, n.clone()))
             .collect();
-        // Pattern 2 = three plinks at 16th steps 2, 7 and 12; the tones
-        // rotate through the colour pool. The cycle's slot 4 is the III
-        // (F# major): its pool is the major third, the fifth, the added
-        // sixth and the natural seventh — pcs 8, 11, 1 and 2 from the
-        // tonic.
-        assert_eq!(bell.len(), 3);
+        assert_eq!(bell.len(), 4);
         for (k, (at, note)) in bell.iter().enumerate() {
-            assert_secs(*at, BELL_PATTERNS[2][k] as f64 * STEP_SECS);
+            assert_secs(*at, BELL_METRE_PATTERNS[2].1[k] as f64 * STEP_SECS);
+            // The tones walk the chord's voicing (the cycle's slot 4 is
+            // the III: F# major's shapes).
             let from_tonic = f64::from(note.note) - PAD_BASE;
-            assert!(
-                [8.0, 11.0, 1.0, 2.0].contains(&(from_tonic.rem_euclid(12.0))),
-                "the plink is a pool colour: {}",
-                note.note
-            );
+            assert!([4.0, 8.0, 11.0].contains(&(from_tonic.rem_euclid(12.0))));
             assert_secs(note.duration_secs, BELL_SECS);
         }
 
-        // The next bell slot walks to a different pattern (a pair).
-        state.slot = 10;
-        let (notes, _) = Engine::slot_notes(&mut state, 0.0);
-        let bell_count = notes
+        // The rotation walks all four metres across the bell's slots.
+        let counts: Vec<usize> = [4u32, 10, 16, 22]
             .iter()
-            .filter(|(_, n)| n.channel == CHANNEL_BELL)
-            .count();
-        assert_eq!(bell_count, 2);
+            .map(|&slot| {
+                state.slot = slot;
+                let (notes, _) = Engine::slot_notes(&mut state, 0.0);
+                notes
+                    .iter()
+                    .filter(|(_, n)| n.channel == CHANNEL_BELL)
+                    .count()
+            })
+            .collect();
+        assert_eq!(counts, vec![4, 4, 3, 5]); // 6/4, 5/4, 3/4, 7/4
     }
 
     #[test]
