@@ -172,6 +172,13 @@ fn bass_for_tone(
 /// the composer's context speak the same numbered menu the plans do.
 const CYCLE_VOCAB: [usize; CYCLE_LEN] = [0, 2, 1, 3, 4, 5, 3, 6, 7];
 
+/// Whether the deterministic cycle just completed a full turn at this slot
+/// count — the fallback path's phrase boundary for the form (plans count
+/// their own phrases; the cycle's turn is its phrase).
+pub fn cycle_turn_complete(slot: u32) -> bool {
+    slot > 0 && (slot as usize).is_multiple_of(CYCLE_LEN)
+}
+
 /// The noise-like rotation: a splitmix64 finaliser over the pitch class —
 /// cheap, deterministic, and uncorrelated between neighbouring pitches.
 fn noise_hash(pc: i64) -> i64 {

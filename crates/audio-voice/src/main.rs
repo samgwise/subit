@@ -267,10 +267,14 @@ async fn main() {
                     history.pop_front();
                 }
 
-                // A plan's last slot just rendered: the phrase completed,
-                // and the form ticks — the next phrase lives wherever the
-                // form moves to.
-                if score.harmony.slots_remaining() == Some(0) {
+                // A phrase completed — a plan's last slot, or a full turn
+                // of the fallback cycle — and the form ticks: the next
+                // phrase lives wherever the form moves to.
+                let phrase_completed = match score.harmony.slots_remaining() {
+                    Some(remaining) => remaining == 0,
+                    None => music::cycle_turn_complete(score.slot),
+                };
+                if phrase_completed {
                     if form.tick(&mut form_rng) {
                         let summary = form.summary();
                         tracing::info!(key = %summary.key, state = summary.state, "the form moved");
