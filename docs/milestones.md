@@ -456,3 +456,20 @@ plinks evenly spaced across each four-quaver window — 3:4, 5:4, 6:4 or
 plinks keep re-phasing against the pulse. The tones walk the chord's
 voicing (transposed and degraded like every voice). In combat the bell
 returns to the single topmost plink: stability where the drive is.
+
+## Milestone 34 — Three layers of dynamics: drama, phrasing, gesture
+
+Every note's velocity became three ladders multiplied, mirroring the
+pitch chain's layered remapping. The general dynamic reads the smoothed
+intensity through the orchestral marks as a ScaleVec ladder — pp to ff
+— so the drama level sets the piece's base, the form shading it one
+mark quieter through an episode (building back as the pre-rolled
+return nears). The phrasing dynamic is the plan's own `curve_dynamic` —
+a crescendo arc read as a shape, normalised to its hull and remapped
+into a 0.7–1.15 multiplier, with a gentle default swell for plans
+without one and the deterministic cycle arcing across each turn. The
+gesture dynamic accents the small figures: the bass's first pulse
+speaks, the pattern figures contour, the bell's downbeat plink rings.
+And the sustained voices breathe the phrase continuously — the daemon
+streams CC11 (expression) on the distant and airy channels at each
+boundary, so the pads swell instead of stepping at note attacks.

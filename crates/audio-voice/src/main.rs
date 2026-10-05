@@ -25,7 +25,8 @@ use audio_voice::music::{
     CHANNEL_AIRY, CHANNEL_DISTANT, CHANNEL_PATTERN_B, CROTCHET_SECS, QUAVER_SECS, STUB_BPM,
 };
 use audio_voice::{
-    GameEvent, MOD_WHEEL_CC, NoteEvent, Quantiser, Subdivision, perform_event, speed_to_cc,
+    GameEvent, EXPRESSION_CC, MOD_WHEEL_CC, NoteEvent, Quantiser, Subdivision, perform_event,
+    speed_to_cc,
 };
 use ensemble_client::Hub;
 use ensemble_core::protocol::*;
@@ -281,6 +282,17 @@ async fn main() {
                 slot_start = slot_end;
                 slot_end = end;
 
+                // The pads breathe: the sustained channels' expression
+                // follows the phrase arc through the general dynamic.
+                score.episode = matches!(form, Form::Episode { .. });
+                let level = music::expression_level(&score);
+                for channel in [CHANNEL_DISTANT, CHANNEL_AIRY] {
+                    let msg = midi_cc(channel, EXPRESSION_CC, level);
+                    if let Err(err) = hub.send_action(msg).await {
+                        tracing::error!("failed to send expression: {err:?}");
+                    }
+                }
+
                 // The composer's memory: the slot joins the history, then
                 // the drained tallies and the plan's remaining slots decide
                 // whether to ask for the next phrase.
@@ -347,12 +359,33 @@ async fn main() {
                                 "the composer's plan is live"
                             );
                             last_curve = Some(outcome.curve.clone());
+                            // The plan's dynamic arc: its own shape, or
+                            // the gentle default when it drew none.
+                            let dynamic = if outcome.plan.curve_dynamic.len() >= 2 {
+                                Curve {
+                                    upper: outcome.plan.curve_dynamic.clone(),
+                                    lower: outcome.plan.curve_dynamic.clone(),
+                                }
+                            } else {
+                                music::default_phrase_curve()
+                            };
                             score.harmony = HarmonySource::Plan {
                                 // The plan's slots carry their inversions.
                                 slots: outcome.plan.slots.clone(),
                                 curve: outcome.curve,
+                                dynamic,
                                 cursor: 0,
                             };
+                            // The pads breathe the new phrase's opening
+                            // level straight away.
+                            score.episode = matches!(form, Form::Episode { .. });
+                            let level = music::expression_level(&score);
+                            for channel in [CHANNEL_DISTANT, CHANNEL_AIRY] {
+                                let msg = midi_cc(channel, EXPRESSION_CC, level);
+                                if let Err(err) = hub.send_action(msg).await {
+                                    tracing::error!("failed to send expression: {err:?}");
+                                }
+                            }
                         }
                     }
                     Err(_) => tracing::warn!("the composer's watch channel closed"),

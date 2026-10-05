@@ -66,6 +66,10 @@ impl Quantiser {
 /// commonly route it to filter cutoff).
 pub const MOD_WHEEL_CC: u8 = 1;
 
+/// MIDI controller the dynamics breathe through (expression) — the
+/// sustained voices' CC11 follows the phrase arc.
+pub const EXPRESSION_CC: u8 = 11;
+
 /// Game events the audio voice responds to (GDD section 5)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GameEvent {

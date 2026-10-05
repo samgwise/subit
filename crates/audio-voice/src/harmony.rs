@@ -132,6 +132,10 @@ pub struct HarmonyPlan {
     pub curve_upper: Vec<f64>,
     #[serde(default)]
     pub curve_lower: Vec<f64>,
+    /// The phrase's dynamic arc — the crescendo shape across the phrase,
+    /// read as a shape (normalised) rather than a register.
+    #[serde(default)]
+    pub curve_dynamic: Vec<f64>,
     #[serde(default)]
     pub intent: String,
 }
@@ -218,8 +222,13 @@ pub fn validate(plan: &HarmonyPlan, prev_chord: Option<usize>) -> Result<(), Str
     }
 
     // Contour sanity: a few control points each, within a couple of octaves
-    // of the register the instruments live in.
-    for (label, points) in [("upper", &plan.curve_upper), ("lower", &plan.curve_lower)] {
+    // of the register the instruments live in. The dynamic curve shares
+    // the bounds — its values are a shape, read relative to itself.
+    for (label, points) in [
+        ("upper", &plan.curve_upper),
+        ("lower", &plan.curve_lower),
+        ("dynamic", &plan.curve_dynamic),
+    ] {
         if points.is_empty() {
             continue;
         }
@@ -246,9 +255,10 @@ mod tests {
             slots: chords
                 .iter()
                 .map(|&chord| PlanSlot { chord, bass: None, suggested_beats: 0.0 })
-                .collect(),
+            .collect(),
             curve_upper: vec![],
             curve_lower: vec![],
+            curve_dynamic: vec![],
             intent: String::new(),
         }
     }

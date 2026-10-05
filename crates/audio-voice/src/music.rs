@@ -108,6 +108,100 @@ const SUSTAIN_SLOTS: f64 = 3.0;
 /// The objective's progress past which the arrival lift adds the airy
 /// voice to even a sparse slot — the goal's glow, audible from afar.
 const ARRIVAL_LIFT_PROGRESS: f32 = 0.85;
+/// The dynamic-marks ladder: the orchestral marks, pp→ff, as velocities —
+/// the general dynamic's ladder. Degrees, not levels: the intensity is a
+/// position on it, and step() hands back the base velocity.
+fn dynamic_marks() -> ScaleVec {
+    ScaleVec::new(vec![16.0, 38.0, 60.0, 82.0, 104.0, 126.0], None)
+}
+/// The marks ladder's top degree (six marks: pp–ff).
+const DYNAMIC_MARKS_TOP: f64 = 5.0;
+/// The velocity the mf mark plays at — every voice's character base is
+/// scaled against it, so the ladder carries the dynamics and the voice
+/// carries its balance.
+const MF_REFERENCE: f32 = 82.0;
+/// The phrase dynamic's multiplier band: the dynamic curve's shape
+/// remaps into this range of the general level.
+const PHRASE_DYNAMIC_MIN: f32 = 0.7;
+const PHRASE_DYNAMIC_MAX: f32 = 1.15;
+
+/// The general dynamic: the drama level (the smoothed intensity) read
+/// through the marks ladder — pp at rest, ff at full flight, the marks
+/// between interpolated. An episode sits one mark quieter (the form's
+/// shade; the phrase arc builds back towards the return).
+pub fn general_dynamic(intensity: f32, episode: bool) -> f32 {
+    let marks = dynamic_marks();
+    let position = ((intensity.clamp(0.0, 1.0) * DYNAMIC_MARKS_TOP as f32
+        - if episode { 1.0 } else { 0.0 })
+        .clamp(0.0, DYNAMIC_MARKS_TOP as f32)) as f64;
+    let below = position.floor();
+    let above = (below + 1.0).min(DYNAMIC_MARKS_TOP);
+    let fraction = position - below;
+    (marks.step(below) + (marks.step(above) - marks.step(below)) * fraction) as f32
+}
+
+/// The phrase dynamic at phrase parameter `t`: the dynamic curve's shape,
+/// normalised to its own control hull and remapped into the multiplier
+/// band — a rising curve is a crescendo, a falling one a die-away.
+pub fn phrase_dynamic(curve: &Curve, t: f64) -> f32 {
+    let hull = curve.upper.iter().chain(curve.lower.iter()).copied();
+    let hull_min = hull.clone().fold(f64::INFINITY, f64::min);
+    let hull_max = hull.fold(f64::NEG_INFINITY, f64::max);
+    let (value, _) = curve.contour(t);
+    let norm = if hull_max > hull_min {
+        ((value - hull_min) / (hull_max - hull_min)).clamp(0.0, 1.0)
+    } else {
+        0.5
+    };
+    PHRASE_DYNAMIC_MIN + (PHRASE_DYNAMIC_MAX - PHRASE_DYNAMIC_MIN) * norm as f32
+}
+
+/// The default phrase arc: a gentle swell and settle — the deterministic
+/// score breathes too.
+pub fn default_phrase_curve() -> Curve {
+    let shape = vec![0.0, 1.0, 0.6, 0.0];
+    Curve {
+        upper: shape.clone(),
+        lower: shape,
+    }
+}
+
+/// The gesture layer's accent ladders — each voice's within-figure
+/// dynamics, as fractions of its character base: the bass's first pulse
+/// of a group speaks, the patterns' figures contour, the bell's downbeat
+/// plink rings and its tail softens, the sustained voices hold steady.
+const BASS_GESTURE: [f32; 6] = [1.0, 0.85, 0.95, 0.85, 0.95, 0.8];
+const PATTERN_A_GESTURE: [f32; 4] = [1.0, 0.9, 0.95, 0.85];
+const PATTERN_B_GESTURE: [f32; 4] = [1.0, 0.9, 0.95, 0.9];
+const BELL_GESTURE: [f32; 4] = [1.0, 0.8, 0.9, 0.75];
+
+/// The velocity for a note: the general level through the phrase arc and
+/// the gesture accent, scaled by the voice's character against the mf
+/// reference.
+fn velocity_for(base: u8, gesture: f32, general: f32, phrase: f32) -> u8 {
+    (general * (base as f32 / MF_REFERENCE) * phrase * gesture)
+        .round()
+        .clamp(1.0, 127.0) as u8
+}
+
+/// The sustained channels' expression level (CC11) at the slot's own
+/// phrase parameter: the general dynamic through the phrase arc — the
+/// pads breathe the crescendo instead of stepping at note attacks.
+pub fn expression_level(state: &MusicState) -> u8 {
+    let dynamic_curve = match &state.harmony {
+        HarmonySource::Plan { dynamic, .. } => dynamic.clone(),
+        HarmonySource::Cycle => default_phrase_curve(),
+    };
+    let t = match &state.harmony {
+        HarmonySource::Plan { slots, cursor, .. } => {
+            (cursor.saturating_sub(1) as f64) / slots.len().max(1) as f64
+        }
+        HarmonySource::Cycle => (state.slot as usize % CYCLE_LEN) as f64 / CYCLE_LEN as f64,
+    };
+    (general_dynamic(state.intensity, state.episode) * phrase_dynamic(&dynamic_curve, t))
+        .round()
+        .clamp(1.0, 127.0) as u8
+}
 
 /// The scale layer: the D-based major/minor mixture the harmony lives in, in
 /// semitones from the tonic — both thirds (F for Dm, F# for the major
@@ -248,12 +342,14 @@ pub enum HarmonySource {
     /// The nine-chord cycle — the deterministic ground truth.
     Cycle,
     /// A composer's plan: vocabulary chord slots (bass inversions
-    /// included), the phrase's contour, and the next slot to perform. A
-    /// depleted plan hands back to the cycle.
+    /// included), the phrase's contour, the phrase's dynamic arc, and the
+    /// next slot to perform. A depleted plan hands back to the cycle.
     Plan {
         slots: Vec<PlanSlot>,
         /// The phrase's voicing contour, in semitones from the tonic.
         curve: Curve,
+        /// The phrase's dynamic arc — the crescendo shape.
+        dynamic: Curve,
         cursor: usize,
     },
 }
@@ -604,6 +700,9 @@ pub struct MusicState {
     /// The player's slow-field progress toward the exit (0 spawn, 1
     /// goal) — the arrangement's geography.
     pub objective: f32,
+    /// The form sits in an episode — the general dynamic sits one mark
+    /// quieter while it lasts.
+    pub episode: bool,
 }
 
 impl Default for MusicState {
@@ -621,6 +720,7 @@ impl Default for MusicState {
             harmony: HarmonySource::Cycle,
             key: KeyState::default(),
             objective: 0.0,
+            episode: false,
         }
     }
 }
@@ -699,26 +799,43 @@ impl Engine {
         // live, else the deterministic cycle.
         let slot_chord = resolve_slot(state);
 
-        // The phrase's contour: a plan supplies the curve; the cycle plays
-        // the neutral default, whose bounds never clip today's material.
-        // `t` walks the slot's own span within the phrase — the patterns'
-        // fence.
-        let (curve, phrase_t) = match &state.harmony {
-            HarmonySource::Plan { curve, slots, cursor } => {
+        // The phrase's contour and its dynamic arc: a plan supplies both;
+        // the cycle plays the neutral register fence and the gentle
+        // default arc spanning the whole turn — the deterministic score
+        // breathes too. `t` walks the slot's own span within the phrase —
+        // the patterns' fence and the dynamics' parameter.
+        let (curve, dynamic_curve, phrase_t) = match &state.harmony {
+            HarmonySource::Plan {
+                curve,
+                dynamic,
+                slots,
+                cursor,
+            } => {
                 let phrase_len = slots.len().max(1) as f64;
                 let slot_index = cursor.saturating_sub(1) as f64;
                 (
                     curve.clone(),
+                    dynamic.clone(),
                     Box::new(move |within: f64| {
                         ((slot_index + within) / phrase_len).clamp(0.0, 1.0)
                     }) as Box<dyn Fn(f64) -> f64>,
                 )
             }
-            HarmonySource::Cycle => (
-                default_curve(),
-                Box::new(|_: f64| 0.5) as Box<dyn Fn(f64) -> f64>,
-            ),
+            HarmonySource::Cycle => {
+                let turn_phase = (state.slot as usize % CYCLE_LEN) as f64 / CYCLE_LEN as f64;
+                (
+                    default_curve(),
+                    default_phrase_curve(),
+                    Box::new(move |within: f64| {
+                        (turn_phase + within / CYCLE_LEN as f64).clamp(0.0, 1.0)
+                    }) as Box<dyn Fn(f64) -> f64>,
+                )
+            }
         };
+
+        // The general dynamic: the drama level through the marks ladder —
+        // every note's velocity is this, phrased and gestured.
+        let general = general_dynamic(state.intensity, state.episode);
 
         let mut notes = Vec::new();
 
@@ -735,12 +852,18 @@ impl Engine {
             slot_quavers
         };
         for k in 0..pulses {
+            let phrase = phrase_dynamic(&dynamic_curve, phrase_t(k as f64 * QUAVER_SECS / duration_secs));
             notes.push((
                 k as f64 * QUAVER_SECS,
                 NoteEvent {
                     channel: CHANNEL_BASS,
                     note: slot_chord.bass,
-                    velocity: 88,
+                    velocity: velocity_for(
+                        88,
+                        BASS_GESTURE[k % BASS_GESTURE.len()],
+                        general,
+                        phrase,
+                    ),
                     duration_secs: QUAVER_SECS * BASS_PULSE_GATE,
                 },
             ));
@@ -761,6 +884,7 @@ impl Engine {
             state.degraded,
         );
         if arrangement.distant {
+            let phrase = phrase_dynamic(&dynamic_curve, phrase_t(DISTANT_OFFSET / duration_secs));
             for &tone in &voicing {
                 let placed = revoice(f64::from(tone) - PAD_BASE, DISTANT_BAND.0, DISTANT_BAND.1);
                 notes.push((
@@ -768,7 +892,7 @@ impl Engine {
                     NoteEvent {
                         channel: CHANNEL_DISTANT,
                         note: (PAD_BASE + placed) as u8,
-                        velocity: 55,
+                        velocity: velocity_for(55, 1.0, general, phrase),
                         duration_secs: duration_secs * SUSTAIN_SLOTS,
                     },
                 ));
@@ -782,6 +906,7 @@ impl Engine {
             } else {
                 0
             };
+            let phrase = phrase_dynamic(&dynamic_curve, phrase_t(AIRY_OFFSET / duration_secs));
             for &tone in &voicing[top..] {
                 let placed = revoice(f64::from(tone) - PAD_BASE, AIRY_BAND.0, AIRY_BAND.1);
                 notes.push((
@@ -789,7 +914,7 @@ impl Engine {
                     NoteEvent {
                         channel: CHANNEL_AIRY,
                         note: (PAD_BASE + placed) as u8,
-                        velocity: 45,
+                        velocity: velocity_for(45, 1.0, general, phrase),
                         duration_secs: duration_secs * SUSTAIN_SLOTS,
                     },
                 ));
@@ -802,7 +927,8 @@ impl Engine {
                 // window (3:4, 5:4, 6:4, 7:4 — rotating per bell slot),
                 // repeating through the turn so the plinks keep re-phasing
                 // against the pulse. The tones walk the chord's voicing —
-                // transposed and degraded like every voice.
+                // transposed and degraded like every voice — and the
+                // downbeat plink rings, the tail ones softening.
                 let over =
                     BELL_POLYRHYTHMS[(state.slot as usize / 2) % BELL_POLYRHYTHMS.len()];
                 let spacing = POLYRHYTHM_WINDOW_QUAVERS * QUAVER_SECS / over as f64;
@@ -810,12 +936,18 @@ impl Engine {
                 for plink in 0..plinks {
                     let tone = voicing[(plink + state.slot as usize) % voicing.len()];
                     let placed = revoice(f64::from(tone) - PAD_BASE, BELL_BAND.0, BELL_BAND.1);
+                    let phrase = phrase_dynamic(&dynamic_curve, phrase_t(plink as f64 * spacing / duration_secs));
                     notes.push((
                         plink as f64 * spacing,
                         NoteEvent {
                             channel: CHANNEL_BELL,
                             note: (PAD_BASE + placed) as u8,
-                            velocity: 70,
+                            velocity: velocity_for(
+                                70,
+                                BELL_GESTURE[plink % BELL_GESTURE.len()],
+                                general,
+                                phrase,
+                            ),
                             duration_secs: spacing * BELL_GATE,
                         },
                     ));
@@ -825,12 +957,13 @@ impl Engine {
                 // stability where the drive is.
                 let topmost = voicing.last().expect("the chord has tones");
                 let placed = revoice(f64::from(*topmost) - PAD_BASE, BELL_BAND.0, BELL_BAND.1);
+                let phrase = phrase_dynamic(&dynamic_curve, phrase_t(BELL_OFFSET / duration_secs));
                 notes.push((
                     BELL_OFFSET,
                     NoteEvent {
                         channel: CHANNEL_BELL,
                         note: (PAD_BASE + placed) as u8,
-                        velocity: 70,
+                        velocity: velocity_for(70, 1.0, general, phrase),
                         duration_secs: BELL_SECS,
                     },
                 ));
@@ -851,8 +984,10 @@ impl Engine {
                 }
                 let at = k as f64 * STEP_SECS;
                 // The patterns exist below the curve: each 16th's note
-                // clamps into the contour at its phrase parameter.
+                // clamps into the contour at its phrase parameter, and the
+                // gesture ladder accents the figure.
                 let t = phrase_t(k as f64 / steps.max(1) as f64);
+                let phrase = phrase_dynamic(&dynamic_curve, t);
                 notes.push((
                     at,
                     NoteEvent {
@@ -862,7 +997,12 @@ impl Engine {
                             &curve,
                             t,
                         ),
-                        velocity: 72,
+                        velocity: velocity_for(
+                            72,
+                            PATTERN_A_GESTURE[global % 4],
+                            general,
+                            phrase,
+                        ),
                         duration_secs: 0.11,
                     },
                 ));
@@ -876,7 +1016,12 @@ impl Engine {
                                 &curve,
                                 t,
                             ),
-                            velocity: 78,
+                            velocity: velocity_for(
+                                78,
+                                PATTERN_B_GESTURE[(global / 2) % 4],
+                                general,
+                                phrase,
+                            ),
                             duration_secs: 0.11,
                         },
                     ));
@@ -978,6 +1123,54 @@ mod tests {
         assert_eq!(revoice(7.0, 0.0, 48.0), 7.0);
         assert_eq!(revoice(0.0, 12.0, 24.0), 12.0);
         assert_eq!(revoice(23.0, 0.0, 12.0), 11.0);
+    }
+
+    #[test]
+    fn the_general_dynamic_reads_the_marks_ladder() {
+        // pp at rest, ff at full flight, the marks between interpolated.
+        assert_eq!(general_dynamic(0.0, false), 16.0);
+        assert_eq!(general_dynamic(1.0, false), 126.0);
+        assert!((general_dynamic(0.5, false) - 71.0).abs() < 1e-6);
+        // An episode sits one mark quieter, floored at pp.
+        assert_eq!(general_dynamic(1.0, true), 104.0);
+        assert_eq!(general_dynamic(0.0, true), 16.0);
+    }
+
+    #[test]
+    fn the_phrase_dynamic_shapes_the_level() {
+        // A rising curve is a crescendo; a falling one a die-away.
+        let rising = Curve { upper: vec![0.0, 1.0], lower: vec![0.0, 1.0] };
+        assert!((phrase_dynamic(&rising, 0.0) - PHRASE_DYNAMIC_MIN).abs() < 1e-6);
+        assert!((phrase_dynamic(&rising, 1.0) - PHRASE_DYNAMIC_MAX).abs() < 1e-6);
+        let falling = Curve { upper: vec![1.0, 0.0], lower: vec![1.0, 0.0] };
+        assert!(phrase_dynamic(&falling, 1.0) < phrase_dynamic(&falling, 0.0));
+        // Shape, not scale: a curve twice the size has the same arc.
+        let big = Curve { upper: vec![0.0, 2.0], lower: vec![0.0, 2.0] };
+        assert!((phrase_dynamic(&big, 0.5) - phrase_dynamic(&rising, 0.5)).abs() < 1e-6);
+        // The default arc swells and settles.
+        let arc = default_phrase_curve();
+        assert!(phrase_dynamic(&arc, 0.5) > phrase_dynamic(&arc, 0.0));
+        assert!(phrase_dynamic(&arc, 0.5) > phrase_dynamic(&arc, 1.0));
+    }
+
+    #[test]
+    fn the_velocities_breathe_through_the_layers() {
+        // The deterministic path's velocities now breathe: the bass's
+        // first pulse of a group speaks louder than the next, and every
+        // velocity stays inside the MIDI range.
+        let mut state = MusicState::default();
+        let (notes, _) = Engine::slot_notes(&mut state, 0.0);
+        let bass_velocities: Vec<u8> = notes
+            .iter()
+            .filter(|(_, n)| n.channel == CHANNEL_BASS)
+            .map(|(_, n)| n.velocity)
+            .collect();
+        assert_eq!(bass_velocities.len(), BASS_PULSES);
+        assert!(
+            bass_velocities[0] > bass_velocities[1],
+            "the downbeat speaks: {bass_velocities:?}"
+        );
+        assert!(notes.iter().all(|(_, n)| (1..=127).contains(&n.velocity)));
     }
 
     #[test]
@@ -1201,6 +1394,7 @@ mod tests {
             harmony: HarmonySource::Plan {
                 slots: plan_slots(&[9, 10, 0]),
                 curve: default_curve(),
+                dynamic: default_phrase_curve(),
                 cursor: 0,
             },
             ..MusicState::default()
@@ -1241,6 +1435,7 @@ mod tests {
                     upper: vec![14.0, 14.0, 14.0, 14.0],
                     lower: vec![0.0, 0.0, 0.0, 0.0],
                 },
+                dynamic: default_phrase_curve(),
                 cursor: 0,
             },
             ..MusicState::default()

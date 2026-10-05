@@ -56,8 +56,10 @@ and each slot may set `bass` to a chord-tone index (0 root, 1 third, \
 2 fifth, 3 seventh) to invert mid-phrase for stepwise bass motion; the \
 phrase edges always stay on the root. Optionally `curve_upper` and \
 `curve_lower` give 2-8 control points each — voicing bounds in \
-semitones from the tonic, drawn as gentle arcs — and `intent` names the \
-dramatic aim in a few words.
+semitones from the tonic, drawn as gentle arcs; `curve_dynamic` shapes \
+the phrase's dynamics — the crescendo arc across the phrase, where it \
+rises the music swells. And `intent` names the dramatic aim in a few \
+words.
 
 The grammar: voice-lead the roots (stay within a few semitones of the \
 sounding chord and of each other), never more than two of the same chord \
@@ -107,6 +109,7 @@ pub const PLAN_SCHEMA: &str = r#"{
         },
         "curve_upper": { "type": "array", "items": { "type": "integer", "minimum": -48, "maximum": 48 } },
         "curve_lower": { "type": "array", "items": { "type": "integer", "minimum": -48, "maximum": 48 } },
+        "curve_dynamic": { "type": "array", "items": { "type": "integer", "minimum": -48, "maximum": 48 } },
         "intent": { "type": "string" }
     },
     "required": ["slots"]
@@ -511,6 +514,7 @@ mod tests {
                 .collect(),
             curve_upper: vec![],
             curve_lower: vec![],
+            curve_dynamic: vec![],
             intent: String::new(),
         }
     }
@@ -557,12 +561,14 @@ mod tests {
             "slots": [{"chord": 9}, {"chord": 10}, {"chord": 0}, {"chord": 0}],
             "curve_upper": [30.0, 36.0],
             "curve_lower": [8.0, 10.0],
+            "curve_dynamic": [0, 5, 2],
             "intent": "the fight builds"
         }"#;
         let plan = parse_plan(text, Some(1)).expect("the plan parses");
         assert_eq!(plan.slots.len(), 4);
         assert_eq!(plan.slots[2].chord, 0);
         assert_eq!(plan.curve_upper, vec![30.0, 36.0]);
+        assert_eq!(plan.curve_dynamic, vec![0.0, 5.0, 2.0]);
         assert_eq!(plan.intent, "the fight builds");
     }
 
@@ -574,6 +580,10 @@ mod tests {
         assert!(parse_plan(text, None).is_err());
         // Well-formed but leapy: Dm straight to the dim7.
         let text = r#"{"slots": [{"chord": 0}, {"chord": 7}, {"chord": 0}, {"chord": 0}]}"#;
+        assert!(parse_plan(text, None).is_err());
+        // A one-point dynamic curve is not an arc.
+        let text =
+            r#"{"slots": [{"chord": 0}, {"chord": 0}, {"chord": 0}, {"chord": 0}], "curve_dynamic": [5]}"#;
         assert!(parse_plan(text, None).is_err());
     }
 

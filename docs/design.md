@@ -507,6 +507,27 @@ bridge drops a re-play while a key is down), trimming the strays with
 note-offs at the boundary — the progressions smooth out through their
 shared tones. The bass pulses and the patterns stay percussive.
 
+### Dynamics — drama, phrasing, gesture
+
+Every note's velocity is three ladders multiplied, mirroring the pitch
+chain's layered remapping. The **general dynamic** reads the smoothed
+intensity through the orchestral marks as a ScaleVec ladder — pp to ff
+(16 to 126) — so the drama level sets the piece's base velocity, and a
+swap of the ladder remaps the range. The form shades it: an episode
+sits one mark quieter, building back as the return nears — the
+episode's span is pre-rolled, so the composer knows when home comes and
+plans the build. The **phrasing dynamic** is the plan's own
+`curve_dynamic` — a crescendo arc across the phrase, read as a shape
+(normalised to its hull) and remapped into a 0.7–1.15 multiplier; plans
+without one get a gentle default swell, and the deterministic cycle
+arcs across each turn of nine. The **gesture dynamic** accents the
+small figures: the bass's first pulse of a group speaks, the patterns'
+figures contour, the bell's downbeat plink rings and its tail softens.
+The sustained voices breathe the phrase continuously as well — the
+daemon streams CC11 (expression) on the distant and airy channels at
+each boundary, general × phrase, so the pads swell instead of stepping
+at note attacks. The percussive voices stay velocity-only.
+
 ## Tuning reference
 
 | Constant | Value |
@@ -534,6 +555,7 @@ shared tones. The bass pulses and the patterns stay percussive.
 | Voices: bands (distant / airy / bell) & offsets | 0–14 / 14–26 / 26–38 semitones from the tonic; entries at 0 / a quaver / three 16ths |
 | Arrangement: layer thresholds / sparse rotation / arrival lift | 1 voice, 2 past 0.33, 3 past 0.66 / all three rotating, two slots each / airy added past 0.85 progress |
 | Idle bell: polyrhythms / plink gate | 3:4, 5:4, 6:4 or 7:4 per bell slot (N over the bass's four-quaver window, repeating) / 0.6 × the plink spacing |
+| Dynamics: marks ladder / phrase band / episode shade / expression | pp–ff (16–126), interpolated / 0.7–1.15 × general / one mark in an episode / CC11 on the sustained voices at each boundary |
 || Aggro: notice range / stand-down range / wander speed / leash | 8 steps / 10 / 30 u/s / 1.5 tiles |
 | Cloak: unlock / sneak per point (floor) / duration per point (cap) / cooldown | 5 pts / −1 step (2) / +1 s (cap 4) / 10 s |
 | Corruption: burst interval / burst length / drain / stealth | ~3 s / ~0.3 s / 1 plate per s / −2 steps |
