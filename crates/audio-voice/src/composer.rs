@@ -57,8 +57,15 @@ sounding chord and of each other), never more than two of the same chord \
 in a row, and close the phrase on a tonic or a dominant. Save the dim7 \
 for a dominant's approach — E major prepares it. Calm scenes live on \
 tonic and subdominant space; combat earns dominants and colour; a \
-corrupted zone asks for the darker colour. The conductor will cut or \
-hold your chords as the game demands — plan the harmony, not the clock.";
+corrupted zone asks for the darker colour.
+
+The run has an arc, and it is yours to score: the player's \
+objective_progress (0 fresh from the spawn or just died back, 1 at the \
+goal) steers direction — the far outbounds live on tonic and \
+subdominant colour, the approach turns toward dominants and the \
+borrowed F and C, and a death resets the run: sink to the minor colours \
+and rebuild from home. The conductor will cut or hold your chords as \
+the game demands — plan the harmony, not the clock.";
 
 /// The response schema the model is constrained to — deliberately flat:
 /// fixed keys, integer chord picks, shallow arrays. Grammar-constrained
@@ -83,7 +90,7 @@ pub const PLAN_SCHEMA: &str = r#"{
             "items": {
                 "type": "object",
                 "properties": {
-                    "chord": { "type": "integer", "minimum": 0, "maximum": 12 }
+                    "chord": { "type": "integer", "minimum": 0, "maximum": 16 }
                 },
                 "required": ["chord"]
             },
@@ -121,6 +128,8 @@ pub struct EventTallies {
     pub corruption_enters: u32,
     pub corruption_exits: u32,
     pub descents: u32,
+    /// Deaths since the last plan — the run's resets.
+    pub deaths: u32,
     /// Mean aggro locks across the phrase.
     pub aggro_average: f32,
     pub aggro_peak: u32,
@@ -136,6 +145,7 @@ pub struct Tally {
     corruption_enters: u32,
     corruption_exits: u32,
     descents: u32,
+    deaths: u32,
     aggro_sum: f32,
     aggro_samples: u32,
     aggro_peak: u32,
@@ -153,6 +163,7 @@ impl Tally {
             crate::GameEvent::CorruptionEnter => self.corruption_enters += 1,
             crate::GameEvent::CorruptionExit => self.corruption_exits += 1,
             crate::GameEvent::Descent => self.descents += 1,
+            crate::GameEvent::Death => self.deaths += 1,
             _ => {}
         }
     }
@@ -173,6 +184,7 @@ impl Tally {
             corruption_enters: self.corruption_enters,
             corruption_exits: self.corruption_exits,
             descents: self.descents,
+            deaths: self.deaths,
             aggro_average: if self.aggro_samples > 0 {
                 self.aggro_sum / self.aggro_samples as f32
             } else {
@@ -196,6 +208,8 @@ pub enum ReplanReason {
     Descent,
     /// Aggro spiked well above the phrase's average.
     AggroJump,
+    /// The player died — the run reset to the spawn.
+    Death,
 }
 
 /// Whether the composer should request a plan now, and why. Pure — the
@@ -205,6 +219,10 @@ pub enum ReplanReason {
 pub fn should_replan(slots_remaining: Option<usize>, tallies: &EventTallies) -> Option<ReplanReason> {
     if slots_remaining.is_some_and(|remaining| remaining <= REPLAN_MARGIN_SLOTS) {
         return Some(ReplanReason::Depleted);
+    }
+    if tallies.deaths > 0 {
+        // The run reset — the most dramatic shift there is.
+        return Some(ReplanReason::Death);
     }
     if tallies.corruption_enters > 0 || tallies.corruption_exits > 0 {
         return Some(ReplanReason::Corruption);
@@ -230,6 +248,9 @@ pub struct ScoreContext {
     pub sounding_chord: Option<usize>,
     /// The player stands in degraded data — the harmony mutates there.
     pub degraded: bool,
+    /// The player's slow-field progress toward the exit (0 at the spawn
+    /// or just died back, 1 at the goal) — the run's dramatic arc.
+    pub progress: f32,
 }
 
 /// Build the compact JSON context the user message carries: the vocabulary
@@ -238,6 +259,7 @@ pub fn build_context(ctx: &ScoreContext) -> Value {
     json!({
         "sounding_chord": ctx.sounding_chord,
         "degraded": ctx.degraded,
+        "objective_progress": ctx.progress,
         "vocabulary": VOCABULARY
             .iter()
             .enumerate()
@@ -496,11 +518,13 @@ mod tests {
             },
             sounding_chord: Some(3),
             degraded: true,
+            progress: 0.75, // exactly representable in f32
         };
         let context = build_context(&ctx);
         assert_eq!(context["sounding_chord"], 3);
         assert_eq!(context["degraded"], true);
-        // The menu is complete: thirteen chords, each named and labelled.
+        assert_eq!(context["objective_progress"], 0.75);
+        // The menu is complete: every chord named and labelled.
         assert_eq!(context["vocabulary"].as_array().unwrap().len(), VOCABULARY.len());
         assert_eq!(context["vocabulary"][0]["function"], "tonic");
         assert_eq!(context["history"][0]["chord"], 3);
@@ -577,6 +601,8 @@ mod tests {
         assert_eq!(should_replan(Some(5), &level), Some(ReplanReason::LevelUp));
         let descent = EventTallies { descents: 1, ..EventTallies::default() };
         assert_eq!(should_replan(Some(5), &descent), Some(ReplanReason::Descent));
+        let death = EventTallies { deaths: 1, ..EventTallies::default() };
+        assert_eq!(should_replan(Some(5), &death), Some(ReplanReason::Death));
 
         // An aggro jump: the peak racing three locks past the average.
         let jump = EventTallies { aggro_average: 1.0, aggro_peak: 5, ..EventTallies::default() };
@@ -594,6 +620,7 @@ mod tests {
         tally.record_event(&GameEvent::Descent);
         tally.record_event(&GameEvent::CorruptionEnter);
         tally.record_event(&GameEvent::CorruptionExit);
+        tally.record_event(&GameEvent::Death);
         tally.record_event(&GameEvent::Dash); // untallied — the score reads it live
         tally.record_aggro(2);
         tally.record_aggro(6);
@@ -605,6 +632,7 @@ mod tests {
         assert_eq!(drained.descents, 1);
         assert_eq!(drained.corruption_enters, 1);
         assert_eq!(drained.corruption_exits, 1);
+        assert_eq!(drained.deaths, 1);
         assert!((drained.aggro_average - 4.0).abs() < 1e-6);
         assert_eq!(drained.aggro_peak, 6);
 
@@ -734,6 +762,6 @@ mod tests {
             schema["properties"]["slots"]["items"]["properties"]["chord"]["maximum"],
             VOCABULARY.len() as u32 - 1
         );
-        assert_eq!(VOCABULARY.len(), 13);
+        assert_eq!(VOCABULARY.len(), 17);
     }
 }

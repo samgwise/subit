@@ -54,6 +54,7 @@ async fn main() {
     // The chord sounding right now: bass and pad notes a cut must silence.
     let mut sounding: Vec<(u8, u8)> = Vec::new();
     let mut aggro_locks: u32 = 0;
+    let mut objective: f32 = 0.0;
     let mut last_smooth_tick = 0.0f64;
 
     // The composer: a slow planning tier over the engine. Accepted plans
@@ -132,6 +133,13 @@ async fn main() {
                             integrity = get_float(&payload, "integrity").unwrap_or(0.0),
                             "world integrity reported"
                         );
+                    }
+                    "/subit/game/telemetry/objective" => {
+                        // The objective's slow field: the run's arc, read
+                        // by the composer when it next plans.
+                        if let Some(progress) = get_float(&payload, "progress") {
+                            objective = (progress as f32).clamp(0.0, 1.0);
+                        }
                     }
                     "/subit/game/telemetry/aggro" => {
                         if let Some(locks) = parse_aggro(&payload)
@@ -255,6 +263,7 @@ async fn main() {
                             tallies: drained.clone(),
                             sounding_chord: Some(chord_vocab),
                             degraded: score.degraded,
+                            progress: objective,
                         }),
                         prev_chord: Some(chord_vocab),
                         previous_curve: last_curve.clone(),
@@ -328,6 +337,7 @@ fn parse_event(payload: &BTreeMap<String, Value>) -> Option<GameEvent> {
         "corruption_enter" => Some(GameEvent::CorruptionEnter),
         "corruption_exit" => Some(GameEvent::CorruptionExit),
         "descent" => Some(GameEvent::Descent),
+        "death" => Some(GameEvent::Death),
         "drone_shot" => Some(GameEvent::DroneShot),
         "drone_down" => Some(GameEvent::DroneDown),
         "drone_online" => Some(GameEvent::DroneOnline),

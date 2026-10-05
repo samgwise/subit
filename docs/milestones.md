@@ -385,3 +385,18 @@ level-up, descent, an aggro spike); rejected plans, timeouts and an
 absent model keep the current phrase, a depleted one falls back to the
 cycle, and `OLLAMA_DISABLED=1` skips the tier entirely — the score never
 stalls on the model.
+
+## Milestone 29 — The objective's arc in the harmony
+
+The composer learned the run's geography. The game builds a BFS distance
+field from the exit (the objective's slow field) and streams the player's
+progress toward the goal — normalised by the spawn's initial steps,
+change-gated at one percent, a stateful Param like the world integrity —
+and the palette grew for the arc: F major (the borrowed third), C major
+(the natural seventh), Am (the modal v), and D7 (the tonic's own pull to
+the subdominant, the palette's second closable dominant). Death joined
+the event language too — the deepest fall stab in the one-shot set — and
+a death replans immediately: the progress field snaps back to zero and
+the composer sinks to the minor colours and rebuilds from home. The
+prompt carries the mapping: far outbounds live on tonic and subdominant
+colour, the approach turns toward dominants and the borrowed colours.

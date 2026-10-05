@@ -81,6 +81,25 @@ pub struct PlayerFlow {
 #[derive(Resource, Debug, Clone, Copy, Default)]
 pub struct Depth(pub u32);
 
+/// The objective's slow field: the BFS distance field toward the exit plus
+/// the spawn tile's initial steps — the denominator of the progress the
+/// composer reads (0 = at the spawn or just died back, 1 = at the goal).
+#[derive(Resource)]
+pub struct ExitFlow {
+    pub field: FlowField,
+    pub initial_steps: u32,
+}
+
+/// The player's progress toward the exit from BFS steps: 1 − steps/initial,
+/// clamped to 0–1 (a detour past the spawn's own distance clamps at 0).
+/// A zero initial (spawned on the exit) is already arrived.
+fn objective_progress(steps: u32, initial_steps: u32) -> f32 {
+    if initial_steps == 0 {
+        return 1.0;
+    }
+    (1.0 - steps as f32 / initial_steps as f32).clamp(0.0, 1.0)
+}
+
 /// Marker for the pulsing glow pillar marking the exit.
 #[derive(Component)]
 struct ExitBeacon;
@@ -215,6 +234,7 @@ impl Plugin for WorldMapPlugin {
                     pulse_vault_door,
                     open_doors,
                     update_flow,
+                    objective_telemetry,
                     descend.run_if(in_state(crate::skills::GameState::Playing)),
                 )
                     .run_if(in_state(crate::skills::GameState::Playing)),
@@ -698,6 +718,15 @@ fn build_world(
     // zones, the respawn point, and the first flow field — seeded toward
     // the spawn tile until the player moves.
     let initial_flow = FlowField::build(&generated.grid, &world_res.prototypes, generated.spawn);
+    // The objective's slow field: BFS distances from the exit, with the
+    // spawn's steps as the progress denominator (tile (x, y) centres on
+    // (x + 0.5, y + 0.5) — the flow field's own coordinate convention).
+    let exit_field = FlowField::build(&generated.grid, &world_res.prototypes, generated.exit);
+    let spawn_units = (
+        generated.spawn.0 as f32 + 0.5,
+        generated.spawn.1 as f32 + 0.5,
+    );
+    let initial_steps = exit_field.steps(spawn_units).unwrap_or(0);
     commands.insert_resource(world_res);
     commands.insert_resource(cracked_tiles);
     commands.insert_resource(zones);
@@ -706,9 +735,49 @@ fn build_world(
         field: initial_flow,
         target: generated.spawn,
     });
+    commands.insert_resource(ExitFlow {
+        field: exit_field,
+        initial_steps,
+    });
     bridge.send(crate::bridge::GameAudioEvent::WorldTelemetry { integrity });
     tracing::info!(integrity, depth, "world integrity published");
     (spawn_pos, generated)
+}
+
+/// Publish the player's progress toward the exit — the objective's slow
+/// field, read by the composer for the run's dramatic arc. Change-gated at
+/// one percent: distance moves in tile steps, so this is a trickle (at
+/// most ~100 messages a depth). The vault door opening and descents
+/// reshape the grid; the field rebuilds with it.
+fn objective_telemetry(
+    map: Res<WorldMapRes>,
+    config: Res<MapConfig>,
+    player: Single<&Position, With<crate::Player>>,
+    mut exit_flow: ResMut<ExitFlow>,
+    bridge: Res<crate::bridge::BridgeTx>,
+    mut last_percent: Local<Option<u8>>,
+) {
+    if map.is_changed() {
+        exit_flow.field = FlowField::build(&map.map.grid, &map.prototypes, map.map.exit);
+        let spawn_units = (
+            map.map.spawn.0 as f32 + 0.5,
+            map.map.spawn.1 as f32 + 0.5,
+        );
+        exit_flow.initial_steps = exit_flow.field.steps(spawn_units).unwrap_or(0);
+    }
+    let (width, height) = (map.map.grid.width(), map.map.grid.height());
+    let units = tile_units((width, height), config.tile_size, player.0);
+    let Some(steps) = exit_flow.field.steps((units.x, units.y)) else {
+        return; // off-grid or walled in — hold the last value
+    };
+    let progress = objective_progress(steps, exit_flow.initial_steps);
+    let percent = (progress * 100.0).round() as u8;
+    // Never-sent is the sentinel — even progress 0 publishes once.
+    if Some(percent) != *last_percent {
+        *last_percent = Some(percent);
+        bridge.send(crate::bridge::GameAudioEvent::ObjectiveTelemetry { progress });
+        tracing::debug!(progress, "objective progress published");
+    }
 }
 
 /// Rebuild the flow field when the player changes tile or the map
@@ -1272,6 +1341,19 @@ mod tests {
             // invariant under test is simply that generation came back.
             assert!(main_region_ratio(&generated, &config) > 0.0);
         }
+    }
+
+    #[test]
+    fn objective_progress_runs_zero_to_one_and_clamps() {
+        // At the spawn: no progress. At the exit: arrived.
+        assert_eq!(objective_progress(40, 40), 0.0);
+        assert_eq!(objective_progress(0, 40), 1.0);
+        // Halfway there is halfway.
+        assert!((objective_progress(20, 40) - 0.5).abs() < 1e-6);
+        // A detour past the spawn's own distance clamps at the floor.
+        assert_eq!(objective_progress(55, 40), 0.0);
+        // Spawned on the exit: already arrived.
+        assert_eq!(objective_progress(0, 0), 1.0);
     }
 
     /// A 13x9 map split by a wall column at x=6: the left half is the main

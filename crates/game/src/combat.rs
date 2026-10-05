@@ -780,6 +780,7 @@ fn contact_damage(
     shield: Res<PlayerShield>,
     mut combo: ResMut<ComboState>,
     spawn_point: Res<SpawnPoint>,
+    bridge: Res<BridgeTx>,
     player: Single<(&CollidingEntities, &mut Position, &mut LinearVelocity), With<crate::Player>>,
     enemies: Query<Entity, With<Enemy>>,
 ) {
@@ -802,6 +803,7 @@ fn contact_damage(
         position.0 = spawn_point.0;
         velocity.0 = Vec2::ZERO;
         *combo = ComboState::default();
+        bridge.send(GameAudioEvent::Death);
         tracing::info!("player died; respawned at spawn point");
     }
 }

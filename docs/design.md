@@ -346,6 +346,8 @@ generative score runs continuously underneath the one-shot stabs (below).
 | Vault door opens | `/subit/game/event/action` `vault_open` (event) | Unlock-and-slide chime — note 70, vel 90, 0.3 s |
 | Player speed (≈10 Hz) | `/subit/game/telemetry/player` `player_speed` (stream) | Mod-wheel CC1, full scale at 240 u/s |
 | Aggro locks (≈10 Hz, on change) | `/subit/game/telemetry/aggro` `aggro_locks` (stream) | Conducts the generative score (below) |
+| Player death (respawn) | `/subit/game/event/action` `death` (event) | The darkest fall stab — note 31, vel 120, 0.6 s |
+| Objective progress (slow field, on 1% change) | `/subit/game/telemetry/objective` `objective_progress` (param) | The composer's run arc (below) |
 | World integrity (per map) | `/subit/game/telemetry/world` `world_integrity` (param) | Logged only — harmonic mode shift pending |
 
 ### The generative score
@@ -397,11 +399,14 @@ engine. A local ollama model reads the score's recent past (the last 16
 performed slots: chord, duration, whether the conductor cut or held it)
 and the game's present (tallies since the last plan: mob sweeps, kills,
 level-ups, corruption boundaries, descents, and the aggro average and
-peak) and lays out the next phrase — 4–8 chord slots picked from a
-thirteen-entry vocabulary (the cycle's nine plus submarine's function
-palette: supertonic, subdominant, dominant, dominant seventh), each
-labelled with its harmonic function, plus optional Bézier control points
-for the phrase's voicing contour.
+peak, and deaths) and lays out the next phrase — 4–8 chord slots picked
+from a seventeen-entry vocabulary (the cycle's nine plus submarine's
+function palette: supertonic, subdominant, dominant, dominant seventh),
+each labelled with its harmonic function, plus optional Bézier control
+points for the phrase's voicing contour. The palette stretches past the
+submarine set for the run's dramatic arc: F major (the borrowed third),
+C major (the natural seventh), Am (the modal v), and D7 (the tonic's own
+pull to the subdominant — the palette's second closable dominant).
 
 The plan travels as flat JSON (it doubles as the ollama response schema —
 grammar-constrained sampling misbehaves on nested shapes) and must pass
@@ -416,12 +421,21 @@ the clock — the conductor keeps the rhythm ladder, cuts and holds (the
 schema asks for no durations at all); it owns direction only.
 
 The composer replans when the live plan drains to two slots, or on sharp
-shifts: a corruption boundary, a level-up, a descent, or the aggro peak
-racing three locks past the phrase's average. One request is in flight at
+shifts: a corruption boundary, a level-up, a descent, a death, or the
+aggro peak racing three locks past the phrase's average. One request is in flight at
 a time (queued requests collapse to the newest), requests time out after
 30 s (a safety valve — the verified model plans in a couple of seconds),
 and `OLLAMA_DISABLED=1` hard-disables the tier — the score never stalls
 on the model.
+
+The run has an arc, and it is the composer's to score: the player's
+slow-field progress toward the exit (BFS distance to the goal,
+normalised by the spawn's initial steps, streamed as a change-gated 1%
+Param) rides into every request — 0 fresh from the spawn or just died
+back, 1 at the goal. The far outbounds live on tonic and subdominant
+colour, the approach turns toward dominants and the borrowed colours,
+and a death (a sharp-shift trigger of its own) sinks the palette darker
+and rebuilds from home.
 
 Contour: a plan may draw the phrase's register as paired upper/lower
 Bézier control points (semitones from the tonic). The patterns' notes
@@ -459,7 +473,8 @@ channel 1 — the bass synth's filter tracks motion.
 | Score: chord period / pattern gates / rhythm hold / smoothing | 8 → 6 → 4 → 2 crotchets, then 3+2 / 3+3+2 / 3+2+2 quavers (additive past 0.95 intensity) / A ≥1 lock, B ≥3 / 3 s before dropping down / τ 0.5 s attack, 8 s release |
 | Bass: pulse rate / relaxed figure / gate | quavers / 6 then rest (periods of 3+ beats), continuous below / 0.6 × quaver |
 | Degraded zone: chromatic rotation | ±3 semitones per mapping, hash of the pitch class |
-| Composer: phrase / replan margin / request timeout | 4–8 slots (13-chord vocabulary) / 2 slots / 30 s |
+| Composer: phrase / replan margin / request timeout | 4–8 slots (17-chord vocabulary) / 2 slots / 30 s |
+| Objective progress | 1 − BFS steps/initial, clamped 0–1, published on 1% change (Param) |
 || Aggro: notice range / stand-down range / wander speed / leash | 8 steps / 10 / 30 u/s / 1.5 tiles |
 | Cloak: unlock / sneak per point (floor) / duration per point (cap) / cooldown | 5 pts / −1 step (2) / +1 s (cap 4) / 10 s |
 | Corruption: burst interval / burst length / drain / stealth | ~3 s / ~0.3 s / 1 plate per s / −2 steps |

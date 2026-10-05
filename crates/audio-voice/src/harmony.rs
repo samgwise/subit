@@ -97,6 +97,13 @@ pub const VOCABULARY: &[VocabEntry] = &[
     VocabEntry { degree: 6.0, quality: Quality::Major, function: Function::Dominant, name: "A (dominant)" },
     VocabEntry { degree: 6.0, quality: Quality::Dominant7, function: Function::Dominant, name: "A7 (dominant seventh)" },
     VocabEntry { degree: 5.0, quality: Quality::Minor, function: Function::Colour, name: "Gm (minor colour)" },
+    // The objective's palette: colours for the run's dramatic arc — hope
+    // far out, mixo motion on the approach, soft tension, and the tonic's
+    // own dominant seventh (the second closable dominant).
+    VocabEntry { degree: 2.0, quality: Quality::Major, function: Function::Colour, name: "F (the borrowed third)" },
+    VocabEntry { degree: 8.0, quality: Quality::Major, function: Function::Colour, name: "C (the natural seventh)" },
+    VocabEntry { degree: 6.0, quality: Quality::Minor, function: Function::Colour, name: "Am (the modal v)" },
+    VocabEntry { degree: 0.0, quality: Quality::Dominant7, function: Function::Dominant, name: "D7 (the pull to the subdominant)" },
 ];
 
 /// One planned chord: a vocabulary index and an advisory duration. The

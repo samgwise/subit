@@ -93,6 +93,8 @@ pub enum GameEvent {
     CorruptionExit,
     /// The player descended to the next depth — deep transition tone.
     Descent,
+    /// The player died and respawned at the spawn — the deepest fall.
+    Death,
     /// A transmitter drone fired a shot — small mid blip.
     DroneShot,
     /// A transmitter drone went offline — glitchy falling tone.
@@ -192,6 +194,13 @@ pub fn perform_event(event: GameEvent) -> NoteEvent {
             note: 43,
             velocity: 100,
             duration_secs: 0.4,
+        },
+        GameEvent::Death => NoteEvent {
+            channel: FX_CHANNEL,
+            // The darkest, longest one-shot: the run resets.
+            note: 31,
+            velocity: 120,
+            duration_secs: 0.6,
         },
         GameEvent::DroneShot => NoteEvent {
             channel: FX_CHANNEL,

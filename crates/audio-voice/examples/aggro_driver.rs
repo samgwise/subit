@@ -66,6 +66,23 @@ async fn main() {
         tokio::time::sleep(Duration::from_millis(700)).await;
     }
 
+    // The objective's slow field: the player makes ground toward the
+    // exit — the run's arc for the composer.
+    for progress in [0.0, 0.3, 0.6, 0.9] {
+        publish(
+            &hub,
+            "/subit/game/telemetry/objective",
+            SignalType::Param,
+            vec![
+                ("type", text("objective_progress")),
+                ("progress", Value::Float(FloatValue::new(progress))),
+            ],
+        )
+        .await;
+        tracing::info!(progress, "published objective progress");
+        tokio::time::sleep(Duration::from_millis(800)).await;
+    }
+
     // A cleave swing lands kills; the combo chains.
     publish(
         &hub,
@@ -99,6 +116,27 @@ async fn main() {
     )
     .await;
     tracing::info!("the corruption boundary restored");
+
+    // Death: dropped back to the start — progress resets, the composer
+    // replans around the run's reset.
+    publish(
+        &hub,
+        "/subit/game/event/action",
+        SignalType::Event,
+        vec![("type", text("death"))],
+    )
+    .await;
+    publish(
+        &hub,
+        "/subit/game/telemetry/objective",
+        SignalType::Param,
+        vec![
+            ("type", text("objective_progress")),
+            ("progress", Value::Float(FloatValue::new(0.0))),
+        ],
+    )
+    .await;
+    tracing::info!("the player died; the run resets");
     // The hub drops a publisher's in-flight actions when the socket closes
     // — grace the final publish before exiting.
     tokio::time::sleep(Duration::from_secs(2)).await;

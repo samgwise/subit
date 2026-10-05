@@ -39,6 +39,8 @@ pub enum GameAudioEvent {
     Corruption { entered: bool },
     /// The player descended to the next depth.
     Descent,
+    /// The player died — respawned at the map spawn.
+    Death,
     /// A transmitter drone fired a shot.
     DroneShot,
     /// A transmitter drone went offline.
@@ -53,6 +55,10 @@ pub enum GameAudioEvent {
     WorldTelemetry { integrity: f32 },
     /// Live aggro-lock count for the generative score's conductor.
     AggroTelemetry { locks: u32 },
+    /// Objective progress: the player's slow-field distance to the exit
+    /// (1 at the goal, 0 at the spawn or just died back). Stateful — a
+    /// Param, replayed to late joiners.
+    ObjectiveTelemetry { progress: f32 },
 }
 
 impl GameAudioEvent {
@@ -69,6 +75,7 @@ impl GameAudioEvent {
             | GameAudioEvent::Cloak
             | GameAudioEvent::Corruption { .. }
             | GameAudioEvent::Descent
+            | GameAudioEvent::Death
             | GameAudioEvent::DroneShot
             | GameAudioEvent::DroneDown
             | GameAudioEvent::DroneOnline
@@ -77,6 +84,7 @@ impl GameAudioEvent {
             GameAudioEvent::PlayerTelemetry { .. } => "/subit/game/telemetry/player",
             GameAudioEvent::WorldTelemetry { .. } => "/subit/game/telemetry/world",
             GameAudioEvent::AggroTelemetry { .. } => "/subit/game/telemetry/aggro",
+            GameAudioEvent::ObjectiveTelemetry { .. } => "/subit/game/telemetry/objective",
         }
     }
 
@@ -93,6 +101,7 @@ impl GameAudioEvent {
             | GameAudioEvent::Cloak
             | GameAudioEvent::Corruption { .. }
             | GameAudioEvent::Descent
+            | GameAudioEvent::Death
             | GameAudioEvent::DroneShot
             | GameAudioEvent::DroneDown
             | GameAudioEvent::DroneOnline
@@ -101,6 +110,7 @@ impl GameAudioEvent {
             GameAudioEvent::PlayerTelemetry { .. } => SignalType::Stream,
             GameAudioEvent::AggroTelemetry { .. } => SignalType::Stream,
             GameAudioEvent::WorldTelemetry { .. } => SignalType::Param,
+            GameAudioEvent::ObjectiveTelemetry { .. } => SignalType::Param,
         }
     }
 
@@ -150,6 +160,9 @@ impl GameAudioEvent {
             GameAudioEvent::Descent => {
                 fields.insert("type".into(), Value::String("descent".into()));
             }
+            GameAudioEvent::Death => {
+                fields.insert("type".into(), Value::String("death".into()));
+            }
             GameAudioEvent::DroneShot => {
                 fields.insert("type".into(), Value::String("drone_shot".into()));
             }
@@ -180,6 +193,13 @@ impl GameAudioEvent {
             GameAudioEvent::AggroTelemetry { locks } => {
                 fields.insert("type".into(), Value::String("aggro_locks".into()));
                 fields.insert("locks".into(), Value::Integer(*locks as i64));
+            }
+            GameAudioEvent::ObjectiveTelemetry { progress } => {
+                fields.insert("type".into(), Value::String("objective_progress".into()));
+                fields.insert(
+                    "progress".into(),
+                    Value::Float(FloatValue::new(*progress as f64)),
+                );
             }
         }
         Value::Map(fields)
@@ -244,6 +264,32 @@ async fn bridge_task(mut rx: mpsc::Receiver<GameAudioEvent>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn objective_telemetry_is_a_stateful_param() {
+        let event = GameAudioEvent::ObjectiveTelemetry { progress: 0.72 };
+        assert_eq!(event.address(), "/subit/game/telemetry/objective");
+        assert_eq!(event.signal_type(), SignalType::Param);
+        let Value::Map(fields) = event.payload() else {
+            panic!("expected map payload");
+        };
+        assert_eq!(
+            get_string(&fields, "type"),
+            Some("objective_progress".into())
+        );
+        assert!((get_float(&fields, "progress").unwrap() - 0.72).abs() < 1e-6);
+    }
+
+    #[test]
+    fn death_is_an_event_on_the_action_address() {
+        let event = GameAudioEvent::Death;
+        assert_eq!(event.address(), "/subit/game/event/action");
+        assert_eq!(event.signal_type(), SignalType::Event);
+        let Value::Map(fields) = event.payload() else {
+            panic!("expected map payload");
+        };
+        assert_eq!(get_string(&fields, "type"), Some("death".into()));
+    }
 
     #[test]
     fn aggro_telemetry_streams_the_lock_count() {
