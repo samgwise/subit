@@ -91,17 +91,16 @@ const AIRY_OFFSET: f64 = QUAVER_SECS;
 const BELL_OFFSET: f64 = STEP_SECS * 3.0;
 /// The bell's gate — a pluck, not a sustain.
 const BELL_SECS: f64 = 0.3;
-/// The idle bell's metric patterns: one bar each of 3/4, 5/4, 6/4 and
-/// 7/4, in 16th-step offsets — the downbeat plus each metre's off-quaver
-/// pushes (3+2 groupings in the fives and sevens). All fit the
-/// eight-crotchet idle slot, and the bar re-phases against the 4/4
-/// ground as the pattern rotates.
-const BELL_METRE_PATTERNS: [(&str, &[usize]); 4] = [
-    ("3/4", &[0, 6, 10]),
-    ("5/4", &[0, 6, 12, 16]),
-    ("6/4", &[0, 6, 12, 18]),
-    ("7/4", &[0, 6, 12, 18, 24]),
-];
+/// The idle bell's polyrhythms: N-over-4 — N plinks evenly spaced across
+/// each four-quaver window of the bass's pulse (3:4, 5:4, 6:4, 7:4),
+/// rotating per bell slot.
+const BELL_POLYRHYTHMS: [usize; 4] = [3, 5, 6, 7];
+/// The polyrhythm's window, in quavers — the four the bass pulses.
+const POLYRHYTHM_WINDOW_QUAVERS: f64 = 4.0;
+/// The bell plink's gate as a fraction of its spacing — the tighter
+/// polyrhythms must never overlap their own next plink (the bridge drops
+/// a re-play while a key is down).
+const BELL_GATE: f64 = 0.6;
 /// The sustained voices' scheduled length, in slots — generously long so
 /// the daemon's common-tone legato can hold them across changes; the
 /// note-offs trim what doesn't persist.
@@ -799,23 +798,26 @@ impl Engine {
         }
         if arrangement.bell {
             if state.intensity < 0.33 {
-                // The idle bell phrases in the odd metres: one bar of
-                // 3/4, 5/4, 6/4 or 7/4 per bell slot, rotating so the
-                // plinks re-phase against the 4/4 ground. The tones walk
-                // the chord's voicing — transposed and degraded like every
-                // voice.
-                let bar =
-                    &BELL_METRE_PATTERNS[(state.slot as usize / 2) % BELL_METRE_PATTERNS.len()];
-                for (plink, &step) in bar.1.iter().enumerate() {
+                // The idle bell plays polyrhythms against the bass's
+                // quavers: N plinks evenly spaced across each four-quaver
+                // window (3:4, 5:4, 6:4, 7:4 — rotating per bell slot),
+                // repeating through the turn so the plinks keep re-phasing
+                // against the pulse. The tones walk the chord's voicing —
+                // transposed and degraded like every voice.
+                let over =
+                    BELL_POLYRHYTHMS[(state.slot as usize / 2) % BELL_POLYRHYTHMS.len()];
+                let spacing = POLYRHYTHM_WINDOW_QUAVERS * QUAVER_SECS / over as f64;
+                let plinks = (duration_secs / spacing).floor().max(1.0) as usize;
+                for plink in 0..plinks {
                     let tone = voicing[(plink + state.slot as usize) % voicing.len()];
                     let placed = revoice(f64::from(tone) - PAD_BASE, BELL_BAND.0, BELL_BAND.1);
                     notes.push((
-                        step as f64 * STEP_SECS,
+                        plink as f64 * spacing,
                         NoteEvent {
                             channel: CHANNEL_BELL,
                             note: (PAD_BASE + placed) as u8,
                             velocity: 70,
-                            duration_secs: BELL_SECS,
+                            duration_secs: spacing * BELL_GATE,
                         },
                     ));
                 }
@@ -1076,10 +1078,11 @@ mod tests {
     }
 
     #[test]
-    fn the_idle_bell_phrases_in_the_odd_metres() {
+    fn the_idle_bell_plays_polyrhythms_against_the_bass() {
         // Sparse, some ground made: slot 4 is the bell's rotation slot —
-        // pattern index 2, a 6/4 bar: plinks on the downbeat and each
-        // dotted-crotchet push after.
+        // polyrhythm index 2, a 6:4 — six plinks evenly spaced across each
+        // four-quaver window of the bass's pulse, repeating through the
+        // slot.
         let mut state = MusicState {
             objective: 0.5,
             ..MusicState::default()
@@ -1091,17 +1094,22 @@ mod tests {
             .filter(|(_, n)| n.channel == CHANNEL_BELL)
             .map(|(at, n)| (*at, n.clone()))
             .collect();
-        assert_eq!(bell.len(), 4);
+        // An eight-crotchet slot spans four windows: twenty-four 6:4
+        // plinks, evenly spaced (a sixth of a window apart), gated short
+        // of the next plink.
+        assert_eq!(bell.len(), 24);
+        let spacing = POLYRHYTHM_WINDOW_QUAVERS * QUAVER_SECS / 6.0;
         for (k, (at, note)) in bell.iter().enumerate() {
-            assert_secs(*at, BELL_METRE_PATTERNS[2].1[k] as f64 * STEP_SECS);
+            assert_secs(*at, k as f64 * spacing);
             // The tones walk the chord's voicing (the cycle's slot 4 is
             // the III: F# major's shapes).
             let from_tonic = f64::from(note.note) - PAD_BASE;
             assert!([4.0, 8.0, 11.0].contains(&(from_tonic.rem_euclid(12.0))));
-            assert_secs(note.duration_secs, BELL_SECS);
+            assert_secs(note.duration_secs, spacing * BELL_GATE);
         }
 
-        // The rotation walks all four metres across the bell's slots.
+        // The rotation walks all four polyrhythms across the bell's
+        // slots: 6:4, 5:4, 3:4 and 7:4 — plink counts at four windows.
         let counts: Vec<usize> = [4u32, 10, 16, 22]
             .iter()
             .map(|&slot| {
@@ -1113,7 +1121,7 @@ mod tests {
                     .count()
             })
             .collect();
-        assert_eq!(counts, vec![4, 4, 3, 5]); // 6/4, 5/4, 3/4, 7/4
+        assert_eq!(counts, vec![24, 20, 12, 28]);
     }
 
     #[test]
