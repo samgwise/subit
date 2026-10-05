@@ -214,6 +214,10 @@ pub enum HarmonySource {
         /// The phrase's voicing contour, in semitones from the tonic.
         curve: Curve,
         cursor: usize,
+        /// The plan drew its own contour — the arrangement space is
+        /// intentional, and the pad revoices into it. A plan without a
+        /// curve performs the neutral default and leaves the pad put.
+        revoice: bool,
     },
 }
 
@@ -339,6 +343,23 @@ fn voicing_for(degree: f64, quality: Quality, tonic: i32, degraded: bool) -> Vec
         .iter()
         .map(|&interval| (PAD_BASE + chromatic_map(root_pc + interval, degraded)) as u8)
         .collect()
+}
+
+/// Revoice a semitone-from-tonic into the arrangement space: a tone
+/// already inside the band stays put, one outside shifts by the smallest
+/// octave count that lands it within. The inversion falls out of the
+/// placement — whichever tone lands lowest, sounds lowest.
+fn revoice(semitone: f64, low: f64, high: f64) -> f64 {
+    let (low, high) = if low <= high { (low, high) } else { (high, low) };
+    if (low..=high).contains(&semitone) {
+        return semitone;
+    }
+    let octaves = if semitone < low {
+        ((low - semitone) / 12.0).ceil() // the smallest lift that enters
+    } else {
+        -((semitone - high) / 12.0).ceil() // the smallest drop that enters
+    };
+    semitone + 12.0 * octaves
 }
 
 /// Bend a pattern note into the contour — "the arp exists below the
@@ -585,9 +606,16 @@ impl Engine {
 
         // The phrase's contour: a plan supplies the curve; the cycle plays
         // the neutral default, whose bounds never clip today's material.
-        // `t` walks the slot's own span within the phrase.
-        let (curve, phrase_t) = match &state.harmony {
-            HarmonySource::Plan { curve, slots, cursor } => {
+        // `t` walks the slot's own span within the phrase. A plan that
+        // drew its own curve intends the arrangement space — the pad
+        // revoices into it too.
+        let (curve, phrase_t, revoice_pad) = match &state.harmony {
+            HarmonySource::Plan {
+                curve,
+                slots,
+                cursor,
+                revoice,
+            } => {
                 let phrase_len = slots.len().max(1) as f64;
                 let slot_index = cursor.saturating_sub(1) as f64;
                 (
@@ -595,11 +623,13 @@ impl Engine {
                     Box::new(move |within: f64| {
                         ((slot_index + within) / phrase_len).clamp(0.0, 1.0)
                     }) as Box<dyn Fn(f64) -> f64>,
+                    *revoice,
                 )
             }
             HarmonySource::Cycle => (
                 default_curve(),
                 Box::new(|_: f64| 0.5) as Box<dyn Fn(f64) -> f64>,
+                false,
             ),
         };
 
@@ -630,13 +660,26 @@ impl Engine {
         }
 
         // Pad voicing — transposed by the key, mutated by the degraded
-        // zone's noise.
-        let voicing = voicing_for(
+        // zone's noise. A plan's arrangement space revoices the pad into
+        // its band at the slot's parameter; without one, the pad sits at
+        // home.
+        let (band_low, band_high) = curve.contour(phrase_t(0.0));
+        let voicing: Vec<u8> = voicing_for(
             slot_chord.degree,
             slot_chord.quality,
             state.key.tonic,
             state.degraded,
-        );
+        )
+        .iter()
+        .map(|&tone| {
+            if revoice_pad {
+                let placed = revoice(f64::from(tone) - PAD_BASE, band_low, band_high);
+                (PAD_BASE + placed).round() as u8
+            } else {
+                tone
+            }
+        })
+        .collect();
         for &tone in &voicing {
             notes.push((
                 0.0,
@@ -784,6 +827,63 @@ mod tests {
     }
 
     #[test]
+    fn revoice_leaves_insiders_and_lifts_outsiders() {
+        // A tone already in the space stays put; one below lifts an
+        // octave in; one high folds down.
+        assert_eq!(revoice(7.0, 0.0, 48.0), 7.0);
+        assert_eq!(revoice(0.0, 12.0, 24.0), 12.0);
+        assert_eq!(revoice(23.0, 0.0, 12.0), 11.0);
+    }
+
+    #[test]
+    fn the_pad_revoices_into_the_plan_s_arrangement_space() {
+        // A band above the pad's home octave: the tones lift into it, the
+        // chord's shape intact (the inversion falls out of the placement).
+        let mut state = MusicState {
+            harmony: HarmonySource::Plan {
+                slots: plan_slots(&[0, 0, 1, 0]),
+                curve: Curve {
+                    upper: vec![24.0, 26.0, 24.0],
+                    lower: vec![12.0, 12.0, 12.0],
+                },
+                cursor: 0,
+                revoice: true,
+            },
+            ..MusicState::default()
+        };
+        let (notes, _) = Engine::slot_notes(&mut state, 0.0);
+        let pad: Vec<u8> = notes
+            .iter()
+            .filter(|(_, n)| n.channel == CHANNEL_CHORDS)
+            .map(|(_, n)| n.note)
+            .collect();
+        // Dm's tones, an octave up: the same shape, the intended space.
+        assert_eq!(pad, vec![62, 65, 69]);
+    }
+
+    #[test]
+    fn a_plan_without_a_curve_leaves_the_pad_at_home() {
+        // The neutral default is not an arrangement instruction: the pad
+        // keeps its home register.
+        let mut state = MusicState {
+            harmony: HarmonySource::Plan {
+                slots: plan_slots(&[0, 0, 1, 0]),
+                curve: default_curve(),
+                cursor: 0,
+                revoice: false,
+            },
+            ..MusicState::default()
+        };
+        let (notes, _) = Engine::slot_notes(&mut state, 0.0);
+        let pad: Vec<u8> = notes
+            .iter()
+            .filter(|(_, n)| n.channel == CHANNEL_CHORDS)
+            .map(|(_, n)| n.note)
+            .collect();
+        assert_eq!(pad, vec![50, 53, 57]);
+    }
+
+    #[test]
     fn transposition_moves_every_voice_by_the_offset() {
         // The same slot a tone higher: the voicing and the bass differ by
         // exactly two semitones — the whole dictionary travels with the
@@ -844,6 +944,7 @@ mod tests {
                 slots: plan_slots(&[9, 10, 0]),
                 curve: default_curve(),
                 cursor: 0,
+                revoice: false,
             },
             ..MusicState::default()
         };
@@ -884,6 +985,7 @@ mod tests {
                     lower: vec![0.0, 0.0, 0.0, 0.0],
                 },
                 cursor: 0,
+                revoice: true,
             },
             ..MusicState::default()
         };

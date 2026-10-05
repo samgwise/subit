@@ -418,3 +418,14 @@ one phrase, or an episode to ♭III, iv or v for 2–4 phrases with a 40%
 return chance each phrase. The composer reads the form's summary and
 composes within the reported key; the deterministic default key is
 byte-identical to the old score.
+
+## Milestone 31 — The arrangement space: the pad revoices into the curve
+
+The plan's contour graduated from a pattern fence to the arrangement
+space for everything. The pad revoices into the band at its slot's
+parameter: a chord tone already inside the space stays put, one outside
+shifts by the smallest octave that lands it within — the inversion
+falls out of the placement, and the register survives sequences and
+episodes instead of drifting out of the synth's voice. A plan without
+its own curve still gets the neutral default for the patterns, but it
+is a no-op, not an instruction: the pad keeps its home register.

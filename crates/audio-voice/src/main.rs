@@ -316,7 +316,12 @@ async fn main() {
                             );
                             last_curve = Some(outcome.curve.clone());
                             score.harmony = HarmonySource::Plan {
-                                // The plan's slots carry their inversions.
+                                // The plan's slots carry their inversions;
+                                // a plan that drew its own contour intends
+                                // the arrangement space — the pad revoices
+                                // into it.
+                                revoice: !outcome.plan.curve_upper.is_empty()
+                                    || !outcome.plan.curve_lower.is_empty(),
                                 slots: outcome.plan.slots.clone(),
                                 curve: outcome.curve,
                                 cursor: 0,

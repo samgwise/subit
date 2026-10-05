@@ -462,12 +462,17 @@ role: the controller owns the tonal geography; the composer composes
 within the reported key. Form transitions log ("the form moved: E
 minor, sequence").
 
-Contour: a plan may draw the phrase's register as paired upper/lower
-Bézier control points (semitones from the tonic). The patterns' notes
-clamp into the bounds at their phrase position — the arp exists below
-the curve — and consecutive curves stitch from the previous tail control
-point so phrases join without a seam. Plans without curves get the
-neutral default, whose bounds sit outside today's material. Env:
+Contour and arrangement space: a plan may draw the phrase's register as
+paired upper/lower Bézier control points (semitones from the tonic) —
+and that contour is the arrangement space for everything. The patterns'
+notes clamp into the bounds at their phrase position (the arp exists
+below the curve), and the pad revoices into the band at the slot's
+parameter — a tone already inside stays put, one outside shifts by the
+smallest octave that lands it within, so the inversion falls out of the
+placement and the register survives the key moving. Consecutive curves
+stitch from the previous tail control point so phrases join without a
+seam. Plans without curves get the neutral default — a no-op, not an
+instruction: the pad keeps its home register. Env:
 `OLLAMA_URL` (default `http://127.0.0.1:11434`), `OLLAMA_MODEL`
 (default `qwen3:0.6b` — verified: a validated plan in a couple of
 seconds; heavier generalists trip ollama 0.35's grammar into
