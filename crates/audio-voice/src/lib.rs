@@ -8,6 +8,7 @@
 
 pub mod composer;
 pub mod curve;
+pub mod form;
 pub mod harmony;
 pub mod music;
 

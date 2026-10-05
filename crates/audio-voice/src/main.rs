@@ -17,6 +17,9 @@ use std::time::Duration;
 
 use audio_voice::composer::{PlanRequest, ScoreContext, SlotRecord, Tally};
 use audio_voice::curve::Curve;
+use audio_voice::form::Form;
+use rand::SeedableRng;
+use rand::rngs::SmallRng;
 use audio_voice::music::{
     self, change_point, current_slot_period_secs, retune, Engine, HarmonySource, MusicState,
     CHANNEL_CHORDS, CROTCHET_SECS, QUAVER_SECS, STUB_BPM,
@@ -56,6 +59,17 @@ async fn main() {
     let mut aggro_locks: u32 = 0;
     let mut objective: f32 = 0.0;
     let mut last_smooth_tick = 0.0f64;
+
+    // The form: the piece's tonal geography — home, sequences, episodes —
+    // ticked when a phrase completes. Time-seeded so every run tells a
+    // different musical story.
+    let mut form = Form::new(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|since| since.as_nanos() as u64)
+            .unwrap_or(0),
+    );
+    let mut form_rng = SmallRng::seed_from_u64(rand::random());
 
     // The composer: a slow planning tier over the engine. Accepted plans
     // arrive on the watch channel and steer the harmony until they deplete;
@@ -252,6 +266,18 @@ async fn main() {
                 while history.len() > audio_voice::composer::HISTORY_LEN {
                     history.pop_front();
                 }
+
+                // A plan's last slot just rendered: the phrase completed,
+                // and the form ticks — the next phrase lives wherever the
+                // form moves to.
+                if score.harmony.slots_remaining() == Some(0) {
+                    if form.tick(&mut form_rng) {
+                        let summary = form.summary();
+                        tracing::info!(key = %summary.key, state = summary.state, "the form moved");
+                    }
+                    score.key.tonic = form.key_offset();
+                }
+
                 let drained = tallies.drain();
                 if let Some(reason) = audio_voice::composer::should_replan(
                     score.harmony.slots_remaining(),
@@ -264,6 +290,7 @@ async fn main() {
                             sounding_chord: Some(chord_vocab),
                             degraded: score.degraded,
                             progress: objective,
+                            form: form.summary(),
                         }),
                         prev_chord: Some(chord_vocab),
                         previous_curve: last_curve.clone(),

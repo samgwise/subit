@@ -443,6 +443,25 @@ colour, the approach turns toward dominants and the borrowed colours,
 and a death (a sharp-shift trigger of its own) sinks the palette darker
 and rebuilds from home.
 
+### The form — keys, sequences, episodes
+
+Above the composer sits a form controller: the piece's tonal geography,
+ticked once per phrase. Home is the ground state, counting down a cycle
+rolled from 4, 6 or 8 phrases; when a cycle expires the form rolls for a
+change (60% — home has gravity, some cycles pass quietly). A change is a
+**sequence** (a tone up or down for a single phrase, home next — 60% of
+changes) or an **episode**: a departure to a related key — ♭III (the
+relative major), iv or v, as tonic offsets +3, +5 or +7 — for 2–4
+phrases, each rolling a 40% return chance, force-returned at the cap.
+The key is runtime state: a tonic offset every voice resolves through —
+the pad, the bass and the patterns all transpose together, and the
+vocabulary (already degree-relative) speaks roman numerals so the same
+dictionary works in every key. The composer's context carries the form's
+summary (state, key name, phrases left) and the prompt gives it the
+role: the controller owns the tonal geography; the composer composes
+within the reported key. Form transitions log ("the form moved: E
+minor, sequence").
+
 Contour: a plan may draw the phrase's register as paired upper/lower
 Bézier control points (semitones from the tonic). The patterns' notes
 clamp into the bounds at their phrase position — the arp exists below
@@ -481,6 +500,7 @@ channel 1 — the bass synth's filter tracks motion.
 | Degraded zone: chromatic rotation | ±3 semitones per mapping, hash of the pitch class |
 | Composer: phrase / replan margin / request timeout | 4–8 slots (17-chord vocabulary) / 2 slots / 30 s |
 | Objective progress | 1 − BFS steps/initial, clamped 0–1, published on 1% change (Param) |
+| Form: home cycle / change chance / sequence vs episode / episode span & return | 4, 6 or 8 phrases / 60% at expiry / 60% sequence (a tone, one phrase) / 2–4 phrases, 40% return per phrase |
 || Aggro: notice range / stand-down range / wander speed / leash | 8 steps / 10 / 30 u/s / 1.5 tiles |
 | Cloak: unlock / sneak per point (floor) / duration per point (cap) / cooldown | 5 pts / −1 step (2) / +1 s (cap 4) / 10 s |
 | Corruption: burst interval / burst length / drain / stealth | ~3 s / ~0.3 s / 1 plate per s / −2 steps |

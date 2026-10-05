@@ -400,3 +400,21 @@ a death replans immediately: the progress field snaps back to zero and
 the composer sinks to the minor colours and rebuilds from home. The
 prompt carries the mapping: far outbounds live on tonic and subdominant
 colour, the approach turns toward dominants and the borrowed colours.
+
+## Milestone 30 — The form: keys, sequences, episodes
+
+The piece grew a form controller — the tonal geography above the
+composer. The key became runtime state (a tonic offset every voice
+resolves through — pad, bass and patterns transpose together), the
+vocabulary speaks roman numerals so the same dictionary works in any
+key, and the bass moved fully into the scalevec stack: bass degrees
+resolved through the pitch chain, transposed by the key and degraded
+with the corruption (the M27 anchored-bass clause retired — the whole
+stack degrades together). Plan slots may name a bass chord tone — a
+mid-phrase inversion for stepwise motion — with the validator pinning
+phrase edges to the root. The form itself: home cycles of 4, 6 or 8
+phrases; on expiry a 60% roll for a change — a sequence a tone away for
+one phrase, or an episode to ♭III, iv or v for 2–4 phrases with a 40%
+return chance each phrase. The composer reads the form's summary and
+composes within the reported key; the deterministic default key is
+byte-identical to the old score.

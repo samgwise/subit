@@ -15,6 +15,7 @@ use serde_json::{json, Value};
 use tokio::sync::{mpsc, watch};
 
 use crate::curve::{default_curve, Curve};
+use crate::form::FormSummary;
 use crate::harmony::{validate, HarmonyPlan, VOCABULARY};
 
 /// The slot history the context carries — the recent past the composer
@@ -44,8 +45,10 @@ You are the composer for subit, a generative game score in a minor \
 mixture (a borrowed colour tints its diminished seventh). A \
 deterministic conductor owns intensity: aggro locks drive the harmonic \
 rhythm, the patterns and the bass pulse. You choose direction — the next \
-phrase's chords and the register contour they play in, in the key the \
-context reports.
+phrase's chords and the register contour they play in. The form \
+controller owns the key — home, a sequence a tone away, or an episode \
+in a related key — so compose within the key the context reports, and \
+let its phrase count colour how much ground you cover.
 
 Reply with only a JSON plan: `slots` picks 4-8 chords from the numbered \
 vocabulary — roman numerals relative to the key the context reports — \
@@ -256,6 +259,8 @@ pub struct ScoreContext {
     /// The player's slow-field progress toward the exit (0 at the spawn
     /// or just died back, 1 at the goal) — the run's dramatic arc.
     pub progress: f32,
+    /// The form controller's state — the key and its state of mind.
+    pub form: FormSummary,
 }
 
 /// Build the compact JSON context the user message carries: the vocabulary
@@ -265,6 +270,7 @@ pub fn build_context(ctx: &ScoreContext) -> Value {
         "sounding_chord": ctx.sounding_chord,
         "degraded": ctx.degraded,
         "objective_progress": ctx.progress,
+        "form": ctx.form,
         "vocabulary": VOCABULARY
             .iter()
             .enumerate()
@@ -528,11 +534,14 @@ mod tests {
             sounding_chord: Some(3),
             degraded: true,
             progress: 0.75, // exactly representable in f32
+            form: FormSummary::default(),
         };
         let context = build_context(&ctx);
         assert_eq!(context["sounding_chord"], 3);
         assert_eq!(context["degraded"], true);
         assert_eq!(context["objective_progress"], 0.75);
+        assert_eq!(context["form"]["state"], "home");
+        assert_eq!(context["form"]["key"], "D minor");
         // The menu is complete: every chord named and labelled.
         assert_eq!(context["vocabulary"].as_array().unwrap().len(), VOCABULARY.len());
         assert_eq!(context["vocabulary"][0]["function"], "tonic");
