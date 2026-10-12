@@ -14,8 +14,8 @@ avian2d = "0.7"
 # Ensemble audio bridge (local sibling checkout)
 ensemble-client = { path = "../ensemble/ensemble-client" }
 ensemble-core = { path = "../ensemble/ensemble-core" }
-# Music theory for the generative score (local sibling checkout)
-scalevec = { path = "../scalevec" }
+# Music theory for the generative score
+scalevec = "0.1.0"
 # The composer's plan schema and ollama client
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

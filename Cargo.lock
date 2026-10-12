@@ -5231,6 +5231,8 @@ dependencies = [
 [[package]]
 name = "scalevec"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b8d4b94ca9678105557e4af05b090566e9650b8de2b746662000da669db63f28"
 
 [[package]]
 name = "scoped-tls"
