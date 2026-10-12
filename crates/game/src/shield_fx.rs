@@ -20,9 +20,14 @@ use crate::combat::SHIELD_RADIUS;
 use crate::enemies::{ENEMY_SHIELD_PLATES, Shield};
 use crate::world::TILE_SIZE;
 
-/// Dome radius for the barrier — slightly wider than the reflect dome
-/// ([`SHIELD_RADIUS`]) so the two never coincide when both are up.
-const BARRIER_RADIUS: f32 = TILE_SIZE * 1.35;
+/// Dome radius hugging a body of `diameter` world units: half the body
+/// plus a breath of clearance. One sizing rule for every bubble — enemy
+/// domes and the player's barrier alike — so the player's shield reads
+/// like any other shield. Always well inside the reflect ring
+/// ([`SHIELD_RADIUS`]), so the two never coincide when both are up.
+fn dome_radius(body_diameter: f32) -> f32 {
+    body_diameter * 0.5 + 4.0
+}
 
 /// Cyan — the shared shield language of domes and reflected shots.
 const REFLECT_TINT: LinearRgba = LinearRgba::new(0.13, 0.79, 1.0, 1.0);
@@ -142,7 +147,7 @@ fn spawn_domes(
     shields: Query<(Entity, &Sprite), Added<Shield>>,
 ) {
     for (entity, sprite) in &shields {
-        let radius = sprite.custom_size.unwrap_or(Vec2::splat(TILE_SIZE)).x * 0.5 + 4.0;
+        let radius = dome_radius(sprite.custom_size.unwrap_or(Vec2::splat(TILE_SIZE)).x);
         commands.spawn((
             EnemyDome,
             Mesh2d(meshes.add(Circle::new(radius))),
@@ -160,16 +165,17 @@ fn spawn_domes(
 }
 
 /// Spawn the player's reflect and barrier domes once, hidden until owned.
+#[allow(clippy::type_complexity)]
 fn spawn_player_domes(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ShieldDomeMaterial>>,
-    players: Query<Entity, Added<crate::Player>>,
+    players: Query<(Entity, &Sprite), Added<crate::Player>>,
 ) {
-    for entity in &players {
-        // The two domes differ in marker type, so they spawn separately:
-        // the reflect dome's uniforms are static (no plate pool), while the
-        // barrier dome's arcs follow the barrier pool.
+    for (entity, sprite) in &players {
+        // The barrier dome hugs the player's sprite — the same sizing rule
+        // as the enemy domes, unlike the gameplay-sized reflect ring below.
+        let barrier_radius = dome_radius(sprite.custom_size.unwrap_or(Vec2::splat(TILE_SIZE)).x);
         commands.spawn((
             ReflectDome,
             Mesh2d(meshes.add(Circle::new(SHIELD_RADIUS))),
@@ -185,7 +191,7 @@ fn spawn_player_domes(
         ));
         commands.spawn((
             BarrierDome,
-            Mesh2d(meshes.add(Circle::new(BARRIER_RADIUS))),
+            Mesh2d(meshes.add(Circle::new(barrier_radius))),
             MeshMaterial2d(materials.add(ShieldDomeMaterial::new(dome_data(
                 1,
                 1,
@@ -346,5 +352,21 @@ mod tests {
     fn shield_visibility_toggles() {
         assert_eq!(shield_visibility(true), Visibility::Inherited);
         assert_eq!(shield_visibility(false), Visibility::Hidden);
+    }
+
+    #[test]
+    fn the_barrier_dome_hugs_the_player_like_an_enemy_dome() {
+        // Regression: the barrier dome used a fixed 1.35-tile radius —
+        // over twice the player's own width, dwarfing the body it
+        // protected. It now shares the enemy domes' sizing rule: half the
+        // body plus a breath, so the player's bubble reads like any other
+        // shield.
+        let player_dome = dome_radius(TILE_SIZE * 0.6);
+        // Snug: beyond the body's half-width, but barely...
+        assert!(player_dome > TILE_SIZE * 0.6 * 0.5);
+        assert!(player_dome < TILE_SIZE * 0.6);
+        // ...and strictly inside the gameplay reflect ring, so the two
+        // domes never coincide when both are up.
+        assert!(player_dome < SHIELD_RADIUS);
     }
 }
