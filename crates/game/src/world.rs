@@ -6,8 +6,8 @@
 use std::collections::HashSet;
 
 use avian2d::prelude::{
-    Collider, CollidingEntities, CollisionLayers, Gravity, LinearVelocity, LockedAxes, Position,
-    RigidBody, Rotation, SleepingDisabled,
+    Collider, CollidingEntities, CollisionLayers, Friction, Gravity, LinearVelocity, LockedAxes,
+    Position, RigidBody, Rotation, SleepingDisabled,
 };
 use bevy::asset::RenderAssetUsages;
 use bevy::image::Image;
@@ -652,10 +652,15 @@ fn build_world(
             )
         })
         .collect();
+    // Frictionless walls: chase steering presses bodies into corners, and
+    // a nonzero contact coefficient lets static friction eat the tangential
+    // slide and pin them there. Combined (average) with the enemies' own
+    // zero friction, every wall contact glides.
     commands.spawn((
         WallBody,
         RigidBody::Static,
         Collider::compound(wall_rectangles),
+        Friction::ZERO,
         CollisionLayers::from_bits(LAYER_WALL, u32::MAX),
     ));
     // Parry rejects empty compounds, so the body only spawns when the
@@ -669,6 +674,7 @@ fn build_world(
                 (width, height),
                 config.tile_size,
             )),
+            Friction::ZERO,
             CollisionLayers::from_bits(LAYER_CRACKED_WALL, u32::MAX),
         ));
     }
@@ -689,6 +695,7 @@ fn build_world(
             RigidBody::Static,
             Collider::rectangle(config.tile_size, config.tile_size),
             Transform::from_xyz(door_pos.x, door_pos.y, 0.0),
+            Friction::ZERO,
             CollisionLayers::from_bits(LAYER_WALL, u32::MAX),
         ));
         crate::enemies::spawn_vault_mob(commands, vault, (width, height), config, depth);

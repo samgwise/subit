@@ -5,7 +5,8 @@
 use std::time::Duration;
 
 use avian2d::prelude::{
-    Collider, CollisionLayers, LinearVelocity, LockedAxes, Position, RigidBody, SleepingDisabled,
+    Collider, CollisionLayers, Friction, LinearVelocity, LockedAxes, Position, RigidBody,
+    SleepingDisabled,
 };
 use bevy::prelude::*;
 use rand::RngExt;
@@ -164,6 +165,13 @@ pub struct Enemy;
 /// projectiles.
 #[derive(Component)]
 pub struct Thrower;
+
+/// The enemy's collider radius in world units, kept for steering: straight
+/// pursuit is only taken when a body-width sight corridor is clear (see
+/// `seek_velocity`), so corners the ray grazes but the body would catch
+/// fall back to the flow field.
+#[derive(Component)]
+struct BodyRadius(f32);
 
 /// Slow, tough bruiser: soaks cleaves that would delete lesser enemies.
 #[derive(Component)]
@@ -434,6 +442,7 @@ fn spawn_enemy(
         Role::Tank => (TANK_HP, TANK_COLOUR, TANK_SIZE_TILES),
     };
     let size = tile_size * size_tiles;
+    let radius = size * 0.5;
     let mut enemy = commands.spawn((
         Enemy,
         Health { hp, max: hp },
@@ -453,7 +462,13 @@ fn spawn_enemy(
         RigidBody::Dynamic,
         // Circles, not boxes: round agents glide around tile corners
         // instead of snagging on their vertices.
-        Collider::circle(size * 0.5),
+        Collider::circle(radius),
+        BodyRadius(radius),
+        // Frictionless: chase steering is re-aimed every frame, so any
+        // wall contact would otherwise let static friction eat the
+        // tangential slide and pin the enemy at the corner it pressed
+        // into (the walls are frictionless too — see `build_world`).
+        Friction::ZERO,
         LockedAxes::ROTATION_LOCKED,
         SleepingDisabled,
         CollisionLayers::from_bits(
@@ -672,6 +687,7 @@ fn enemy_seek(
             &mut LinearVelocity,
             &Health,
             &Speed,
+            &BodyRadius,
             &BaseColour,
             &mut Sprite,
             Option<&mut Knockback>,
@@ -680,7 +696,8 @@ fn enemy_seek(
     >,
 ) {
     let player_pos = player.0;
-    for (pos, mut velocity, health, speed, base, mut sprite, mut knockback) in &mut enemies {
+    for (pos, mut velocity, health, speed, radius, base, mut sprite, mut knockback) in &mut enemies
+    {
         let to_player = player_pos - pos.0;
         let seek = seek_velocity(
             &map,
@@ -688,6 +705,7 @@ fn enemy_seek(
             pos.0,
             to_player,
             speed.0,
+            radius.0,
             &flow.field,
         );
         let kick = decay_knockback(knockback.as_deref_mut(), time.delta_secs());
@@ -711,6 +729,7 @@ fn thrower_seek(
             &Position,
             &mut LinearVelocity,
             &Health,
+            &BodyRadius,
             &BaseColour,
             &mut Sprite,
             Option<&mut Knockback>,
@@ -719,7 +738,7 @@ fn thrower_seek(
     >,
 ) {
     let player_pos = player.0;
-    for (pos, mut velocity, health, base, mut sprite, mut knockback) in &mut throwers {
+    for (pos, mut velocity, health, radius, base, mut sprite, mut knockback) in &mut throwers {
         let to_player = player_pos - pos.0;
         let seek = if to_player.length() <= THROW_RANGE {
             Vec2::ZERO // in range: hold position
@@ -730,6 +749,7 @@ fn thrower_seek(
                 pos.0,
                 to_player,
                 THROWER_SPEED,
+                radius.0,
                 &flow.field,
             )
         };
@@ -740,15 +760,17 @@ fn thrower_seek(
 }
 
 /// Steering for one pursuer: straight at the player when the sight line is
-/// clear (smooth pursuit, no grid quantisation), otherwise a flow-field
-/// step that routes around bends instead of pressing into the nearest
-/// corner.
+/// clear with room for the body (smooth pursuit, no grid quantisation),
+/// otherwise a flow-field step that routes around bends instead of
+/// pressing into the nearest corner. `radius` is the enemy's collider
+/// radius in world units.
 fn seek_velocity(
     map: &WorldMapRes,
     tile_size: f32,
     position: Vec2,
     to_player: Vec2,
     speed: f32,
+    radius: f32,
     flow: &FlowField,
 ) -> Vec2 {
     if to_player == Vec2::ZERO {
@@ -756,13 +778,24 @@ fn seek_velocity(
     }
     let (width, height) = (map.map.grid.width(), map.map.grid.height());
     let units = tile_units((width, height), tile_size, position);
-    let player_units = tile_units((width, height), tile_size, position + to_player);
-    let clear = wfc::line_of_sight(
-        &map.map.grid,
-        &map.prototypes,
-        (units.x, units.y),
-        (player_units.x, player_units.y),
-    );
+    // A zero-width ray can clear a wall corner the *body* cannot: pursuit
+    // through such a gap grinds the circle on the corner vertex and pins
+    // the enemy there. Straight pursuit is only allowed when a body-width
+    // sight corridor is clear — the centre ray plus rays offset by the
+    // collider radius to each side; anything narrower descends the flow
+    // field, which steers through the gap the body actually fits.
+    let sight = |offset: Vec2| -> bool {
+        let from = tile_units((width, height), tile_size, position + offset);
+        let to = tile_units((width, height), tile_size, position + to_player + offset);
+        wfc::line_of_sight(
+            &map.map.grid,
+            &map.prototypes,
+            (from.x, from.y),
+            (to.x, to.y),
+        )
+    };
+    let side = to_player.normalize_or_zero().perp() * radius;
+    let clear = sight(Vec2::ZERO) && sight(side) && sight(-side);
     if clear {
         to_player.normalize() * speed
     } else {
@@ -934,6 +967,12 @@ mod tests {
         )
     }
 
+    /// A chaser's collider radius in world units (the tests' stand-in for
+    /// the `BodyRadius` the seek systems read).
+    fn chaser_radius() -> f32 {
+        TILE_SIZE * ENEMY_SIZE_TILES * 0.5
+    }
+
     #[test]
     fn seek_drives_straight_when_sight_is_clear() {
         let (map, flow) = test_map(None);
@@ -941,11 +980,27 @@ mod tests {
         // clear sight, straight pursuit at full speed.
         let position = Vec2::new(0.0, 0.0);
         let player = Vec2::new(TILE_SIZE, 0.0);
-        let velocity = seek_velocity(&map, TILE_SIZE, position, player - position, 120.0, &flow);
+        let velocity = seek_velocity(
+            &map,
+            TILE_SIZE,
+            position,
+            player - position,
+            120.0,
+            chaser_radius(),
+            &flow,
+        );
         assert!((velocity.x - 120.0).abs() < 1e-4);
         assert!(velocity.y.abs() < 1e-4);
         // No separation: no seek at all.
-        let velocity = seek_velocity(&map, TILE_SIZE, position, Vec2::ZERO, 120.0, &flow);
+        let velocity = seek_velocity(
+            &map,
+            TILE_SIZE,
+            position,
+            Vec2::ZERO,
+            120.0,
+            chaser_radius(),
+            &flow,
+        );
         assert_eq!(velocity, Vec2::ZERO);
     }
 
@@ -956,11 +1011,69 @@ mod tests {
         // Enemy on tile (0,2): world x = (0.5 - 2.5) * 32 = -64.
         let position = Vec2::new(-64.0, 0.0);
         let player = Vec2::new(TILE_SIZE, 0.0);
-        let velocity = seek_velocity(&map, TILE_SIZE, position, player - position, 120.0, &flow);
+        let velocity = seek_velocity(
+            &map,
+            TILE_SIZE,
+            position,
+            player - position,
+            120.0,
+            chaser_radius(),
+            &flow,
+        );
         // The flow field routes up-right through the open corner above the
         // wall — a diagonal descent.
         assert!((velocity.x - 120.0 / core::f32::consts::SQRT_2).abs() < 1e-4);
         assert!((velocity.y + 120.0 / core::f32::consts::SQRT_2).abs() < 1e-4);
+    }
+
+    #[test]
+    fn seek_falls_back_to_the_flow_field_when_the_body_cannot_fit() {
+        // Regression: a zero-width sight ray clears a wall corner the body
+        // does not, and straight pursuit through such a gap ground the
+        // enemy on the corner vertex and pinned it there. Here the centre
+        // ray from (1.5, 1.5) to (3.5, 1.98) passes ~0.14 tiles under the
+        // wall tile (2,2)'s corner while the body is 0.3 — the pursuit
+        // must descend the flow field instead: east along the row, sliding
+        // under the corner.
+        let (map, flow) = test_map(Some((2, 2)));
+        let position = Vec2::new(-TILE_SIZE, -TILE_SIZE); // units (1.5, 1.5)
+        let player = Vec2::new(TILE_SIZE, (1.98 - 2.5) * TILE_SIZE); // units (3.5, 1.98)
+        let velocity = seek_velocity(
+            &map,
+            TILE_SIZE,
+            position,
+            player - position,
+            ENEMY_SPEED,
+            chaser_radius(),
+            &flow,
+        );
+        // The flow field routes east through the cell centres, keeping the
+        // body clear of the corner — not up-right into it.
+        assert!((velocity.x - ENEMY_SPEED).abs() < 1e-4);
+        assert!(velocity.y.abs() < 1e-4);
+    }
+
+    #[test]
+    fn seek_keeps_straight_pursuit_when_the_body_fits() {
+        // The guard must not over-refuse: when the centre and both
+        // body-radius offset rays are clear, smooth direct pursuit holds
+        // (the flow field would quantise the same run to cell centres).
+        let (map, flow) = test_map(Some((2, 2)));
+        let position = Vec2::new(-TILE_SIZE, -TILE_SIZE); // units (1.5, 1.5)
+        let player = Vec2::new(TILE_SIZE, -0.9 * TILE_SIZE); // units (3.5, 1.6)
+        let to_player = player - position;
+        let velocity = seek_velocity(
+            &map,
+            TILE_SIZE,
+            position,
+            to_player,
+            ENEMY_SPEED,
+            chaser_radius(),
+            &flow,
+        );
+        let expected = to_player.normalize() * ENEMY_SPEED;
+        assert!((velocity.x - expected.x).abs() < 1e-3);
+        assert!((velocity.y - expected.y).abs() < 1e-3);
     }
 
     #[test]
