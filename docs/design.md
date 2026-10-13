@@ -184,6 +184,14 @@ depth, where the mob grows and the run continues with all progression intact.
 - Unlock toasts: buying an ability in the Tab menu announces it on the
   first frame back in combat — "DASH UNLOCKED — SPACE" (pad: "— LB") —
   holding about 2 s and fading over 0.5 s.
+- First-run hints: for a player the tray can't help yet (every icon dark),
+  a bottom-centre sequence — move, then cleave, then shield, each line
+  naming both bindings — completes on the actions themselves (any order,
+  early signals skip ahead) and fades away for good once all three land.
+  Per-launch only; no persistence.
+- The skills menu's upgrade rows append the trigger they tune
+  ("— RMB / LT"), so the menu doubles as the full control reference; the
+  unlock rows already name their key.
 
 ## Combat
 

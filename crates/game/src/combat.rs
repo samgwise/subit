@@ -335,10 +335,7 @@ fn player_attack(
 ) {
     cooldown.0.tick(time.delta());
     let pressed = mouse.just_pressed(MouseButton::Left)
-        || crate::input::just_pressed(&pads, &[
-            GamepadButton::RightTrigger,
-            GamepadButton::South,
-        ]);
+        || crate::input::just_pressed(&pads, crate::input::CLEAVE_PAD_BUTTONS);
     if !pressed || !cooldown.0.is_finished() {
         return;
     }
@@ -617,7 +614,7 @@ fn update_shield(
     mut shield: ResMut<PlayerShield>,
 ) {
     let pressed = mouse.just_pressed(MouseButton::Right)
-        || crate::input::just_pressed(&pads, &[GamepadButton::LeftTrigger]);
+        || crate::input::just_pressed(&pads, crate::input::SHIELD_PAD_BUTTONS);
     if shield.is_active() {
         shield.active.tick(time.delta());
         // A second press drops it early; the duration ends it regardless —

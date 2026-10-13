@@ -14,6 +14,7 @@ pub mod dissolve;
 pub mod drones;
 pub mod drops;
 pub mod enemies;
+pub mod hints;
 pub mod hud;
 pub mod input;
 pub mod neon_material;
@@ -51,6 +52,7 @@ pub fn run() {
             bevy_ecs_tilemap::prelude::TilemapPlugin,
             avian2d::PhysicsPlugins::default(),
         ))
+        // Two groups: the plugin tuple has outgrown Bevy's arity limit.
         .add_plugins((
             bridge::EnsembleBridgePlugin,
             input::InputPlugin,
@@ -60,11 +62,14 @@ pub fn run() {
             projectiles::ProjectilePlugin,
             drones::DronePlugin,
             dissolve::DissolvePlugin,
+        ))
+        .add_plugins((
             progression::ProgressionPlugin,
             drops::DropsPlugin,
             skills::SkillsPlugin,
             hud::HudPlugin,
             ability_tray::AbilityTrayPlugin,
+            hints::HintsPlugin,
             shield_fx::ShieldFxPlugin,
             corruption::CorruptionPlugin,
         ))

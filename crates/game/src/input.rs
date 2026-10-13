@@ -154,6 +154,15 @@ pub fn just_pressed(pads: &Query<&Gamepad>, buttons: &[GamepadButton]) -> bool {
         .any(|pad| buttons.iter().any(|b| pad.digital().just_pressed(*b)))
 }
 
+/// The pad edges that fire the cleave, beside the left mouse button — one
+/// source shared by the combat trigger and the first-run hints, so the
+/// mapping can never drift between hint and action.
+pub const CLEAVE_PAD_BUTTONS: &[GamepadButton] =
+    &[GamepadButton::RightTrigger, GamepadButton::South];
+
+/// The pad edges that raise the shield, beside the right mouse button.
+pub const SHIELD_PAD_BUTTONS: &[GamepadButton] = &[GamepadButton::LeftTrigger];
+
 /// Write `MoveIntent` from WASD plus the left stick.
 fn update_move_intent(
     input: Res<ButtonInput<KeyCode>>,

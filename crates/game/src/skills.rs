@@ -398,9 +398,23 @@ impl SkillRow {
             .is_some_and(|cost| points >= cost)
     }
 
+    /// The ability trigger this row tunes, so the menu reads as a full
+    /// control reference — `None` for the passive rows and the unlock
+    /// rows, which already name their key.
+    fn keybind(&self) -> Option<&'static str> {
+        match self {
+            SkillRow::Cleave | SkillRow::CleaveReach => Some("LMB / RT"),
+            SkillRow::Shield | SkillRow::ShieldDuration => Some("RMB / LT"),
+            SkillRow::DashCooldown => Some("SPACE / LB"),
+            SkillRow::GrenadeDamage => Some("G / RB"),
+            SkillRow::CloakSneak | SkillRow::CloakDuration => Some("C / L3"),
+            _ => None,
+        }
+    }
+
     /// Menu text, including the row's live level and cost.
     fn label(&self, levels: &SkillLevels, unlocks: &AbilityUnlocks) -> String {
-        match self {
+        let text = match self {
             SkillRow::Cleave => levelled_label(
                 "Cleave damage",
                 &format!("+{CLEAVE_DAMAGE_PER_POINT}"),
@@ -502,6 +516,10 @@ impl SkillRow {
                     )
                 }
             }
+        };
+        match self.keybind() {
+            Some(key) => format!("{text} — {key}"),
+            None => text,
         }
     }
 }
@@ -740,6 +758,31 @@ fn refresh_menu(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn upgrade_rows_name_their_trigger_and_the_others_do_not() {
+        assert_eq!(SkillRow::Cleave.keybind(), Some("LMB / RT"));
+        assert_eq!(SkillRow::Shield.keybind(), Some("RMB / LT"));
+        assert_eq!(SkillRow::DashCooldown.keybind(), Some("SPACE / LB"));
+        assert_eq!(SkillRow::GrenadeDamage.keybind(), Some("G / RB"));
+        assert_eq!(SkillRow::CloakSneak.keybind(), Some("C / L3"));
+        // The unlock rows already name their key; the passives name none.
+        assert_eq!(SkillRow::Dash.keybind(), None);
+        assert_eq!(SkillRow::Vitality.keybind(), None);
+        assert_eq!(SkillRow::Barrier.keybind(), None);
+    }
+
+    #[test]
+    fn labels_append_the_trigger_where_one_exists() {
+        let levels = SkillLevels::default();
+        let unlocks = AbilityUnlocks::default();
+        let shield = SkillRow::Shield.label(&levels, &unlocks);
+        assert!(shield.ends_with("— RMB / LT"), "{shield}");
+        // An unlock row keeps its own bracketed key, un-duplicated.
+        let dash = SkillRow::Dash.label(&levels, &unlocks);
+        assert!(dash.contains("[Space]"), "{dash}");
+        assert!(!dash.contains("— "), "{dash}");
+    }
 
     #[test]
     fn cleave_damage_grows_and_shield_cooldown_shrinks_to_a_floor() {
