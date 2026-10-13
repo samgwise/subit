@@ -130,8 +130,8 @@ depth, where the mob grows and the run continues with all progression intact.
 - Barrier (unlock: 3 points): a regenerating 10-plate pool (5 HP per plate)
   that soaks damage before health — the player's version of the enemy
   shields. Regrows one plate per 2.5 s without damage; shown as a violet
-  HUD bar and a violet energy dome (slightly wider than the reflect dome)
-  while owned with plates remaining.
+  HUD bar and a violet energy dome hugging the player (the same sizing
+  rule as the enemy domes) while owned with plates remaining.
 - Cloak (unlock: 5 points, C): toggling C engages it for up to its
   duration (3 s, +1 s per point, cap 4) — the enemy notice range shrinks
   to 6 path steps while it is up; the sneak skill tightens it by a step
@@ -169,6 +169,21 @@ depth, where the mob grows and the run continues with all progression intact.
 - Standard-gamepad only — no Deck-specific code: the Steam Deck (native or
   through Proton's Steam Input) and any XInput pad land in the same input
   stack.
+
+## Ability tray and unlock toasts
+
+- A bottom-right tray of icons — shield, dash, grenade, nova, cloak — shows
+  what the player can do and when: locked abilities sit dark and keyless;
+  owned ones wear their keybind (keyboard or pad glyphs, following the live
+  device); a cooldown draws a dark veil over the icon that drains to zero
+  with a one-decimal seconds countdown, so the next dash or grenade can be
+  timed against the swarm. Cleave has no icon (its 0.25 s cooldown is
+  noise) and the passives stay off the tray — the barrier has its bar and
+  the toast covers the learning moment. The tray runs only while the world
+  does, freezing with the pause like the timers it mirrors.
+- Unlock toasts: buying an ability in the Tab menu announces it on the
+  first frame back in combat — "DASH UNLOCKED — SPACE" (pad: "— LB") —
+  holding about 2 s and fading over 0.5 s.
 
 ## Combat
 
@@ -567,7 +582,7 @@ at note attacks. The percussive voices stay velocity-only.
 | Chaser / thrower / tank speed, throw range, throw cooldown | 120 / 70 / 60 / 6 tiles / 2 s |
 | Thrower / tank frequency | every 4th spawn (every 3rd from depth 2) / every 8th from depth 1 |
 | Enemy shield: plates / plate HP / regen / spawn chance | 8 / 5 / one plate per 2.5 s / 5% + 5%×depth (cap 40%) |
-| Shield dome: hex spin / hit flash decay / barrier radius | 0.2 rad/s / ~0.3 s (decay 8) / 1.35 tiles |
+|| Shield dome: hex spin / hit flash decay / dome radius rule | 0.2 rad/s / ~0.3 s (decay 8) / half the body + 4 px |
 | Player barrier: plates / regen / unlock cost | 10 / one plate per 2.5 s / 3 pts |
 | Vitality: max HP per point | +25 (heals the same) |
 | Projectile: speed / bounces / lifetime / player damage | 240 u/s / 3 / 16 s / 20 |

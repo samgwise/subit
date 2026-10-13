@@ -6,6 +6,7 @@
 //! as the shader preview — and future integration tests — can reuse the
 //! real modules instead of duplicating them.
 
+pub mod ability_tray;
 pub mod bridge;
 pub mod combat;
 pub mod corruption;
@@ -63,6 +64,7 @@ pub fn run() {
             drops::DropsPlugin,
             skills::SkillsPlugin,
             hud::HudPlugin,
+            ability_tray::AbilityTrayPlugin,
             shield_fx::ShieldFxPlugin,
             corruption::CorruptionPlugin,
         ))

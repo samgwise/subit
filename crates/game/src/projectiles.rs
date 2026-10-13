@@ -18,7 +18,9 @@ use bevy::prelude::*;
 use bevy_ecs_tilemap::prelude::{MaterialTilemapHandle, TileStorage};
 
 use crate::bridge::{BridgeTx, GameAudioEvent};
-use crate::combat::{ComboState, PlayerShield, PlayerVitals, SHIELD_RADIUS, damage_player};
+use crate::combat::{
+    ComboState, CooldownState, PlayerShield, PlayerVitals, SHIELD_RADIUS, damage_player,
+};
 use crate::enemies::{
     Aggro, Health, PROVOKED_SECS, Provoked, Shield, absorb_damage, kill_enemy, within_earshot,
 };
@@ -85,7 +87,14 @@ struct Fuse(Timer);
 
 /// Grenade throw cooldown.
 #[derive(Resource, Debug)]
-struct GrenadeCooldown(Timer);
+pub(crate) struct GrenadeCooldown(Timer);
+
+impl GrenadeCooldown {
+    /// Where the grenade cooldown stands (see `combat::CooldownState`).
+    pub(crate) fn cooldown_state(&self) -> CooldownState {
+        CooldownState::of(&self.0)
+    }
+}
 
 /// Transient blast flash: an expanding circle at the detonation point.
 #[derive(Resource, Debug, Default)]
@@ -751,6 +760,23 @@ fn projectile_lifetime(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn grenade_cooldown_state_runs_full_to_empty() {
+        let mut cooldown =
+            GrenadeCooldown(Timer::from_seconds(GRENADE_COOLDOWN_SECS, TimerMode::Once));
+        // Just thrown: the whole cooldown ahead...
+        cooldown.0.reset();
+        assert!((cooldown.cooldown_state().remaining - 1.0).abs() < 1e-6);
+        // ...and it drains to ready.
+        cooldown
+            .0
+            .tick(Duration::from_secs_f64(GRENADE_COOLDOWN_SECS as f64));
+        let state = cooldown.cooldown_state();
+        assert_eq!(state.remaining, 0.0);
+        assert_eq!(state.seconds, 0.0);
+    }
 
     #[test]
     fn wall_bounces_count_down_then_fail() {

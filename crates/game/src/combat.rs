@@ -138,6 +138,30 @@ impl PlayerShield {
         self.active
             .set_duration(Duration::from_secs_f64(secs as f64));
     }
+
+    /// Where the shield's cooldown stands (see [`CooldownState`]).
+    pub(crate) fn cooldown_state(&self) -> CooldownState {
+        CooldownState::of(&self.cooldown)
+    }
+}
+
+/// A cooldown read-out for the ability tray: the fraction of the cooldown
+/// still to run (1.0 just used, 0.0 ready) and the seconds left on the
+/// clock, so the wipe and its countdown draw from one consistent read.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct CooldownState {
+    pub remaining: f32,
+    pub seconds: f32,
+}
+
+impl CooldownState {
+    /// Read a cooldown timer. A rested (expired) timer reads 0/0 — ready.
+    pub(crate) fn of(timer: &Timer) -> Self {
+        Self {
+            remaining: 1.0 - timer.fraction(),
+            seconds: timer.remaining().as_secs_f32(),
+        }
+    }
 }
 
 /// Cooldown gating consecutive cleave swings.
@@ -192,7 +216,14 @@ const NOVA_FX_SECS: f32 = 0.3;
 
 /// Nova ability cooldown.
 #[derive(Resource, Debug)]
-struct NovaState(Timer);
+pub(crate) struct NovaState(Timer);
+
+impl NovaState {
+    /// Where the nova cooldown stands (see [`CooldownState`]).
+    pub(crate) fn cooldown_state(&self) -> CooldownState {
+        CooldownState::of(&self.0)
+    }
+}
 
 /// Transient nova visual: an expanding ring from the blast centre.
 #[derive(Resource, Debug, Default)]
@@ -838,6 +869,30 @@ mod tests {
     /// A fixed cone for the arc tests — a 90-degree cone at 96 units.
     const TEST_HALF_ANGLE: f32 = 45.0_f32.to_radians();
     const TEST_RADIUS: f32 = 96.0;
+
+    #[test]
+    fn cooldown_states_read_from_fresh_to_spent_timers() {
+        // A rested (expired) timer: ready — nothing left to run.
+        let rested = CooldownState::of(&expired(SHIELD_COOLDOWN_SECS));
+        assert_eq!(rested.remaining, 0.0);
+        assert_eq!(rested.seconds, 0.0);
+        // A just-used timer: the whole cooldown ahead.
+        let mut timer = expired(SHIELD_COOLDOWN_SECS);
+        timer.reset();
+        let spent = CooldownState::of(&timer);
+        assert!((spent.remaining - 1.0).abs() < 1e-6);
+        assert!((spent.seconds - SHIELD_COOLDOWN_SECS).abs() < 1e-4);
+        // Halfway through, the remaining fraction tracks the tick.
+        timer.tick(Duration::from_secs_f64(SHIELD_COOLDOWN_SECS as f64 / 2.0));
+        let mid = CooldownState::of(&timer);
+        assert!((mid.remaining - 0.5).abs() < 1e-5);
+        // The shield's own read-out flows through the same helper.
+        let shield = PlayerShield {
+            active: expired(SHIELD_ACTIVE_SECS),
+            cooldown: timer,
+        };
+        assert!((shield.cooldown_state().remaining - 0.5).abs() < 1e-5);
+    }
 
     /// A 5x5 all-floor map with walls forced at the given cells.
     fn phase_map(walls: &[(u32, u32)]) -> WorldMapRes {
