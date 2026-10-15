@@ -275,7 +275,6 @@ impl Plugin for CombatPlugin {
                 cloak_fx.after(player_vitals_fx),
                 barrier_regen,
                 contact_damage,
-                player_speed_telemetry,
             )
                 .run_if(in_state(crate::skills::GameState::Playing)),
         );
@@ -840,28 +839,6 @@ fn contact_damage(
         bridge.send(GameAudioEvent::Death);
         tracing::info!("player died; respawned at spawn point");
     }
-}
-
-/// Stream player speed to the audio chain (throttled; the bridge's Stream
-/// signal type tolerates drops under congestion).
-fn player_speed_telemetry(
-    bridge: Res<BridgeTx>,
-    time: Res<Time>,
-    mut last_send: Local<Option<f32>>,
-    player: Single<&LinearVelocity, With<crate::Player>>,
-) {
-    // ~10 Hz is plenty for filter modulation and keeps the channel cheap.
-    // Never-sent is minus infinity, so the first call passes the throttle.
-    let elapsed = time.elapsed_secs();
-    let last = last_send.unwrap_or(f32::NEG_INFINITY);
-    if elapsed - last < 0.1 {
-        return;
-    }
-    *last_send = Some(elapsed);
-    bridge.send(GameAudioEvent::PlayerTelemetry {
-        speed: player.0.length(),
-        max_speed: crate::world::PLAYER_SPEED,
-    });
 }
 
 #[cfg(test)]

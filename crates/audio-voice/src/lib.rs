@@ -234,15 +234,6 @@ pub fn perform_event(event: GameEvent) -> NoteEvent {
     }
 }
 
-/// Map player speed onto the 7-bit CC range: stationary is 0, full speed
-/// (the game's `PLAYER_SPEED`) is 127. Out-of-range input clamps.
-pub fn speed_to_cc(speed: f32, max_speed: f32) -> u8 {
-    if max_speed <= 0.0 {
-        return 0;
-    }
-    (speed / max_speed * 127.0).round().clamp(0.0, 127.0) as u8
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -307,14 +298,4 @@ mod tests {
         assert!(reflect.velocity > throw.velocity);
     }
 
-    #[test]
-    fn speed_maps_onto_the_full_cc_range() {
-        assert_eq!(speed_to_cc(0.0, 240.0), 0);
-        assert_eq!(speed_to_cc(240.0, 240.0), 127);
-        assert_eq!(speed_to_cc(120.0, 240.0), 64);
-        // Beyond full speed and garbage configs clamp safely.
-        assert_eq!(speed_to_cc(480.0, 240.0), 127);
-        assert_eq!(speed_to_cc(10.0, 0.0), 0);
-        assert_eq!(speed_to_cc(-5.0, 240.0), 0);
-    }
 }

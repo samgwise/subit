@@ -22,22 +22,16 @@ use rand::SeedableRng;
 use rand::rngs::SmallRng;
 use audio_voice::music::{
     self, change_point, current_slot_period_secs, retune, Engine, HarmonySource, MusicState,
-    CHANNEL_AIRY, CHANNEL_DISTANT, CHANNEL_PATTERN_B, CROTCHET_SECS, QUAVER_SECS, STUB_BPM,
+    CHANNEL_AIRY, CHANNEL_BASS, CHANNEL_DISTANT, CHANNEL_PATTERN_B, CROTCHET_SECS, QUAVER_SECS,
+    STUB_BPM,
 };
-use audio_voice::{
-    GameEvent, EXPRESSION_CC, MOD_WHEEL_CC, NoteEvent, Quantiser, Subdivision, perform_event,
-    speed_to_cc,
-};
+use audio_voice::{GameEvent, EXPRESSION_CC, MOD_WHEEL_CC, NoteEvent, Quantiser, Subdivision, perform_event};
 use ensemble_client::Hub;
 use ensemble_core::protocol::*;
 
 /// Subscription pattern covering everything the game publishes: combat events
 /// under `/subit/game/event/*` and telemetry under `/subit/game/telemetry/*`.
 const GAME_EVENTS_PATTERN: &str = "/subit/game/**";
-
-/// Speed the game moves the player at; the CC mapping's full-scale value
-/// (matches `world::PLAYER_SPEED` in the game crate).
-const DEFAULT_MAX_SPEED: f32 = 240.0;
 
 #[tokio::main]
 async fn main() {
@@ -133,18 +127,6 @@ async fn main() {
                 };
 
                 match address.as_str() {
-                    "/subit/game/telemetry/player" => {
-                        let speed = get_float(&payload, "speed").unwrap_or(0.0) as f32;
-                        let max_speed = get_float(&payload, "max_speed")
-                            .map(|m| m as f32)
-                            .unwrap_or(DEFAULT_MAX_SPEED);
-                        let cc = midi_cc(0, MOD_WHEEL_CC, speed_to_cc(speed, max_speed));
-                        if let Err(err) = hub.send_action(cc).await {
-                            tracing::error!("failed to forward speed CC: {err:?}");
-                        } else {
-                            tracing::debug!(speed, "forwarded speed as mod wheel CC");
-                        }
-                    }
                     "/subit/game/telemetry/world" => {
                         tracing::info!(
                             integrity = get_float(&payload, "integrity").unwrap_or(0.0),
@@ -282,12 +264,23 @@ async fn main() {
                 slot_start = slot_end;
                 slot_end = end;
 
+                // The bass channel's mod wheel is the phrase's own: the
+                // dynamic arc shapes the filter across the slot, lifted
+                // into the next phrase when the arc ends settled — one
+                // point per quaver, on the bass pulse grid.
+                for (at, wheel) in music::wheel_trajectory(&score, slot_start, slot_end) {
+                    let msg = midi_cc(CHANNEL_BASS, MOD_WHEEL_CC, wheel, slot_start + at);
+                    if let Err(err) = hub.send_action(msg).await {
+                        tracing::error!("failed to schedule the bass mod wheel: {err:?}");
+                    }
+                }
+
                 // The pads breathe: the sustained channels' expression
                 // follows the phrase arc through the general dynamic.
                 score.episode = matches!(form, Form::Episode { .. });
                 let level = music::expression_level(&score);
                 for channel in [CHANNEL_DISTANT, CHANNEL_AIRY] {
-                    let msg = midi_cc(channel, EXPRESSION_CC, level);
+                    let msg = midi_cc(channel, EXPRESSION_CC, level, 0.0);
                     if let Err(err) = hub.send_action(msg).await {
                         tracing::error!("failed to send expression: {err:?}");
                     }
@@ -381,7 +374,7 @@ async fn main() {
                             score.episode = matches!(form, Form::Episode { .. });
                             let level = music::expression_level(&score);
                             for channel in [CHANNEL_DISTANT, CHANNEL_AIRY] {
-                                let msg = midi_cc(channel, EXPRESSION_CC, level);
+                                let msg = midi_cc(channel, EXPRESSION_CC, level, 0.0);
                                 if let Err(err) = hub.send_action(msg).await {
                                     tracing::error!("failed to send expression: {err:?}");
                                 }
@@ -465,12 +458,12 @@ fn midi_note_off(channel: u8, note: u8, when: f64) -> WireMessage {
     )
 }
 
-/// Build an immediate `/midi/cc` action for the MIDI bridge.
-fn midi_cc(channel: u8, controller: u8, value: u8) -> WireMessage {
+/// Build a (possibly timestamped) `/midi/cc` action for the MIDI bridge.
+fn midi_cc(channel: u8, controller: u8, value: u8, when: f64) -> WireMessage {
     action(
         "/midi/cc",
         SignalType::Event,
-        0.0,
+        when,
         Value::Tuple(vec![
             Value::Integer(channel as i64),
             Value::Integer(controller as i64),
@@ -528,7 +521,7 @@ mod tests {
 
     #[test]
     fn cc_actions_carry_a_three_byte_tuple() {
-        let msg = midi_cc(0, MOD_WHEEL_CC, 96);
+        let msg = midi_cc(0, MOD_WHEEL_CC, 96, 0.0);
         let Value::Map(map) = &msg.payload else {
             panic!("expected map payload");
         };

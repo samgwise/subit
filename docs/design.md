@@ -367,7 +367,6 @@ generative score runs continuously underneath the one-shot stabs (below).
 | Transmitter drone goes offline | `/subit/game/event/action` `drone_down` (event) | Glitchy fall — note 40, vel 100, 0.35 s |
 | Transmitter drone rejoins | `/subit/game/event/action` `drone_online` (event) | Rising blip — note 76, vel 85, 0.2 s |
 | Vault door opens | `/subit/game/event/action` `vault_open` (event) | Unlock-and-slide chime — note 70, vel 90, 0.3 s |
-| Player speed (≈10 Hz) | `/subit/game/telemetry/player` `player_speed` (stream) | Mod-wheel CC1, full scale at 240 u/s |
 | Aggro locks (≈10 Hz, on change) | `/subit/game/telemetry/aggro` `aggro_locks` (stream) | Conducts the generative score (below) |
 | Player death (respawn) | `/subit/game/event/action` `death` (event) | The darkest fall stab — note 31, vel 120, 0.6 s |
 | Objective progress (slow field, on 1% change) | `/subit/game/telemetry/objective` `objective_progress` (param) | The composer's run arc (below) |
@@ -498,8 +497,12 @@ minute-long sampler rollbacks), `OLLAMA_DISABLED`.
 
 Channel map (one synth each in REAPER): 1 bass, 2 distant, 3 bell,
 4 airy, 5 pattern A, 6 pattern B, 7 one-shot combat fx. The mod wheel
-(player speed) stays on channel 1 — the bass synth's filter tracks
-motion.
+on channel 1 is the bass's own and belongs to the phrase, not the player:
+the voice daemon schedules its trajectory per chord slot from the phrase's
+dynamic arc (one point per quaver, on the bass pulse grid), and a phrase
+whose arc ends settled is lifted into the next — a monotonic rise across
+its final slot to the ceiling, so the boundary is carried. An arc already
+ending high needs no lift.
 
 ### The three voices — the pad becomes an arrangement
 
@@ -570,7 +573,8 @@ at note attacks. The percussive voices stay velocity-only.
 ||| Vault: min island / carved interior / mob / door open radius | 12 cells / 5×3 / 3 + 1 per 3 depths (cap 5) / 1.5 tiles |
 | Death dissolve | ~0.5 s, corruption-green eating edge |
 | Score: chord period / pattern gates / rhythm hold / smoothing | 8 → 6 → 4 → 2 crotchets, then 3+2 / 3+3+2 / 3+2+2 quavers (additive past 0.95 intensity) / A ≥1 lock, B ≥3 / 3 s before dropping down / τ 0.5 s attack, 8 s release |
-| Bass: pulse rate / relaxed figure / gate | quavers / 6 then rest (periods of 3+ beats), continuous below / 0.6 × quaver |
+|| Bass: pulse rate / relaxed figure / gate | quavers / 6 then rest (periods of 3+ beats), continuous below / 0.6 × quaver |
+||| Bass mod wheel: floor / lift rule | 24 CC / the phrase arc; a settled final slot rises monotonically to 127 |
 | Degraded zone: chromatic rotation | ±3 semitones per mapping, hash of the pitch class |
 | Composer: phrase / replan margin / request timeout | 4–8 slots (17-chord vocabulary) / 2 slots / 30 s |
 | Objective progress | 1 − BFS steps/initial, clamped 0–1, published on 1% change (Param) |

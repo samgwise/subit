@@ -144,16 +144,22 @@ pub fn general_dynamic(intensity: f32, episode: bool) -> f32 {
 /// normalised to its own control hull and remapped into the multiplier
 /// band — a rising curve is a crescendo, a falling one a die-away.
 pub fn phrase_dynamic(curve: &Curve, t: f64) -> f32 {
+    PHRASE_DYNAMIC_MIN + (PHRASE_DYNAMIC_MAX - PHRASE_DYNAMIC_MIN) * curve_norm(curve, t) as f32
+}
+
+/// The curve's shape at `t`, normalised 0..1 from its own control hull —
+/// the raw material the phrase dynamic's multiplier band and the bass
+/// mod wheel both read.
+fn curve_norm(curve: &Curve, t: f64) -> f64 {
     let hull = curve.upper.iter().chain(curve.lower.iter()).copied();
     let hull_min = hull.clone().fold(f64::INFINITY, f64::min);
     let hull_max = hull.fold(f64::NEG_INFINITY, f64::max);
     let (value, _) = curve.contour(t);
-    let norm = if hull_max > hull_min {
+    if hull_max > hull_min {
         ((value - hull_min) / (hull_max - hull_min)).clamp(0.0, 1.0)
     } else {
         0.5
-    };
-    PHRASE_DYNAMIC_MIN + (PHRASE_DYNAMIC_MAX - PHRASE_DYNAMIC_MIN) * norm as f32
+    }
 }
 
 /// The default phrase arc: a gentle swell and settle — the deterministic
@@ -201,6 +207,62 @@ pub fn expression_level(state: &MusicState) -> u8 {
     (general_dynamic(state.intensity, state.episode) * phrase_dynamic(&dynamic_curve, t))
         .round()
         .clamp(1.0, 127.0) as u8
+}
+
+/// The bass mod wheel's floor, in CC units: a settled phrase's bottom —
+/// the filter never closes fully, so the bass keeps its body.
+const WHEEL_FLOOR_CC: f64 = 24.0;
+
+/// The bass mod wheel's level for a normalised phrase position: the
+/// phrase's shape across the span above the floor.
+fn wheel_level(norm: f64) -> u8 {
+    (WHEEL_FLOOR_CC + norm.clamp(0.0, 1.0) * (127.0 - WHEEL_FLOOR_CC)).round() as u8
+}
+
+/// The bass mod wheel's trajectory for the slot just rendered — the state
+/// is post-render (the harmony's cursor sits past the slot just played):
+/// (offset within the slot, level) pairs, one per quaver on the bass
+/// pulse grid, for the daemon to schedule. The phrase's dynamic arc
+/// shapes the filter across the slot; a phrase whose arc ends settled is
+/// lifted into the next — a monotonic rise from the arc's level at the
+/// final slot's start to the ceiling, so the boundary is carried. An arc
+/// already ending high needs no lift.
+pub fn wheel_trajectory(state: &MusicState, slot_start: f64, slot_end: f64) -> Vec<(f64, u8)> {
+    let (dynamic_curve, is_last, slot_index, phrase_len) = match &state.harmony {
+        HarmonySource::Plan {
+            dynamic,
+            slots,
+            cursor,
+            ..
+        } => (
+            dynamic.clone(),
+            !slots.is_empty() && *cursor >= slots.len(),
+            cursor.saturating_sub(1) as f64,
+            slots.len().max(1) as f64,
+        ),
+        HarmonySource::Cycle => (
+            default_phrase_curve(),
+            state.slot > 0 && (state.slot as usize).is_multiple_of(CYCLE_LEN),
+            ((state.slot as usize).saturating_sub(1) % CYCLE_LEN) as f64,
+            CYCLE_LEN as f64,
+        ),
+    };
+    let duration = (slot_end - slot_start).max(0.0);
+    let quavers = ((duration / QUAVER_SECS).round() as usize).max(1);
+    let parameter = |within: f64| ((slot_index + within) / phrase_len).clamp(0.0, 1.0);
+    let lifting = is_last && curve_norm(&dynamic_curve, 1.0) < 0.5;
+    let start = curve_norm(&dynamic_curve, parameter(0.0));
+    (0..quavers)
+        .map(|k| {
+            let within = k as f64 / quavers as f64;
+            let norm = if lifting {
+                start + (1.0 - start) * within
+            } else {
+                curve_norm(&dynamic_curve, parameter(within))
+            };
+            (k as f64 * QUAVER_SECS, wheel_level(norm))
+        })
+        .collect()
 }
 
 /// The scale layer: the D-based major/minor mixture the harmony lives in, in
@@ -1759,5 +1821,70 @@ mod tests {
         assert_secs(next_grid_boundary(0.3, 0.5), 0.5);
         assert_secs(next_grid_boundary(0.5, 0.5), 1.0); // strictly after
         assert_secs(next_grid_boundary(4.1, 0.25), 4.25);
+    }
+
+    #[test]
+    fn the_wheel_breathes_the_phrase_shape() {
+        // The cycle's first slot, freshly rendered: the wheel walks the
+        // default arc — floor at the settled ends, crest in the middle.
+        let mut state = MusicState::default();
+        let (_, end) = Engine::slot_notes(&mut state, 0.0);
+        let points = wheel_trajectory(&state, 0.0, end);
+        assert_eq!(points.len(), 16, "one point per quaver of the slot");
+        let floor = WHEEL_FLOOR_CC as u8;
+        assert_eq!(points[0].1, floor, "the settled opening sits on the floor");
+        let crest = points.iter().map(|(_, w)| *w).max().unwrap();
+        assert!(crest > floor + 20, "the arc's crest opens: {crest}");
+    }
+
+    #[test]
+    fn a_settled_phrase_is_lifted_into_the_next() {
+        // The cycle's final slot (post-render slot 9): the default arc
+        // ends settled, so the wheel rises monotonically to the ceiling —
+        // the lift into the next turn.
+        let mut state = MusicState::default();
+        state.slot = 8;
+        let (_, end) = Engine::slot_notes(&mut state, 0.0);
+        let levels: Vec<u8> = wheel_trajectory(&state, 0.0, end)
+            .into_iter()
+            .map(|(_, w)| w)
+            .collect();
+        assert!(
+            levels.windows(2).all(|pair| pair[1] >= pair[0]),
+            "the lift never falls: {levels:?}"
+        );
+        assert!(
+            *levels.last().unwrap() >= 115,
+            "the lift lands high: {levels:?}"
+        );
+    }
+
+    #[test]
+    fn an_arc_already_ending_high_needs_no_lift() {
+        // A plan whose dynamic arc ends rising: the final slot's wheel
+        // follows the shape exactly — no lift on top.
+        let mut state = MusicState {
+            harmony: HarmonySource::Plan {
+                slots: plan_slots(&[0, 0]),
+                curve: default_curve(),
+                dynamic: Curve {
+                    upper: vec![0.0, 1.0],
+                    lower: vec![0.0, 1.0],
+                },
+                cursor: 0,
+            },
+            ..MusicState::default()
+        };
+        let (_, end) = Engine::slot_notes(&mut state, 0.0);
+        let (_, final_end) = Engine::slot_notes(&mut state, end);
+        let points = wheel_trajectory(&state, end, final_end);
+        assert_eq!(points.len(), 16, "an eight-crotchet slot spans 16 quavers");
+        for (k, (at, wheel)) in points.iter().enumerate() {
+            assert_secs(*at, k as f64 * QUAVER_SECS);
+            // The second slot of a two-slot phrase: t = (1 + within) / 2.
+            let within = k as f64 / points.len() as f64;
+            let t = (1.0 + within) / 2.0;
+            assert_eq!(*wheel, wheel_level(t), "the shape stands alone");
+        }
     }
 }

@@ -49,8 +49,6 @@ pub enum GameAudioEvent {
     DroneOnline,
     /// The transmitter opened a locked vault door.
     VaultOpen,
-    /// Streaming player speed for audio modulation.
-    PlayerTelemetry { speed: f32, max_speed: f32 },
     /// World-integrity ratio of the generated map (walkable fraction).
     WorldTelemetry { integrity: f32 },
     /// Live aggro-lock count for the generative score's conductor.
@@ -81,7 +79,6 @@ impl GameAudioEvent {
             | GameAudioEvent::DroneOnline
             | GameAudioEvent::VaultOpen => "/subit/game/event/action",
             GameAudioEvent::MobSweep { .. } => "/subit/game/event/combat",
-            GameAudioEvent::PlayerTelemetry { .. } => "/subit/game/telemetry/player",
             GameAudioEvent::WorldTelemetry { .. } => "/subit/game/telemetry/world",
             GameAudioEvent::AggroTelemetry { .. } => "/subit/game/telemetry/aggro",
             GameAudioEvent::ObjectiveTelemetry { .. } => "/subit/game/telemetry/objective",
@@ -107,7 +104,6 @@ impl GameAudioEvent {
             | GameAudioEvent::DroneOnline
             | GameAudioEvent::VaultOpen
             | GameAudioEvent::MobSweep { .. } => SignalType::Event,
-            GameAudioEvent::PlayerTelemetry { .. } => SignalType::Stream,
             GameAudioEvent::AggroTelemetry { .. } => SignalType::Stream,
             GameAudioEvent::WorldTelemetry { .. } => SignalType::Param,
             GameAudioEvent::ObjectiveTelemetry { .. } => SignalType::Param,
@@ -174,14 +170,6 @@ impl GameAudioEvent {
             }
             GameAudioEvent::VaultOpen => {
                 fields.insert("type".into(), Value::String("vault_open".into()));
-            }
-            GameAudioEvent::PlayerTelemetry { speed, max_speed } => {
-                fields.insert("type".into(), Value::String("player_speed".into()));
-                fields.insert("speed".into(), Value::Float(FloatValue::new(*speed as f64)));
-                fields.insert(
-                    "max_speed".into(),
-                    Value::Float(FloatValue::new(*max_speed as f64)),
-                );
             }
             GameAudioEvent::WorldTelemetry { integrity } => {
                 fields.insert("type".into(), Value::String("world_integrity".into()));
