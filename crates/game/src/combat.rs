@@ -131,6 +131,12 @@ impl PlayerShield {
     pub fn set_cooldown_secs(&mut self, secs: f32) {
         self.cooldown
             .set_duration(Duration::from_secs_f64(secs as f64));
+        // A purchase can shrink the duration while the timer sits finished
+        // at the OLD one — elapsed past the new duration would underflow
+        // remaining(); the wait already banked simply counts as done.
+        if self.cooldown.elapsed() > self.cooldown.duration() {
+            self.cooldown.set_elapsed(self.cooldown.duration());
+        }
     }
 
     /// Re-derive the active duration after a menu purchase.
@@ -889,6 +895,23 @@ mod tests {
             cooldown: timer,
         };
         assert!((shield.cooldown_state().remaining - 0.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn shrinking_a_finished_shield_cooldown_keeps_it_consistent() {
+        // Regression: buying a cooldown reduction while the timer sat
+        // finished at the OLD duration left elapsed past the new one, and
+        // the tray's remaining() read underflowed the frame the menu
+        // closed. The clamp keeps the read-out at ready.
+        let mut shield = PlayerShield {
+            active: expired(SHIELD_ACTIVE_SECS),
+            cooldown: expired(SHIELD_COOLDOWN_SECS),
+        };
+        shield.set_cooldown_secs(1.0);
+        let state = shield.cooldown_state();
+        assert_eq!(state.remaining, 0.0);
+        assert_eq!(state.seconds, 0.0);
+        assert!(shield.cooldown.is_finished());
     }
 
     /// A 5x5 all-floor map with walls forced at the given cells.

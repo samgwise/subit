@@ -210,6 +210,12 @@ impl DashState {
     pub fn set_cooldown_secs(&mut self, secs: f32) {
         self.cooldown
             .set_duration(Duration::from_secs_f64(secs as f64));
+        // A purchase can shrink the duration while the timer sits finished
+        // at the OLD one — elapsed past the new duration would underflow
+        // remaining(); the wait already banked simply counts as done.
+        if self.cooldown.elapsed() > self.cooldown.duration() {
+            self.cooldown.set_elapsed(self.cooldown.duration());
+        }
     }
 }
 
@@ -758,6 +764,7 @@ fn refresh_menu(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::combat::CooldownState;
 
     #[test]
     fn upgrade_rows_name_their_trigger_and_the_others_do_not() {
@@ -840,6 +847,36 @@ mod tests {
         // Past the floor the cooldown stops shrinking.
         levels.dash = 100;
         assert!((dash_cooldown_secs(&levels) - DASH_COOLDOWN_MIN).abs() < 1e-5);
+    }
+
+    #[test]
+    fn shrinking_a_finished_dash_cooldown_keeps_it_consistent() {
+        // Regression: the same underflow the shield purchase hit — a dash
+        // cooldown purchase while the timer sat finished at the old
+        // duration left elapsed past the new one. The clamp reads ready.
+        let mut dash = DashState {
+            active: expired(DASH_SECS),
+            cooldown: expired(DASH_COOLDOWN_BASE),
+            dir: Vec2::ZERO,
+        };
+        dash.set_cooldown_secs(1.0);
+        let state = CooldownState::of(&dash.cooldown);
+        assert_eq!(state.remaining, 0.0);
+        assert_eq!(state.seconds, 0.0);
+        assert!(dash.cooldown.is_finished());
+        // A mid-run cooldown still shortens live: half of the old 2 s
+        // waited against the new 1 s floor is already ready.
+        let mut running = DashState {
+            active: expired(DASH_SECS),
+            cooldown: expired(DASH_COOLDOWN_BASE),
+            dir: Vec2::ZERO,
+        };
+        running.cooldown.reset();
+        running
+            .cooldown
+            .tick(Duration::from_secs_f64(DASH_COOLDOWN_BASE as f64 / 2.0));
+        running.set_cooldown_secs(DASH_COOLDOWN_MIN);
+        assert!(CooldownState::of(&running.cooldown).remaining < 1e-6);
     }
 
     #[test]
