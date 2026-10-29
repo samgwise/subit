@@ -10,7 +10,9 @@ pub mod composer;
 pub mod curve;
 pub mod form;
 pub mod harmony;
+pub mod monitor;
 pub mod music;
+pub mod snapshot;
 
 /// MIDI channel the one-shot combat fx perform on — the generative score
 /// owns 0–5 (bass, distant, bell, airy, pattern A, pattern B).
@@ -71,7 +73,7 @@ pub const MOD_WHEEL_CC: u8 = 1;
 pub const EXPRESSION_CC: u8 = 11;
 
 /// Game events the audio voice responds to (GDD section 5)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum GameEvent {
     /// Primary attack trigger — quantised synth stab.
     AttackPrimary,

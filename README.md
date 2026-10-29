@@ -106,3 +106,20 @@ ollama — `OLLAMA_URL` (default `http://127.0.0.1:11434`), `OLLAMA_MODEL`
 validated plan in a couple of seconds), and `OLLAMA_DISABLED=1` to skip
 planning entirely. The composer's plans and fallbacks are logged; the
 deterministic cycle plays whenever the model is slow, wrong or absent.
+
+## Watching the score (audio-voice monitor)
+
+The audio voice can open a live window on the generative score — what chord
+is sounding and why, the phrase's voicing contour and dynamic arc, the
+conductor's intensity machinery, the composer's trace, and the recent
+performed events:
+
+```sh
+cargo run -p audio-voice --features ui -- --ui
+```
+
+Runs without `--ui` (or without the `ui` feature) exactly as before — the
+default daemon stays headless, and the window is publish-only: the conductor
+pushes a snapshot after every state change and never waits on the UI. The
+window owns the main thread (winit's requirement) and the conductor runs on
+its own — closing the window ends the daemon's run.

@@ -149,8 +149,8 @@ pub fn phrase_dynamic(curve: &Curve, t: f64) -> f32 {
 
 /// The curve's shape at `t`, normalised 0..1 from its own control hull —
 /// the raw material the phrase dynamic's multiplier band and the bass
-/// mod wheel both read.
-fn curve_norm(curve: &Curve, t: f64) -> f64 {
+/// mod wheel both read (and the monitor's dynamic plot).
+pub fn curve_norm(curve: &Curve, t: f64) -> f64 {
     let hull = curve.upper.iter().chain(curve.lower.iter()).copied();
     let hull_min = hull.clone().fold(f64::INFINITY, f64::min);
     let hull_max = hull.fold(f64::NEG_INFINITY, f64::max);
@@ -309,7 +309,7 @@ const HARMONY_CYCLE: [(f64, Quality); 9] = [
 
 /// The slot count both cycles share — the harmony's ground truth the bass is
 /// locked to (and the seam later disintegration effects deform).
-const CYCLE_LEN: usize = HARMONY_CYCLE.len();
+pub const CYCLE_LEN: usize = HARMONY_CYCLE.len();
 
 /// The bass line: one (degree, octave) per chord slot, locked to the
 /// harmony cycle — the roots with the VI slot's inversion (the bass sounds

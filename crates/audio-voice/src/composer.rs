@@ -209,7 +209,7 @@ impl Tally {
 }
 
 /// Why the composer wants a fresh plan.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum ReplanReason {
     /// The live plan is down to the replan margin.
     Depleted,

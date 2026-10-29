@@ -15,9 +15,13 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::time::Duration;
 
-use audio_voice::composer::{PlanRequest, ScoreContext, SlotRecord, Tally};
+use audio_voice::composer::{
+    EventTallies, PlanRequest, ReplanReason, ScoreContext, SlotRecord, Tally,
+};
 use audio_voice::curve::Curve;
 use audio_voice::form::Form;
+use audio_voice::monitor::Monitor;
+use audio_voice::snapshot::{EventLogEntry, SnapshotInputs, UiSnapshot, EVENT_LOG_LEN};
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
 use audio_voice::music::{
@@ -33,10 +37,48 @@ use ensemble_core::protocol::*;
 /// under `/subit/game/event/*` and telemetry under `/subit/game/telemetry/*`.
 const GAME_EVENTS_PATTERN: &str = "/subit/game/**";
 
-#[tokio::main]
-async fn main() {
+fn main() {
     tracing_subscriber::fmt::init();
 
+    // The window (feature `ui`, run with `--ui`) owns the main thread —
+    // winit's event loop refuses to start anywhere else. The conductor
+    // runs on its own thread beside it; closing the window ends the run.
+    #[cfg(feature = "ui")]
+    if std::env::args().any(|arg| arg == "--ui") {
+        ui_main();
+        return;
+    }
+
+    let (monitor, _monitor_view) = audio_voice::monitor::channel();
+    block_on_conductor(monitor);
+}
+
+/// The `--ui` path: the conductor runs on its own thread while the
+/// window owns the main thread.
+#[cfg(feature = "ui")]
+fn ui_main() {
+    let (monitor, monitor_view) = audio_voice::monitor::channel();
+    let conductor_thread = std::thread::Builder::new()
+        .name("audio-voice-conductor".into())
+        .spawn(move || block_on_conductor(monitor))
+        .expect("the conductor thread spawns");
+    audio_voice::monitor::app::run(monitor_view);
+    // The window closed — the run is over. Don't join: the conductor
+    // loops forever, and an abrupt stop matches a Ctrl+C (the hub cleans
+    // a dropped connection up).
+    drop(conductor_thread);
+}
+
+/// Run the conductor to completion on a fresh multi-thread runtime.
+fn block_on_conductor(monitor: Monitor) {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("the tokio runtime builds")
+        .block_on(run_conductor(monitor));
+}
+
+async fn run_conductor(monitor: Monitor) {
     let mut hub = connect_with_retry().await;
     tracing::info!(voice_id = hub.voice_id, "connected to Ensemble hub");
 
@@ -73,11 +115,12 @@ async fn main() {
     // every failure keeps the current phrase, and a depleted one falls back
     // to the deterministic cycle. Holding our twin of the watch sender keeps
     // the receiver's `changed()` from erroring when the model is disabled.
+    let composer_enabled = audio_voice::composer::enabled_from_env();
     let (plan_tx, mut plan_rx) = tokio::sync::watch::channel(None);
     let _plan_tx = plan_tx.clone();
     let (plan_requests, plan_requests_rx) =
         tokio::sync::mpsc::channel::<PlanRequest>(8);
-    if audio_voice::composer::enabled_from_env() {
+    if composer_enabled {
         audio_voice::composer::spawn(
             audio_voice::composer::OllamaClient::from_env(),
             plan_requests_rx,
@@ -88,6 +131,18 @@ async fn main() {
         tracing::info!("the composer is disabled (OLLAMA_DISABLED=1)");
         drop(plan_requests_rx); // requests close harmlessly
     }
+    // The monitor: the conductor publishes a snapshot wherever the state
+    // changes; the optional window renders the latest one. Nothing
+    // queues — an absent window costs nothing.
+    let mut conductor = ConductorMonitor {
+        monitor,
+        composer_enabled,
+        last_replan: None,
+        last_tallies: None,
+    };
+    let mut last_intent: Option<String> = None;
+    let mut event_log: VecDeque<EventLogEntry> = VecDeque::new();
+
     let mut history: VecDeque<SlotRecord> = VecDeque::new();
     let mut tallies = Tally::default();
     let mut last_curve: Option<Curve> = None;
@@ -178,6 +233,21 @@ async fn main() {
                                 slot_end = cut;
                                 pending_cut = true;
                             }
+
+                            // The smoother tick and the (possibly moved)
+                            // change point are visible — publish them.
+                            conductor.publish(
+                                now,
+                                slot_start,
+                                slot_end,
+                                PublishState {
+                                    score: &score,
+                                    form: &form,
+                                    intent: last_intent.clone(),
+                                    history: history.make_contiguous(),
+                                    event_log: event_log.make_contiguous(),
+                                },
+                            );
                         }
                     }
                     _ => {
@@ -204,8 +274,25 @@ async fn main() {
                             _ => {}
                         }
 
+                        let now = hub.now().await;
                         let note = perform_event(event);
-                        let when = quantiser.next_boundary(hub.now().await);
+                        let when = quantiser.next_boundary(now);
+                        event_log.push_back(EventLogEntry { when: now, event });
+                        while event_log.len() > EVENT_LOG_LEN {
+                            event_log.pop_front();
+                        }
+                        conductor.publish(
+                            now,
+                            slot_start,
+                            slot_end,
+                            PublishState {
+                                score: &score,
+                                form: &form,
+                                intent: last_intent.clone(),
+                                history: history.make_contiguous(),
+                                event_log: event_log.make_contiguous(),
+                            },
+                        );
                         match hub.send_action(midi_play(&note, when)).await {
                             Ok(()) => tracing::info!(
                                 address = %address,
@@ -316,10 +403,12 @@ async fn main() {
                 }
 
                 let drained = tallies.drain();
+                conductor.note_tallies(drained.clone());
                 if let Some(reason) = audio_voice::composer::should_replan(
                     score.harmony.slots_remaining(),
                     &drained,
                 ) {
+                    conductor.note_replan(reason);
                     let request = PlanRequest {
                         context: audio_voice::composer::build_context(&ScoreContext {
                             history: history.iter().copied().collect(),
@@ -337,6 +426,21 @@ async fn main() {
                         Err(err) => tracing::debug!(?reason, "composer busy: {err}"),
                     }
                 }
+
+                // The slot's record, cut state and any replan decision are
+                // in — publish them.
+                conductor.publish(
+                    hub.now().await,
+                    slot_start,
+                    slot_end,
+                    PublishState {
+                        score: &score,
+                        form: &form,
+                        intent: last_intent.clone(),
+                        history: history.make_contiguous(),
+                        event_log: event_log.make_contiguous(),
+                    },
+                );
             }
             plan_changed = plan_rx.changed() => {
                 // The composer published a plan — install it for the next
@@ -346,6 +450,7 @@ async fn main() {
                     Ok(()) => {
                         let outcome = plan_rx.borrow_and_update().clone();
                         if let Some(outcome) = outcome {
+                            last_intent = Some(outcome.plan.intent.clone());
                             tracing::info!(
                                 slots = outcome.plan.slots.len(),
                                 intent = %outcome.plan.intent,
@@ -379,12 +484,77 @@ async fn main() {
                                     tracing::error!("failed to send expression: {err:?}");
                                 }
                             }
+
+                            // The plan's install is visible — publish it.
+                            conductor.publish(
+                                hub.now().await,
+                                slot_start,
+                                slot_end,
+                                PublishState {
+                                    score: &score,
+                                    form: &form,
+                                    intent: last_intent.clone(),
+                                    history: history.make_contiguous(),
+                                    event_log: event_log.make_contiguous(),
+                                },
+                            );
                         }
                     }
                     Err(_) => tracing::warn!("the composer's watch channel closed"),
                 }
             }
         }
+    }
+}
+
+/// The conductor's side of the monitor: the publisher plus the composer
+/// trace the snapshots carry.
+struct ConductorMonitor {
+    monitor: Monitor,
+    composer_enabled: bool,
+    last_replan: Option<ReplanReason>,
+    last_tallies: Option<EventTallies>,
+}
+
+/// The pieces the snapshot builder reads from the conductor's locals.
+struct PublishState<'a> {
+    score: &'a MusicState,
+    form: &'a Form,
+    intent: Option<String>,
+    history: &'a [SlotRecord],
+    event_log: &'a [EventLogEntry],
+}
+
+impl ConductorMonitor {
+    /// Record why the composer was asked for the next phrase.
+    fn note_replan(&mut self, reason: ReplanReason) {
+        self.last_replan = Some(reason);
+    }
+
+    /// Record the tallies that accompanied the last replan decision.
+    fn note_tallies(&mut self, tallies: EventTallies) {
+        self.last_tallies = Some(tallies);
+    }
+
+    /// Publish a snapshot of the conductor's state — the newest wins,
+    /// nothing queues.
+    fn publish(&self, now: f64, slot_start: f64, slot_end: f64, state: PublishState<'_>) {
+        let form_summary = state.form.summary();
+        self.monitor.publish(UiSnapshot::capture(SnapshotInputs {
+            hub_time: now,
+            slot_start,
+            slot_end,
+            state: state.score,
+            form: &form_summary,
+            intent: state.intent,
+            history: state.history,
+            events: state.event_log,
+            composer: audio_voice::snapshot::ComposerInputs {
+                enabled: self.composer_enabled,
+                last_replan: self.last_replan,
+                last_tallies: self.last_tallies.clone(),
+            },
+        }));
     }
 }
 

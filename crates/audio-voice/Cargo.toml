@@ -4,7 +4,14 @@ version.workspace = true
 edition.workspace = true
 description = "Generative audio voice for subit: maps game events to quantised Ensemble MIDI actions"
 
+[features]
+# The optional monitor window (egui). Off by default so the daemon's
+# headless builds, tests and containers stay lean.
+ui = ["dep:eframe", "dep:egui_plot"]
+
 [dependencies]
+eframe = { workspace = true, optional = true }
+egui_plot = { workspace = true, optional = true }
 ensemble-client.workspace = true
 ensemble-core.workspace = true
 rand.workspace = true
