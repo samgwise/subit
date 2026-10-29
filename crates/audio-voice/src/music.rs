@@ -26,9 +26,10 @@
 //! every chromatic mapping mutates — a noise-like rotation scatters the
 //! harmony around the cycle, deterministically wrong.
 
+use rand::rngs::SmallRng;
 use scalevec::{Scale, ScaleVec, Stack};
 
-use crate::curve::{default_curve, Curve};
+use crate::curve::{default_curve, effective_curve, Curve, ContourShape, DynamicShape};
 use crate::harmony::{PlanSlot, Quality, VOCABULARY};
 use crate::NoteEvent;
 
@@ -77,12 +78,10 @@ const FULL_INTENSITY_LOCKS: f32 = 6.0;
 const PAD_BASE: f64 = 50.0;
 const PATTERN_A_OCTAVE: f64 = 12.0;
 const PATTERN_B_OCTAVE: f64 = 24.0;
-/// The three chord voices' register bands (semitones from the tonic): the
-/// distant pad hugs the floor, the airy spreads the top, and the bell
-/// sits above them all.
-const DISTANT_BAND: (f64, f64) = (0.0, 14.0);
-const AIRY_BAND: (f64, f64) = (14.0, 26.0);
-const BELL_BAND: (f64, f64) = (26.0, 38.0);
+/// The smallest band the octave-folding revoice can place into — a
+/// narrower band would leave some pitch classes without an octave
+/// landing inside it.
+const MIN_BAND: f64 = 12.0;
 /// The voices' rhythmic offsets: the distant floor lands on the slot, the
 /// airy enters a quaver in, and the bell plinks three 16ths in — off the
 /// quaver grid, pointillistic.
@@ -196,7 +195,7 @@ fn velocity_for(base: u8, gesture: f32, general: f32, phrase: f32) -> u8 {
 pub fn expression_level(state: &MusicState) -> u8 {
     let dynamic_curve = match &state.harmony {
         HarmonySource::Plan { dynamic, .. } => dynamic.clone(),
-        HarmonySource::Cycle => default_phrase_curve(),
+        HarmonySource::Cycle => state.cycle_dynamic.clone(),
     };
     let t = match &state.harmony {
         HarmonySource::Plan { slots, cursor, .. } => {
@@ -241,7 +240,7 @@ pub fn wheel_trajectory(state: &MusicState, slot_start: f64, slot_end: f64) -> V
             slots.len().max(1) as f64,
         ),
         HarmonySource::Cycle => (
-            default_phrase_curve(),
+            state.cycle_dynamic.clone(),
             state.slot > 0 && (state.slot as usize).is_multiple_of(CYCLE_LEN),
             ((state.slot as usize).saturating_sub(1) % CYCLE_LEN) as f64,
             CYCLE_LEN as f64,
@@ -367,6 +366,27 @@ const CYCLE_VOCAB: [usize; CYCLE_LEN] = [0, 2, 1, 3, 4, 5, 3, 6, 7];
 /// their own phrases; the cycle's turn is its phrase).
 pub fn cycle_turn_complete(slot: u32) -> bool {
     slot > 0 && (slot as usize).is_multiple_of(CYCLE_LEN)
+}
+
+/// Roll the next cycle tiles: the form's RNG picks the shapes and each is
+/// stitched from the curve that sounded last — a plan's own curve
+/// included — so consecutive phrases join without a seam.
+pub fn advance_cycle_tiles(state: &mut MusicState, rng: &mut SmallRng) {
+    let (contour_tail, dynamic_tail) = match &state.harmony {
+        HarmonySource::Plan { curve, dynamic, .. } => (curve.clone(), dynamic.clone()),
+        HarmonySource::Cycle => (state.cycle_curve.clone(), state.cycle_dynamic.clone()),
+    };
+    state.cycle_curve = ContourShape::roll(rng).curve().extend_from(&contour_tail);
+    state.cycle_dynamic = DynamicShape::roll(rng).curve().extend_from(&dynamic_tail);
+}
+
+/// The tie re-arm window for a slot of `slot_secs` — how far ahead each
+/// held tone's stop is re-armed at a boundary. Generously long so the
+/// common-tone legato can hold across changes; the re-arming keeps it
+/// honest — an un-re-armed tie's original stop would otherwise silence a
+/// pad the daemon still believes is ringing.
+pub fn tie_window(slot_secs: f64) -> f64 {
+    SUSTAIN_SLOTS * slot_secs
 }
 
 /// The noise-like rotation: a splitmix64 finaliser over the pitch class —
@@ -538,6 +558,30 @@ fn voicing_for(degree: f64, quality: Quality, tonic: i32, degraded: bool) -> Vec
         .iter()
         .map(|&interval| (PAD_BASE + chromatic_map(root_pc + interval, degraded)) as u8)
         .collect()
+}
+
+/// Which sustained voice a band is derived for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VoiceRegister {
+    Distant,
+    Airy,
+    Bell,
+}
+
+/// The voice's band, derived from the spanned contour at its own phrase
+/// parameter — the registers ride the curve, so the parts spread apart
+/// as it blooms and fold in as it settles. The distant holds the floor
+/// region, the airy the top, and the bell a collar above the fence (the
+/// patterns stay clamped below it). Every band is never narrower than
+/// [`MIN_BAND`], so revoice's octave fold always lands inside.
+fn voice_band(curve: &Curve, t: f64, register: VoiceRegister) -> (f64, f64) {
+    let (low, high) = curve.contour(t);
+    let span = high - low;
+    match register {
+        VoiceRegister::Distant => (low, low + (span * 0.37).max(MIN_BAND)),
+        VoiceRegister::Airy => (high - (span * 0.32).max(MIN_BAND), high),
+        VoiceRegister::Bell => (high, high + MIN_BAND),
+    }
 }
 
 /// Revoice a semitone-from-tonic into the arrangement space: a tone
@@ -765,6 +809,12 @@ pub struct MusicState {
     /// The form sits in an episode — the general dynamic sits one mark
     /// quieter while it lasts.
     pub episode: bool,
+    /// The cycle's tiled voicing contour — rolled per turn and stitched
+    /// from the previous tail; a composer plan's curve overrides it
+    /// while one is live.
+    pub cycle_curve: Curve,
+    /// The cycle's tiled dynamic arc, rolled with the contour.
+    pub cycle_dynamic: Curve,
 }
 
 impl Default for MusicState {
@@ -783,6 +833,8 @@ impl Default for MusicState {
             key: KeyState::default(),
             objective: 0.0,
             episode: false,
+            cycle_curve: default_curve(),
+            cycle_dynamic: default_phrase_curve(),
         }
     }
 }
@@ -886,14 +938,19 @@ impl Engine {
             HarmonySource::Cycle => {
                 let turn_phase = (state.slot as usize % CYCLE_LEN) as f64 / CYCLE_LEN as f64;
                 (
-                    default_curve(),
-                    default_phrase_curve(),
+                    state.cycle_curve.clone(),
+                    state.cycle_dynamic.clone(),
                     Box::new(move |within: f64| {
                         (turn_phase + within / CYCLE_LEN as f64).clamp(0.0, 1.0)
                     }) as Box<dyn Fn(f64) -> f64>,
                 )
             }
         };
+
+        // The conductor's span: the source's curve folds toward the centre
+        // at rest and blooms to full spread with the fight — the patterns'
+        // fence and the voices' bands all obey the spanned bounds.
+        let curve = effective_curve(&curve, state.intensity);
 
         // The general dynamic: the drama level through the marks ladder —
         // every note's velocity is this, phrased and gestured.
@@ -946,9 +1003,11 @@ impl Engine {
             state.degraded,
         );
         if arrangement.distant {
-            let phrase = phrase_dynamic(&dynamic_curve, phrase_t(DISTANT_OFFSET / duration_secs));
+            let t = phrase_t(DISTANT_OFFSET / duration_secs);
+            let phrase = phrase_dynamic(&dynamic_curve, t);
+            let band = voice_band(&curve, t, VoiceRegister::Distant);
             for &tone in &voicing {
-                let placed = revoice(f64::from(tone) - PAD_BASE, DISTANT_BAND.0, DISTANT_BAND.1);
+                let placed = revoice(f64::from(tone) - PAD_BASE, band.0, band.1);
                 notes.push((
                     DISTANT_OFFSET,
                     NoteEvent {
@@ -968,9 +1027,11 @@ impl Engine {
             } else {
                 0
             };
-            let phrase = phrase_dynamic(&dynamic_curve, phrase_t(AIRY_OFFSET / duration_secs));
+            let t = phrase_t(AIRY_OFFSET / duration_secs);
+            let phrase = phrase_dynamic(&dynamic_curve, t);
+            let band = voice_band(&curve, t, VoiceRegister::Airy);
             for &tone in &voicing[top..] {
-                let placed = revoice(f64::from(tone) - PAD_BASE, AIRY_BAND.0, AIRY_BAND.1);
+                let placed = revoice(f64::from(tone) - PAD_BASE, band.0, band.1);
                 notes.push((
                     AIRY_OFFSET,
                     NoteEvent {
@@ -983,6 +1044,8 @@ impl Engine {
             }
         }
         if arrangement.bell {
+            let bell_band =
+                voice_band(&curve, phrase_t(BELL_OFFSET / duration_secs), VoiceRegister::Bell);
             if state.intensity < 0.33 {
                 // The idle bell plays polyrhythms against the bass's
                 // quavers: N plinks evenly spaced across each four-quaver
@@ -997,7 +1060,7 @@ impl Engine {
                 let plinks = (duration_secs / spacing).floor().max(1.0) as usize;
                 for plink in 0..plinks {
                     let tone = voicing[(plink + state.slot as usize) % voicing.len()];
-                    let placed = revoice(f64::from(tone) - PAD_BASE, BELL_BAND.0, BELL_BAND.1);
+                    let placed = revoice(f64::from(tone) - PAD_BASE, bell_band.0, bell_band.1);
                     let phrase = phrase_dynamic(&dynamic_curve, phrase_t(plink as f64 * spacing / duration_secs));
                     notes.push((
                         plink as f64 * spacing,
@@ -1018,7 +1081,7 @@ impl Engine {
                 // In combat the bell returns to the single topmost plink:
                 // stability where the drive is.
                 let topmost = voicing.last().expect("the chord has tones");
-                let placed = revoice(f64::from(*topmost) - PAD_BASE, BELL_BAND.0, BELL_BAND.1);
+                let placed = revoice(f64::from(*topmost) - PAD_BASE, bell_band.0, bell_band.1);
                 let phrase = phrase_dynamic(&dynamic_curve, phrase_t(BELL_OFFSET / duration_secs));
                 notes.push((
                     BELL_OFFSET,
@@ -1101,6 +1164,7 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::SeedableRng;
 
     /// ScaleVec arithmetic is exact on integer degrees; a whisker of slack
     /// keeps the assertions honest regardless.
@@ -1116,6 +1180,87 @@ mod tests {
             (actual - expected).abs() < 1e-9,
             "expected {expected}s, got {actual}s"
         );
+    }
+
+    #[test]
+    fn the_tie_window_scales_with_the_slot() {
+        assert_secs(tie_window(1.0), SUSTAIN_SLOTS);
+        assert_secs(tie_window(0.5), SUSTAIN_SLOTS * 0.5);
+    }
+
+    #[test]
+    fn the_tiles_roll_and_stitch_from_the_tail() {
+        for seed in 0..16u64 {
+            let mut state = MusicState::default();
+            let mut rng = SmallRng::seed_from_u64(seed);
+            let (tail_low, tail_high) = state.cycle_curve.contour(1.0);
+            advance_cycle_tiles(&mut state, &mut rng);
+            // Whatever the roll picked, the tile continues the tail.
+            let (low, high) = state.cycle_curve.contour(0.0);
+            assert!(
+                (low - tail_low).abs() < 1e-9,
+                "seed {seed} breaks the lower seam"
+            );
+            assert!(
+                (high - tail_high).abs() < 1e-9,
+                "seed {seed} breaks the upper seam"
+            );
+            // The dynamic arc stitches too — its seam is the raw control
+            // point (its shape is read relative to its own hull).
+            assert_eq!(
+                state.cycle_dynamic.upper.first(),
+                default_phrase_curve().upper.last(),
+            );
+        }
+    }
+
+    #[test]
+    fn the_bands_derive_from_the_spanned_contour() {
+        for shape in [
+            ContourShape::Arc,
+            ContourShape::Rise,
+            ContourShape::Fall,
+            ContourShape::Valley,
+            ContourShape::Narrow,
+        ] {
+            let curve = shape.curve();
+            for step in 0..=8 {
+                let t = step as f64 / 8.0;
+                let distant = voice_band(&curve, t, VoiceRegister::Distant);
+                let airy = voice_band(&curve, t, VoiceRegister::Airy);
+                let bell = voice_band(&curve, t, VoiceRegister::Bell);
+                // Every band holds an octave fold, and the bell sits
+                // above the fence the patterns clamp under.
+                for band in [distant, airy, bell] {
+                    assert!(band.1 - band.0 >= MIN_BAND - 1e-9);
+                }
+                assert!((distant.0 - curve.contour(t).0).abs() < 1e-9);
+                assert!((airy.1 - curve.contour(t).1).abs() < 1e-9);
+                assert!((bell.0 - curve.contour(t).1).abs() < 1e-9);
+            }
+        }
+    }
+
+    #[test]
+    fn the_pads_move_with_the_span() {
+        // The same calm slot: at full flight the distant pad sounds the
+        // wide band's floor; at rest the folded bounds lift it into the
+        // pulled-in register.
+        let pad_note = |intensity: f32| {
+            let mut state = MusicState::default();
+            state.intensity = intensity;
+            state.rhythm_intensity = intensity;
+            let (notes, _) = Engine::slot_notes(&mut state, 0.0);
+            notes
+                .iter()
+                .filter(|(_, n)| n.channel == CHANNEL_DISTANT)
+                .map(|(_, n)| n.note)
+                .collect::<Vec<_>>()
+        };
+        let full_flight = pad_note(1.0);
+        let at_rest = pad_note(0.0);
+        assert!(!full_flight.is_empty() && !at_rest.is_empty());
+        assert_ne!(at_rest, full_flight, "the pad did not move with the span");
     }
 
     #[test]
@@ -1312,23 +1457,25 @@ mod tests {
             .collect();
         // Distant: the full shape in its band.
         assert_eq!(distant.len(), 3);
-        for tone in &distant {
-            let from_tonic = f64::from(*tone) - PAD_BASE;
-            assert!((DISTANT_BAND.0..=DISTANT_BAND.1).contains(&from_tonic));
-        }
         // Airy: the top two, in the airy band.
         assert_eq!(airy.len(), 2);
-        for tone in &airy {
-            let from_tonic = f64::from(*tone) - PAD_BASE;
-            assert!((AIRY_BAND.0..=AIRY_BAND.1).contains(&from_tonic));
-        }
         // Bell: a single tone, high and short, off the quaver grid.
         assert_eq!(bell.len(), 1);
         let (at, note) = bell[0];
         assert_secs(*at, BELL_OFFSET);
         assert_secs(note.duration_secs, BELL_SECS);
-        let from_tonic = f64::from(note.note) - PAD_BASE;
-        assert!((BELL_BAND.0..=BELL_BAND.1).contains(&from_tonic));
+        // The registers ride the curve but keep their order: every
+        // distant tone sits below every airy tone, and the bell rings
+        // above the fence the patterns clamp under.
+        let curve = effective_curve(&state.cycle_curve, state.intensity);
+        let (_, high) = curve.contour(0.0);
+        for &tone in &distant {
+            assert!(f64::from(tone) < f64::from(airy[0]), "distant above airy");
+        }
+        for &tone in &airy {
+            assert!(f64::from(tone) < f64::from(note.note), "airy above the bell");
+        }
+        assert!(f64::from(note.note) >= PAD_BASE + high);
     }
 
     #[test]

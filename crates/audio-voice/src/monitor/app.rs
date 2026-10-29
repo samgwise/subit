@@ -105,6 +105,7 @@ impl MonitorApp {
                 ui.weak(format!("holding {:.1}s", snapshot.drive.rhythm_hold));
             }
             bar(ui, "objective", snapshot.drive.objective);
+            ui.weak(format!("span {:.2}", snapshot.curves.span));
 
             ui.separator();
             let clock = &snapshot.clock;

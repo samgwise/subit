@@ -25,9 +25,9 @@ use audio_voice::snapshot::{EventLogEntry, SnapshotInputs, UiSnapshot, EVENT_LOG
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
 use audio_voice::music::{
-    self, change_point, current_slot_period_secs, retune, Engine, HarmonySource, MusicState,
-    CHANNEL_AIRY, CHANNEL_BASS, CHANNEL_DISTANT, CHANNEL_PATTERN_B, CROTCHET_SECS, QUAVER_SECS,
-    STUB_BPM,
+    self, advance_cycle_tiles, change_point, current_slot_period_secs, retune, tie_window, Engine,
+    HarmonySource, MusicState, CHANNEL_AIRY, CHANNEL_BASS, CHANNEL_DISTANT, CHANNEL_PATTERN_B,
+    CROTCHET_SECS, QUAVER_SECS, STUB_BPM,
 };
 use audio_voice::{GameEvent, EXPRESSION_CC, MOD_WHEEL_CC, NoteEvent, Quantiser, Subdivision, perform_event};
 use ensemble_client::Hub;
@@ -331,6 +331,18 @@ async fn run_conductor(monitor: Monitor) {
                         tracing::error!("failed to send legato note-off: {err:?}");
                     }
                 }
+                // The ties live: every held tone's stop is re-armed from
+                // the boundary — the original play's scheduled off can
+                // never outlive the legato (it would silence a pad the
+                // daemon still believes is ringing), and long pivots
+                // survive late chord changes.
+                let window = tie_window(end - slot_end);
+                for &(channel, note) in &held_tones {
+                    let msg = midi_cancel(channel, note, slot_end, window);
+                    if let Err(err) = hub.send_action(msg).await {
+                        tracing::error!("failed to re-arm a tie: {err:?}");
+                    }
+                }
                 sustained = next_sustained;
 
                 // The cut's silencing set: every score-channel note.
@@ -400,6 +412,9 @@ async fn run_conductor(monitor: Monitor) {
                         tracing::info!(key = %summary.key, state = summary.state, "the form moved");
                     }
                     score.key.tonic = form.key_offset();
+                    // The cycle's next tiles: rolled from the form's RNG
+                    // and stitched from whatever sounded last.
+                    advance_cycle_tiles(&mut score, &mut form_rng);
                 }
 
                 let drained = tallies.drain();
@@ -628,6 +643,22 @@ fn midi_note_off(channel: u8, note: u8, when: f64) -> WireMessage {
     )
 }
 
+/// Build a (possibly timestamped) `/midi/cancel` action — a held tone's
+/// stop re-armed: the bridge drops the pending note-off and arms a fresh
+/// one `window_secs` out.
+fn midi_cancel(channel: u8, note: u8, when: f64, window_secs: f64) -> WireMessage {
+    action(
+        "/midi/cancel",
+        SignalType::Event,
+        when,
+        Value::Tuple(vec![
+            Value::Integer(channel as i64),
+            Value::Integer(note as i64),
+            Value::Float(FloatValue::new(window_secs)),
+        ]),
+    )
+}
+
 /// Build a (possibly timestamped) `/midi/cc` action for the MIDI bridge.
 fn midi_cc(channel: u8, controller: u8, value: u8, when: f64) -> WireMessage {
     action(
@@ -686,6 +717,26 @@ mod tests {
                 kill_count: 2,
                 combo: 1
             }
+        );
+    }
+
+    #[test]
+    fn cancel_actions_carry_a_channel_note_and_window() {
+        let msg = midi_cancel(1, 62, 4.0, 3.5);
+        let Value::Map(map) = &msg.payload else {
+            panic!("expected map payload");
+        };
+        assert_eq!(get_string(map, "address"), Some("/midi/cancel".into()));
+        let Value::Tuple(values) = get_value(map, "payload").unwrap() else {
+            panic!("expected tuple payload");
+        };
+        assert_eq!(
+            values,
+            vec![
+                Value::Integer(1),
+                Value::Integer(62),
+                Value::Float(FloatValue::new(3.5)),
+            ]
         );
     }
 

@@ -484,12 +484,22 @@ role: the controller owns the tonal geography; the composer composes
 within the reported key. Form transitions log ("the form moved: E
 minor, sequence").
 
-Contour: a plan may draw the phrase's register as paired upper/lower
-Bézier control points (semitones from the tonic), fencing the patterns'
-notes at their phrase position — the arp exists below the curve.
-Consecutive curves stitch from the previous tail control point so
-phrases join without a seam; plans without curves get the neutral
-default, a no-op. Env:
+Contour: the phrase's register is a pair of Bézier control-point lists
+(upper and lower bounds, semitones from the tonic) fencing the patterns'
+notes at their phrase position — the arp exists below the curve. The
+composer may draw a phrase's contour in its plan; the deterministic
+cycle tiles between a library of named shapes (arc, rise, fall, valley,
+narrow — rolled per turn from the form's RNG and stitched from the
+previous tail so phrases join without a seam). The conductor owns the
+curve's span: the smoothed intensity folds the bounds toward the
+register centre at rest (0.55) and releases the drawn shape's full
+spread at full flight — entering combat curves the voices out, leaving
+it pulls them home. The sustained voices derive their register bands
+from the spanned contour (the distant holds the floor region, the airy
+the top, the bell a collar above the fence; never narrower than an
+octave, so the octave-folding placement stays exact) — the parts spread
+apart and fold in with the curve, and common tones that stay inside
+their band hold as pivots while displaced tones re-articulate. Env:
 `OLLAMA_URL` (default `http://127.0.0.1:11434`), `OLLAMA_MODEL`
 (default `qwen3:0.6b` — verified: a validated plan in a couple of
 seconds; heavier generalists trip ollama 0.35's grammar into
@@ -507,12 +517,13 @@ ending high needs no lift.
 ### The three voices — the pad becomes an arrangement
 
 The chord layer is three voices, each a thin subset of the same voicing
-placed into its own register band: the **distant pad** holds the full
-shape low (the harmony's floor), the **airy** spreads the top two tones
-high, and the **bell** plinks the topmost tone alone — always a single
-tone, off the quaver grid. They enter rhythmically offset (distant on
-the slot, the airy a quaver in, the bell three 16ths in) rather than as
-a block.
+placed into its own register band — derived from the spanned contour at
+the voice's own entry parameter, so the registers travel with the
+curve: the **distant pad** holds the full shape low (the harmony's
+floor), the **airy** spreads the top two tones high, and the **bell**
+plinks the topmost tone alone — always a single tone, off the quaver
+grid. They enter rhythmically offset (distant on the slot, the airy a
+quaver in, the bell three 16ths in) rather than as a block.
 
 An arrangement pass decides who sounds: the drive layers the voices up —
 one at rest, two past a third of full flight, three in combat — and when
@@ -531,7 +542,12 @@ Common tones hold across chord changes: the sustained voices schedule
 generously and the daemon keeps any tone that persists ringing (the
 bridge drops a re-play while a key is down), trimming the strays with
 note-offs at the boundary — the progressions smooth out through their
-shared tones. The bass pulses and the patterns stay percussive.
+shared tones. Every held tone's stop is re-armed at each boundary via
+`/midi/cancel` (the bridge drops the pending note-off and arms a fresh
+one three slots out) — a tie can never be outlived by its original
+scheduled off, and long pivots survive late chord changes (a cut
+re-renders at the new boundary, where the legato trims and re-arms).
+The bass pulses and the patterns stay percussive.
 
 ### Dynamics — drama, phrasing, gesture
 
@@ -579,7 +595,10 @@ at note attacks. The percussive voices stay velocity-only.
 | Composer: phrase / replan margin / request timeout | 4–8 slots (17-chord vocabulary) / 2 slots / 30 s |
 | Objective progress | 1 − BFS steps/initial, clamped 0–1, published on 1% change (Param) |
 | Form: home cycle / change chance / sequence vs episode / episode span & return | 4, 6 or 8 phrases / 60% at expiry / 60% sequence (a tone, one phrase) / 2–4 phrases, 40% return per phrase |
-| Voices: bands (distant / airy / bell) & offsets | 0–14 / 14–26 / 26–38 semitones from the tonic; entries at 0 / a quaver / three 16ths |
+|| Voices: bands & offsets | derived from the spanned contour — the distant the floor region, the airy the top, the bell a 12-semitone collar above (never narrower than 12); entries at 0 / a quaver / three 16ths |
+|| Contour tiles / span | arc, rise, fall, valley, narrow — rolled per turn, tail-stitched / 0.55 at rest → 1.0 at full flight, folded about 28 semitones |
+|| Dynamic tiles | swell, dip, climb, fade — rolled with the contour |
+|| Tie re-arm | three slots per boundary, via /midi/cancel |
 | Arrangement: layer thresholds / sparse rotation / arrival lift | 1 voice, 2 past 0.33, 3 past 0.66 / all three rotating, two slots each / airy added past 0.85 progress |
 | Idle bell: polyrhythms / plink gate | 3:4, 5:4, 6:4 or 7:4 per bell slot (N over the bass's four-quaver window, repeating) / 0.6 × the plink spacing |
 | Dynamics: marks ladder / phrase band / episode shade / expression | pp–ff (16–126), interpolated / 0.7–1.15 × general / one mark in an episode / CC11 on the sustained voices at each boundary |

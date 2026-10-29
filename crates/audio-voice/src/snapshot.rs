@@ -6,10 +6,10 @@
 use serde::Serialize;
 
 use crate::composer::{EventTallies, ReplanReason, SlotRecord};
-use crate::curve::{default_curve, Curve};
+use crate::curve::{effective_curve, span_factor, Curve};
 use crate::form::FormSummary;
 use crate::harmony::VOCABULARY;
-use crate::music::{curve_norm, default_phrase_curve, HarmonySource, MusicState, CYCLE_LEN};
+use crate::music::{curve_norm, HarmonySource, MusicState, CYCLE_LEN};
 
 /// How many performed events the daemon's log ring keeps.
 pub const EVENT_LOG_LEN: usize = 32;
@@ -120,6 +120,9 @@ pub struct CurveViews {
     pub dynamic_shape: Vec<(f64, f64)>,
     /// The phrase parameter of the slot sounding now — the plots' marker.
     pub phrase_t: f64,
+    /// The conductor's span factor the bounds obey (1.0 at full flight,
+    /// `SPAN_REST` at rest).
+    pub span: f32,
 }
 
 /// The composer view: the planning tier's trace since the last publish.
@@ -170,11 +173,12 @@ pub struct SnapshotInputs<'a> {
     pub composer: ComposerInputs,
 }
 
-/// The curve pair (voicing contour and dynamic arc) a harmony source plays.
-fn source_curves(harmony: &HarmonySource) -> (Curve, Curve) {
-    match harmony {
+/// The curve pair (voicing contour and dynamic arc) a harmony source
+/// plays: a plan's own curves, or the cycle's current tiles.
+fn source_curves(state: &MusicState) -> (Curve, Curve) {
+    match &state.harmony {
         HarmonySource::Plan { curve, dynamic, .. } => (curve.clone(), dynamic.clone()),
-        HarmonySource::Cycle => (default_curve(), default_phrase_curve()),
+        HarmonySource::Cycle => (state.cycle_curve.clone(), state.cycle_dynamic.clone()),
     }
 }
 
@@ -236,7 +240,9 @@ impl UiSnapshot {
             }
         };
 
-        let (curve, dynamic) = source_curves(&state.harmony);
+        // The plots show what the voices obey: the spanned bounds.
+        let (raw_curve, dynamic) = source_curves(state);
+        let curve = effective_curve(&raw_curve, state.intensity);
         let contour = (0..=CURVE_SAMPLES)
             .map(|step| {
                 let t = step as f64 / CURVE_SAMPLES as f64;
@@ -284,6 +290,7 @@ impl UiSnapshot {
                 contour,
                 dynamic_shape,
                 phrase_t: phrase_t(state),
+                span: span_factor(state.intensity),
             },
             composer: ComposerView {
                 enabled: inputs.composer.enabled,
@@ -300,8 +307,9 @@ impl UiSnapshot {
 mod tests {
     use super::*;
     use crate::composer::SlotRecord;
+    use crate::curve::{default_curve, SPAN_REST};
     use crate::harmony::PlanSlot;
-    use crate::music::KeyState;
+    use crate::music::{default_phrase_curve, KeyState};
 
     /// A default state with a chosen slot count.
     fn state_at(slot: u32) -> MusicState {
@@ -373,6 +381,8 @@ mod tests {
     #[test]
     fn the_contour_samples_stay_sorted_and_the_shape_in_range() {
         let mut state = state_at(0);
+        // Full flight: the effective curve is the drawn shape, untouched.
+        state.intensity = 1.0;
         state.harmony = HarmonySource::Plan {
             slots: vec![
                 PlanSlot { chord: 0, bass: None, suggested_beats: 0.0 },
@@ -402,6 +412,23 @@ mod tests {
         }
         // The control points ride along for the dots.
         assert_eq!(snapshot.curves.upper_control, vec![48.0, 20.0, 50.0]);
+        assert!((snapshot.curves.span - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_snapshot_shows_the_spanned_bounds_at_rest() {
+        let state = state_at(0);
+        let form = FormSummary::default();
+        let snapshot = UiSnapshot::capture(inputs(&state, &form));
+
+        assert!((snapshot.curves.span - SPAN_REST).abs() < 1e-6);
+        // The effective bounds fold toward the centre: the floor rises
+        // above the raw curve's, the ceiling sits below it.
+        for (t, lower, upper) in &snapshot.curves.contour {
+            let (raw_low, raw_high) = default_curve().contour(*t);
+            assert!(lower > &raw_low, "the folded floor rose at t = {t}");
+            assert!(upper < &raw_high, "the folded ceiling fell at t = {t}");
+        }
     }
 
     #[test]
