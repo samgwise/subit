@@ -11,6 +11,7 @@ use egui_plot::{Line, Plot, PlotPoints, Points, VLine};
 
 use crate::composer::SlotRecord;
 use crate::harmony::VOCABULARY;
+use crate::monitor::roll;
 use crate::monitor::MonitorView;
 use crate::snapshot::{HarmonyKind, PlannedSlotView, UiSnapshot};
 
@@ -56,6 +57,13 @@ impl eframe::App for MonitorApp {
             self.composer_panel(ui, &snapshot);
             ui.separator();
             self.event_log(ui, &snapshot);
+        });
+        // The roll: the scheduled notes over time, under the curves and
+        // above the window's bottom edge — visible beside the phrase
+        // curves they obey.
+        egui::TopBottomPanel::bottom("roll").show(ctx, |ui| {
+            ui.add_space(3.0);
+            roll::panel(ui, &snapshot);
         });
         egui::CentralPanel::default().show(ctx, |ui| {
             self.curve_plots(ui, &snapshot);

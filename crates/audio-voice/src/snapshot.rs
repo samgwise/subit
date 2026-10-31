@@ -9,6 +9,7 @@ use crate::composer::{EventTallies, ReplanReason, SlotRecord};
 use crate::curve::{effective_curve, span_factor, Curve};
 use crate::form::FormSummary;
 use crate::harmony::VOCABULARY;
+use crate::midi_log::{CcPoint, MidiLog, NoteSpan};
 use crate::music::{curve_norm, HarmonySource, MusicState, CYCLE_LEN};
 
 /// How many performed events the daemon's log ring keeps.
@@ -149,6 +150,10 @@ pub struct UiSnapshot {
     pub history: Vec<SlotRecord>,
     /// The recent performed game events, in arrival order.
     pub events: Vec<EventLogEntry>,
+    /// The scheduled MIDI's note spans — the piano-roll's data.
+    pub roll: Vec<NoteSpan>,
+    /// The scheduled MIDI's controller points — the CC lanes' data.
+    pub ccs: Vec<CcPoint>,
 }
 
 /// The composer's inputs to a snapshot — copied out of the daemon's locals.
@@ -170,6 +175,9 @@ pub struct SnapshotInputs<'a> {
     pub intent: Option<String>,
     pub history: &'a [SlotRecord],
     pub events: &'a [EventLogEntry],
+    /// The scheduled MIDI's log — trimmed to the window here, then
+    /// copied into the snapshot.
+    pub midi_log: &'a mut MidiLog,
     pub composer: ComposerInputs,
 }
 
@@ -196,9 +204,10 @@ fn phrase_t(state: &MusicState) -> f64 {
 }
 
 impl UiSnapshot {
-    /// Capture the conductor's state — pure, so the tests can drive it
-    /// without a hub or a UI.
+    /// Capture the conductor's state. The log's trim runs here — the
+    /// hub time is the clock the log's window works in.
     pub fn capture(inputs: SnapshotInputs<'_>) -> Self {
+        inputs.midi_log.trim(inputs.hub_time);
         let state = inputs.state;
 
         let current_index = state.harmony.current_vocab(state.slot);
@@ -299,6 +308,8 @@ impl UiSnapshot {
             },
             history: inputs.history.to_vec(),
             events: inputs.events.to_vec(),
+            roll: inputs.midi_log.spans().to_vec(),
+            ccs: inputs.midi_log.ccs().to_vec(),
         }
     }
 }
@@ -318,7 +329,11 @@ mod tests {
         state
     }
 
-    fn inputs<'a>(state: &'a MusicState, form: &'a FormSummary) -> SnapshotInputs<'a> {
+    fn inputs<'a>(
+        state: &'a MusicState,
+        form: &'a FormSummary,
+        midi_log: &'a mut MidiLog,
+    ) -> SnapshotInputs<'a> {
         SnapshotInputs {
             hub_time: 10.0,
             slot_start: 8.0,
@@ -328,6 +343,7 @@ mod tests {
             intent: None,
             history: &[],
             events: &[],
+            midi_log,
             composer: ComposerInputs {
                 enabled: false,
                 last_replan: None,
@@ -340,7 +356,8 @@ mod tests {
     fn the_cycle_derives_its_turn_position_and_phrase_t() {
         let state = state_at(4);
         let form = FormSummary::default();
-        let snapshot = UiSnapshot::capture(inputs(&state, &form));
+        let mut midi_log = MidiLog::default();
+        let snapshot = UiSnapshot::capture(inputs(&state, &form, &mut midi_log));
         assert_eq!(snapshot.harmony.source, HarmonyKind::Cycle);
         assert_eq!(snapshot.harmony.turn_position, Some((4, CYCLE_LEN)));
         assert!((snapshot.curves.phrase_t - 4.0 / CYCLE_LEN as f64).abs() < 1e-9);
@@ -366,7 +383,8 @@ mod tests {
             cursor: 3,
         };
         let form = FormSummary::default();
-        let snapshot = UiSnapshot::capture(inputs(&state, &form));
+        let mut midi_log = MidiLog::default();
+        let snapshot = UiSnapshot::capture(inputs(&state, &form, &mut midi_log));
 
         assert_eq!(snapshot.harmony.source, HarmonyKind::Plan);
         assert_eq!(snapshot.harmony.cursor, Some(3));
@@ -398,7 +416,8 @@ mod tests {
             cursor: 1,
         };
         let form = FormSummary::default();
-        let snapshot = UiSnapshot::capture(inputs(&state, &form));
+        let mut midi_log = MidiLog::default();
+        let snapshot = UiSnapshot::capture(inputs(&state, &form, &mut midi_log));
 
         assert_eq!(snapshot.curves.contour.len(), CURVE_SAMPLES + 1);
         for (t, lower, upper) in &snapshot.curves.contour {
@@ -419,7 +438,8 @@ mod tests {
     fn the_snapshot_shows_the_spanned_bounds_at_rest() {
         let state = state_at(0);
         let form = FormSummary::default();
-        let snapshot = UiSnapshot::capture(inputs(&state, &form));
+        let mut midi_log = MidiLog::default();
+        let snapshot = UiSnapshot::capture(inputs(&state, &form, &mut midi_log));
 
         assert!((snapshot.curves.span - SPAN_REST).abs() < 1e-6);
         // The effective bounds fold toward the centre: the floor rises
@@ -447,7 +467,8 @@ mod tests {
             event: crate::GameEvent::LevelUp,
         }];
         let form = FormSummary::default();
-        let mut snapshot_inputs = inputs(&state, &form);
+        let mut midi_log = MidiLog::default();
+        let mut snapshot_inputs = inputs(&state, &form, &mut midi_log);
         snapshot_inputs.history = &history;
         snapshot_inputs.events = &events;
         let snapshot = UiSnapshot::capture(snapshot_inputs);
@@ -458,5 +479,20 @@ mod tests {
         assert!(snapshot.drive.degraded);
         assert_eq!(snapshot.drive.aggro_locks, 4);
         assert_eq!(snapshot.clock.slot, 3);
+    }
+
+    #[test]
+    fn the_roll_and_cc_points_ride_along() {
+        let state = state_at(0);
+        let form = FormSummary::default();
+        let mut midi_log = MidiLog::default();
+        midi_log.record_play(0, 38, 88, 9.0, 2.0);
+        midi_log.record_cc(9.5, 0, 1, 96);
+        let snapshot = UiSnapshot::capture(inputs(&state, &form, &mut midi_log));
+
+        assert_eq!(snapshot.roll.len(), 1);
+        assert!((snapshot.roll[0].start - 9.0).abs() < 1e-9);
+        assert_eq!(snapshot.ccs.len(), 1);
+        assert_eq!(snapshot.ccs[0].value, 96);
     }
 }

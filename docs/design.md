@@ -506,7 +506,9 @@ seconds; heavier generalists trip ollama 0.35's grammar into
 minute-long sampler rollbacks), `OLLAMA_DISABLED`.
 
 Channel map (one synth each in REAPER): 1 bass, 2 distant, 3 bell,
-4 airy, 5 pattern A, 6 pattern B, 7 one-shot combat fx. The mod wheel
+4 airy, 5 pattern A, 6 pattern B, 7 one-shot combat fx — the monitor's
+piano roll names and colours these channels (the same map the legend
+speaks). The mod wheel
 on channel 1 is the bass's own and belongs to the phrase, not the player:
 the voice daemon schedules its trajectory per chord slot from the phrase's
 dynamic arc (one point per quaver, on the bass pulse grid), and a phrase
@@ -599,6 +601,7 @@ at note attacks. The percussive voices stay velocity-only.
 || Contour tiles / span | arc, rise, fall, valley, narrow — rolled per turn, tail-stitched / 0.55 at rest → 1.0 at full flight, folded about 28 semitones |
 || Dynamic tiles | swell, dip, climb, fade — rolled with the contour |
 || Tie re-arm | three slots per boundary, via /midi/cancel |
+|| Monitor roll: window / log caps | 12 s back + 2 s ahead / 256 spans and points, 30 s trim |
 | Arrangement: layer thresholds / sparse rotation / arrival lift | 1 voice, 2 past 0.33, 3 past 0.66 / all three rotating, two slots each / airy added past 0.85 progress |
 | Idle bell: polyrhythms / plink gate | 3:4, 5:4, 6:4 or 7:4 per bell slot (N over the bass's four-quaver window, repeating) / 0.6 × the plink spacing |
 | Dynamics: marks ladder / phrase band / episode shade / expression | pp–ff (16–126), interpolated / 0.7–1.15 × general / one mark in an episode / CC11 on the sustained voices at each boundary |

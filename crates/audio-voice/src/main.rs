@@ -20,6 +20,7 @@ use audio_voice::composer::{
 };
 use audio_voice::curve::Curve;
 use audio_voice::form::Form;
+use audio_voice::midi_log::MidiLog;
 use audio_voice::monitor::Monitor;
 use audio_voice::snapshot::{EventLogEntry, SnapshotInputs, UiSnapshot, EVENT_LOG_LEN};
 use rand::SeedableRng;
@@ -136,6 +137,7 @@ async fn run_conductor(monitor: Monitor) {
     // queues — an absent window costs nothing.
     let mut conductor = ConductorMonitor {
         monitor,
+        midi_log: MidiLog::default(),
         composer_enabled,
         last_replan: None,
         last_tallies: None,
@@ -225,6 +227,7 @@ async fn run_conductor(monitor: Monitor) {
                                 // from there.
                                 for &(channel, note) in &sounding {
                                     let msg = midi_note_off(channel, note, cut);
+                                    conductor.record(&msg);
                                     if let Err(err) = hub.send_action(msg).await {
                                         tracing::error!("failed to send note-off: {err:?}");
                                     }
@@ -281,6 +284,8 @@ async fn run_conductor(monitor: Monitor) {
                         while event_log.len() > EVENT_LOG_LEN {
                             event_log.pop_front();
                         }
+                        let msg = midi_play(&note, when);
+                        conductor.record(&msg);
                         conductor.publish(
                             now,
                             slot_start,
@@ -293,7 +298,7 @@ async fn run_conductor(monitor: Monitor) {
                                 event_log: event_log.make_contiguous(),
                             },
                         );
-                        match hub.send_action(midi_play(&note, when)).await {
+                        match hub.send_action(msg).await {
                             Ok(()) => tracing::info!(
                                 address = %address,
                                 when,
@@ -326,8 +331,9 @@ async fn run_conductor(monitor: Monitor) {
                 let (held_tones, off_tones) =
                     music::sustain_split(&sustained, &next_sustained);
                 for &(channel, note) in &off_tones {
-                    if let Err(err) = hub.send_action(midi_note_off(channel, note, slot_end)).await
-                    {
+                    let msg = midi_note_off(channel, note, slot_end);
+                    conductor.record(&msg);
+                    if let Err(err) = hub.send_action(msg).await {
                         tracing::error!("failed to send legato note-off: {err:?}");
                     }
                 }
@@ -339,6 +345,7 @@ async fn run_conductor(monitor: Monitor) {
                 let window = tie_window(end - slot_end);
                 for &(channel, note) in &held_tones {
                     let msg = midi_cancel(channel, note, slot_end, window);
+                    conductor.record(&msg);
                     if let Err(err) = hub.send_action(msg).await {
                         tracing::error!("failed to re-arm a tie: {err:?}");
                     }
@@ -356,7 +363,9 @@ async fn run_conductor(monitor: Monitor) {
                         continue; // the common tone keeps ringing
                     }
                     let when = slot_end + at;
-                    if let Err(err) = hub.send_action(midi_play(&note, when)).await {
+                    let msg = midi_play(&note, when);
+                    conductor.record(&msg);
+                    if let Err(err) = hub.send_action(msg).await {
                         tracing::error!("failed to schedule score note: {err:?}");
                     }
                 }
@@ -369,6 +378,7 @@ async fn run_conductor(monitor: Monitor) {
                 // point per quaver, on the bass pulse grid.
                 for (at, wheel) in music::wheel_trajectory(&score, slot_start, slot_end) {
                     let msg = midi_cc(CHANNEL_BASS, MOD_WHEEL_CC, wheel, slot_start + at);
+                    conductor.record(&msg);
                     if let Err(err) = hub.send_action(msg).await {
                         tracing::error!("failed to schedule the bass mod wheel: {err:?}");
                     }
@@ -380,6 +390,7 @@ async fn run_conductor(monitor: Monitor) {
                 let level = music::expression_level(&score);
                 for channel in [CHANNEL_DISTANT, CHANNEL_AIRY] {
                     let msg = midi_cc(channel, EXPRESSION_CC, level, 0.0);
+                    conductor.record(&msg);
                     if let Err(err) = hub.send_action(msg).await {
                         tracing::error!("failed to send expression: {err:?}");
                     }
@@ -495,6 +506,7 @@ async fn run_conductor(monitor: Monitor) {
                             let level = music::expression_level(&score);
                             for channel in [CHANNEL_DISTANT, CHANNEL_AIRY] {
                                 let msg = midi_cc(channel, EXPRESSION_CC, level, 0.0);
+                                conductor.record(&msg);
                                 if let Err(err) = hub.send_action(msg).await {
                                     tracing::error!("failed to send expression: {err:?}");
                                 }
@@ -526,6 +538,8 @@ async fn run_conductor(monitor: Monitor) {
 /// trace the snapshots carry.
 struct ConductorMonitor {
     monitor: Monitor,
+    /// The scheduled MIDI's log — the piano-roll's source.
+    midi_log: MidiLog,
     composer_enabled: bool,
     last_replan: Option<ReplanReason>,
     last_tallies: Option<EventTallies>,
@@ -541,6 +555,12 @@ struct PublishState<'a> {
 }
 
 impl ConductorMonitor {
+    /// Record a built MIDI action on the roll's log — the one extra step
+    /// every MIDI send site makes before sending.
+    fn record(&mut self, msg: &WireMessage) {
+        self.midi_log.record_action(msg);
+    }
+
     /// Record why the composer was asked for the next phrase.
     fn note_replan(&mut self, reason: ReplanReason) {
         self.last_replan = Some(reason);
@@ -552,8 +572,10 @@ impl ConductorMonitor {
     }
 
     /// Publish a snapshot of the conductor's state — the newest wins,
-    /// nothing queues.
-    fn publish(&self, now: f64, slot_start: f64, slot_end: f64, state: PublishState<'_>) {
+    /// nothing queues. The log trims to its window here, on the same
+    /// clock.
+    fn publish(&mut self, now: f64, slot_start: f64, slot_end: f64, state: PublishState<'_>) {
+        self.midi_log.trim(now);
         let form_summary = state.form.summary();
         self.monitor.publish(UiSnapshot::capture(SnapshotInputs {
             hub_time: now,
@@ -564,6 +586,7 @@ impl ConductorMonitor {
             intent: state.intent,
             history: state.history,
             events: state.event_log,
+            midi_log: &mut self.midi_log,
             composer: audio_voice::snapshot::ComposerInputs {
                 enabled: self.composer_enabled,
                 last_replan: self.last_replan,

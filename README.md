@@ -111,8 +111,9 @@ deterministic cycle plays whenever the model is slow, wrong or absent.
 
 The audio voice can open a live window on the generative score — what chord
 is sounding and why, the phrase's voicing contour and dynamic arc, the
-conductor's intensity machinery, the composer's trace, and the recent
-performed events:
+conductor's intensity machinery, the composer's trace, a piano roll of the
+scheduled notes (with the bass's mod wheel and the pads' expression lanes
+beneath), and the recent performed events:
 
 ```sh
 cargo run -p audio-voice --features ui -- --ui

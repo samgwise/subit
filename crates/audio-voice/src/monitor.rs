@@ -11,6 +11,8 @@ use crate::snapshot::UiSnapshot;
 
 #[cfg(feature = "ui")]
 pub mod app;
+#[cfg(feature = "ui")]
+pub mod roll;
 
 /// The conductor's publisher.
 #[derive(Clone)]
@@ -49,11 +51,13 @@ impl MonitorView {
 mod tests {
     use super::*;
     use crate::form::FormSummary;
+    use crate::midi_log::MidiLog;
     use crate::music::MusicState;
     use crate::snapshot::{ComposerInputs, SnapshotInputs};
 
     fn snapshot_with_locks(locks: u32) -> UiSnapshot {
         let state = MusicState { aggro_locks: locks, ..MusicState::default() };
+        let mut midi_log = MidiLog::default();
         UiSnapshot::capture(SnapshotInputs {
             hub_time: 0.0,
             slot_start: 0.0,
@@ -63,6 +67,7 @@ mod tests {
             intent: None,
             history: &[],
             events: &[],
+            midi_log: &mut midi_log,
             composer: ComposerInputs {
                 enabled: false,
                 last_replan: None,

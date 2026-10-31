@@ -10,6 +10,7 @@ pub mod composer;
 pub mod curve;
 pub mod form;
 pub mod harmony;
+pub mod midi_log;
 pub mod monitor;
 pub mod music;
 pub mod snapshot;
