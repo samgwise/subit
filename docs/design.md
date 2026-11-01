@@ -422,13 +422,18 @@ performed slots: chord, duration, whether the conductor cut or held it)
 and the game's present (tallies since the last plan: mob sweeps, kills,
 level-ups, corruption boundaries, descents, and the aggro average and
 peak, and deaths) and lays out the next phrase — 4–8 chord slots picked
-from a seventeen-entry vocabulary (the cycle's nine plus submarine's
-function palette: supertonic, subdominant, dominant, dominant seventh),
+from a twenty-three-entry vocabulary (the cycle's nine plus submarine's
+function palette and the calm colours: supertonic, subdominant, dominant,
+dominant seventh, and the sixths and sevenths of home),
 each labelled with its harmonic function, plus optional Bézier control
 points for the phrase's voicing contour. The palette stretches past the
 submarine set for the run's dramatic arc: F major (the borrowed third),
 C major (the natural seventh), Am (the modal v), and D7 (the tonic's own
-pull to the subdominant — the palette's second closable dominant).
+pull to the subdominant — the palette's second closable dominant). The
+common-tone walk brought the calm colours: i7 and i6 (the tonic's own
+seventh and Dorian sixth), iiø7 (the half-diminished pre-dominant),
+IV6, v7, and ♭VIImaj7 — sixths and sevenths that hold the voices close
+so settled phrases can vary without leaping.
 
 The vocabulary speaks roman numerals relative to the key, and a slot may
 set its bass to any chord tone — an inversion mid-phrase for stepwise
@@ -455,6 +460,22 @@ a time (queued requests collapse to the newest), requests time out after
 30 s (a safety valve — the verified model plans in a couple of seconds),
 and `OLLAMA_DISABLED=1` hard-disables the tier — the score never stalls
 on the model.
+
+The curve leads the harmony's density: at install, the plan is realised
+through the chord network (after ScaleVec::Chord::Graph and Tymoczko's
+voice-leading geometries) — each chord is a node (its pitch classes
+relative to the tonic, key-invariant), and the common-tone difference
+(the larger chord's size minus the tones it shares — the coarse
+voice-leading distance) weights the transitions. The plan's dynamic arc
+sets a movement target per transition — a settled phrase holds voices,
+a crescendo moves them — and a backtracking walk re-picks the middle
+slots to follow it, keeping the model's own picks wherever they already
+fit and the first/last slots as cadence anchors always. Re-picked slots
+drop their inversions; a dead end or a grammar failure degrades to the
+model's plan untouched — the walk never fails, and the validator still
+gates everything. The deterministic cycle keeps its fixed walk (the
+bass's lockstep depends on it); a network-walking fallback is future
+work.
 
 The run has an arc, and it is the composer's to score: the player's
 slow-field progress toward the exit (BFS distance to the goal,
@@ -595,7 +616,7 @@ at note attacks. The percussive voices stay velocity-only.
 || Bass: pulse rate / relaxed figure / gate | quavers / 6 then rest (periods of 3+ beats), continuous below / 0.6 × quaver |
 ||| Bass mod wheel: floor / lift rule | 24 CC / the phrase arc; a settled final slot rises monotonically to 127 |
 | Degraded zone: chromatic rotation | ±3 semitones per mapping, hash of the pitch class |
-| Composer: phrase / replan margin / request timeout | 4–8 slots (17-chord vocabulary) / 2 slots / 30 s |
+| Composer: phrase / replan margin / request timeout | 4–8 slots (23-chord vocabulary) / 2 slots / 30 s |
 | Objective progress | 1 − BFS steps/initial, clamped 0–1, published on 1% change (Param) |
 | Form: home cycle / change chance / sequence vs episode / episode span & return | 4, 6 or 8 phrases / 60% at expiry / 60% sequence (a tone, one phrase) / 2–4 phrases, 40% return per phrase |
 || Voices: bands & offsets | derived from the spanned contour — the distant the floor region, the airy the top, the bell a 12-semitone band floored at the range's centre (never narrower than 12); entries at 0 / a quaver / three 16ths |
@@ -603,6 +624,7 @@ at note attacks. The percussive voices stay velocity-only.
 || Dynamic tiles | swell, dip, climb, fade — rolled with the contour |
 || Tie re-arm | three slots per boundary, via /midi/cancel |
 || Monitor roll: window / log caps | 12 s back + 2 s ahead / 256 spans and points, 30 s trim |
+|| Chord network: movement targets | the dynamic arc's shape at each transition — ≤⅓ holds (target 0), ≤⅔ allows one moving tone, past that two; anchors kept, walk degrades to the model's plan |
 | Arrangement: layer thresholds / sparse rotation / arrival lift | 1 voice, 2 past 0.33, 3 past 0.66 / all three rotating, two slots each / airy added past 0.85 progress |
 | Idle bell: polyrhythms / plink gate | 3:4, 5:4, 6:4 or 7:4 per bell slot (N over the bass's four-quaver window, repeating) / 0.6 × the plink spacing |
 | Dynamics: marks ladder / phrase band / episode shade / expression | pp–ff (16–126), interpolated / 0.7–1.15 × general / one mark in an episode / CC11 on the sustained voices at each boundary |

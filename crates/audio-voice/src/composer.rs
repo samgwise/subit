@@ -66,7 +66,9 @@ sounding chord and of each other), never more than two of the same chord \
 in a row, and close the phrase on a tonic or a dominant. Save the dim7 \
 for a dominant's approach — E major prepares it. Calm scenes live on \
 tonic and subdominant space; combat earns dominants and colour; a \
-corrupted zone asks for the darker colour.
+corrupted zone asks for the darker colour. The sixths and sevenths of \
+the tonic and subdominant are calm's own colours — they hold the \
+voices close.
 
 The run has an arc, and it is yours to score: the player's \
 objective_progress (0 fresh from the spawn or just died back, 1 at the \
@@ -99,7 +101,7 @@ pub const PLAN_SCHEMA: &str = r#"{
             "items": {
                 "type": "object",
                 "properties": {
-                    "chord": { "type": "integer", "minimum": 0, "maximum": 16 },
+                    "chord": { "type": "integer", "minimum": 0, "maximum": 22 },
                     "bass": { "type": "integer", "minimum": 0, "maximum": 3 }
                 },
                 "required": ["chord"]
@@ -790,6 +792,5 @@ mod tests {
             schema["properties"]["slots"]["items"]["properties"]["chord"]["maximum"],
             VOCABULARY.len() as u32 - 1
         );
-        assert_eq!(VOCABULARY.len(), 17);
     }
 }

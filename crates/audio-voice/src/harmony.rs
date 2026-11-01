@@ -22,6 +22,17 @@ pub enum Quality {
     MinorSus43,
     Diminished7,
     Dominant7,
+    /// The minor sixth (a Dorian colour): the major sixth beside the minor
+    /// triad — the tonic's warmest hold.
+    Minor6,
+    /// The major sixth (an added-sixth colour).
+    Major6,
+    /// The minor seventh (the mode's own seventh beside the triad).
+    Minor7,
+    /// The half-diminished seventh (the minor mode's pre-dominant).
+    HalfDiminished7,
+    /// The major seventh.
+    Major7,
 }
 
 impl Quality {
@@ -32,18 +43,11 @@ impl Quality {
             Quality::MinorSus43 => &[0.0, 3.0, 4.0, 7.0],
             Quality::Diminished7 => &[0.0, 3.0, 6.0, 9.0],
             Quality::Dominant7 => &[0.0, 4.0, 7.0, 10.0],
-        }
-    }
-
-    /// The quality's index in the composer's menu — the plan's JSON speaks
-    /// integers, not names.
-    pub fn index(self) -> u32 {
-        match self {
-            Quality::Minor => 0,
-            Quality::Major => 1,
-            Quality::MinorSus43 => 2,
-            Quality::Diminished7 => 3,
-            Quality::Dominant7 => 4,
+            Quality::Minor6 => &[0.0, 3.0, 7.0, 9.0],
+            Quality::Major6 => &[0.0, 4.0, 7.0, 9.0],
+            Quality::Minor7 => &[0.0, 3.0, 7.0, 10.0],
+            Quality::HalfDiminished7 => &[0.0, 3.0, 6.0, 10.0],
+            Quality::Major7 => &[0.0, 4.0, 7.0, 11.0],
         }
     }
 }
@@ -104,6 +108,15 @@ pub const VOCABULARY: &[VocabEntry] = &[
     VocabEntry { degree: 8.0, quality: Quality::Major, function: Function::Colour, name: "♭VII (the natural seventh)" },
     VocabEntry { degree: 6.0, quality: Quality::Minor, function: Function::Colour, name: "v (the modal v)" },
     VocabEntry { degree: 0.0, quality: Quality::Dominant7, function: Function::Dominant, name: "I7 (the pull to the subdominant)" },
+    // The calm colours the chord network's common-tone walk wanted: the
+    // tonic and subdominant space's sixths and sevenths — many shared
+    // tones, so the settled phrases can vary without the voices leaping.
+    VocabEntry { degree: 0.0, quality: Quality::Minor7, function: Function::Tonic, name: "i7 (the tonic's seventh)" },
+    VocabEntry { degree: 0.0, quality: Quality::Minor6, function: Function::Tonic, name: "i6 (the tonic's Dorian sixth)" },
+    VocabEntry { degree: 1.0, quality: Quality::HalfDiminished7, function: Function::Subdominant, name: "iiø7 (the half-diminished pre-dominant)" },
+    VocabEntry { degree: 4.0, quality: Quality::Major6, function: Function::Subdominant, name: "IV6 (the subdominant's sixth)" },
+    VocabEntry { degree: 6.0, quality: Quality::Minor7, function: Function::Dominant, name: "v7 (the modal dominant's seventh)" },
+    VocabEntry { degree: 8.0, quality: Quality::Major7, function: Function::Colour, name: "♭VIImaj7 (the natural seventh's majesty)" },
 ];
 
 /// One planned chord: a vocabulary index, an optional bass tone (an
