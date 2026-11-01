@@ -22,6 +22,7 @@ use audio_voice::curve::Curve;
 use audio_voice::form::Form;
 use audio_voice::midi_log::MidiLog;
 use audio_voice::monitor::Monitor;
+use audio_voice::network;
 use audio_voice::snapshot::{EventLogEntry, SnapshotInputs, UiSnapshot, EVENT_LOG_LEN};
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
@@ -493,9 +494,23 @@ async fn run_conductor(monitor: Monitor) {
                             } else {
                                 music::default_phrase_curve()
                             };
+                            // The curve leads the harmony: the network walk
+                            // re-picks the middle slots to keep the common
+                            // tones the arc asks for — the composer's anchors
+                            // and intent survive.
+                            let realised =
+                                network::realise_plan(&outcome.plan, &dynamic, &mut form_rng);
+                            let repicked = realised
+                                .slots
+                                .iter()
+                                .zip(outcome.plan.slots.iter())
+                                .filter(|(new, old)| new.chord != old.chord)
+                                .count();
+                            if repicked > 0 {
+                                tracing::info!(repicked, "the curve re-voiced the plan's middle");
+                            }
                             score.harmony = HarmonySource::Plan {
-                                // The plan's slots carry their inversions.
-                                slots: outcome.plan.slots.clone(),
+                                slots: realised.slots.clone(),
                                 curve: outcome.curve,
                                 dynamic,
                                 cursor: 0,

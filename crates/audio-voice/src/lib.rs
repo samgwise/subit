@@ -13,6 +13,7 @@ pub mod harmony;
 pub mod midi_log;
 pub mod monitor;
 pub mod music;
+pub mod network;
 pub mod snapshot;
 
 /// MIDI channel the one-shot combat fx perform on — the generative score

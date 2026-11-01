@@ -359,9 +359,16 @@ fn chord_cell(ui: &mut egui::Ui, slot: &PlannedSlotView, state: CellState) {
         ),
         CellState::Future => (egui::Stroke::new(1.0_f32, egui::Color32::GRAY), egui::Color32::BLACK),
     };
+    // The transition's movement reads as dots: a ring for a held
+    // common-tone pivot, one dot per moving tone after it.
+    let movement = if slot.moving_tones == 0 {
+        "◦".to_string()
+    } else {
+        "●".repeat(slot.moving_tones)
+    };
     let label = match slot.bass {
-        Some(tone) => format!("{}\n(inv {})", short_name(slot.name), tone),
-        None => short_name(slot.name).to_string(),
+        Some(tone) => format!("{}\n(inv {tone}) {movement}", short_name(slot.name)),
+        None => format!("{} {movement}", short_name(slot.name)),
     };
     egui::Frame::default()
         .stroke(stroke)
@@ -372,7 +379,10 @@ fn chord_cell(ui: &mut egui::Ui, slot: &PlannedSlotView, state: CellState) {
             ui.label(egui::RichText::new(label).small());
         })
         .response
-        .on_hover_text(format!("{} — {}", slot.name, slot.function));
+        .on_hover_text(format!(
+            "{} — {}; {} tone(s) move in",
+            slot.name, slot.function, slot.moving_tones
+        ));
 }
 
 /// A performed slot in the history — cut rings red, held rings blue.

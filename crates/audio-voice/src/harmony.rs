@@ -147,6 +147,19 @@ pub const PLAN_MAX_SLOTS: usize = 16;
 /// this read as a teleport, not a voice-lead.
 const MAX_VOICE_LEAP: f64 = 5.0;
 
+/// Whether a root move stays inside the voice-leap span — the folded
+/// semitone distance (the dim7 exempt as a source: it resolves by
+/// stepwise tones, not root motion).
+pub(crate) fn voice_leap_is_fine(a: usize, b: usize) -> bool {
+    use crate::music::pitch_stack;
+    if VOCABULARY[a].quality == Quality::Diminished7 {
+        return true;
+    }
+    let semitone = |index: usize| pitch_stack().step(VOCABULARY[index].degree).rem_euclid(12.0);
+    let distance = (semitone(b) - semitone(a)).rem_euclid(12.0);
+    distance.min(12.0 - distance) <= MAX_VOICE_LEAP
+}
+
 /// Validate a plan against the grammar. `prev_chord` is the sounding
 /// vocabulary index (for the boundary voice-leap check); `None` when the
 /// plan opens the piece. Rejected plans fall back to the cycle.
@@ -165,27 +178,15 @@ pub fn validate(plan: &HarmonyPlan, prev_chord: Option<usize>) -> Result<(), Str
 
     // Voice-leading: consecutive roots stay close (including across the
     // boundary from the sounding chord). The distance folds around the
-    // octave — a fifth down is the same hand position as a fourth up. The
-    // dim7 is exempt as a source: it resolves by stepwise tones, not root
-    // motion (the cycle's own cadence is a tritone apart).
-    let leaps_well = |a: usize, b: usize| {
-        use crate::music::pitch_stack;
-        if VOCABULARY[a].quality == Quality::Diminished7 {
-            return true;
-        }
-        let semitone =
-            |i: usize| pitch_stack().step(VOCABULARY[i].degree).rem_euclid(12.0);
-        let distance = (semitone(b) - semitone(a)).rem_euclid(12.0);
-        distance.min(12.0 - distance) <= MAX_VOICE_LEAP
-    };
+    // octave — a fifth down is the same hand position as a fourth up.
     for pair in plan.slots.windows(2) {
         let (a, b) = (pair[0].chord as usize, pair[1].chord as usize);
-        if !leaps_well(a, b) {
+        if !voice_leap_is_fine(a, b) {
             return Err(format!("voice leap from {a} to {b} exceeds the span"));
         }
     }
     if let Some(prev) = prev_chord
-        && !leaps_well(prev, plan.slots[0].chord as usize)
+        && !voice_leap_is_fine(prev, plan.slots[0].chord as usize)
     {
         return Err("boundary voice leap exceeds the span".into());
     }

@@ -11,6 +11,7 @@ use crate::form::FormSummary;
 use crate::harmony::VOCABULARY;
 use crate::midi_log::{CcPoint, MidiLog, NoteSpan};
 use crate::music::{curve_norm, HarmonySource, MusicState, CYCLE_LEN};
+use crate::network::{chord_pitch_classes, difference};
 
 /// How many performed events the daemon's log ring keeps.
 pub const EVENT_LOG_LEN: usize = 32;
@@ -73,6 +74,9 @@ pub struct PlannedSlotView {
     /// The slot's optional bass tone (an inversion — 0 root, 1 third,
     /// 2 fifth, 3 seventh).
     pub bass: Option<u32>,
+    /// The transition's moving tones — the common-tone distance from
+    /// the previous slot (0 for the anchor and unknown origins).
+    pub moving_tones: usize,
 }
 
 /// The chord sounding right now, named for the UI.
@@ -227,15 +231,29 @@ impl UiSnapshot {
                 Some((state.slot as usize % CYCLE_LEN, CYCLE_LEN)),
             ),
             HarmonySource::Plan { slots, cursor, .. } => {
+                let mut previous: Option<usize> = None;
                 let planned = slots
                     .iter()
                     .map(|slot| {
                         let entry = &VOCABULARY[slot.chord as usize];
+                        // The transition's movement: the common-tone
+                        // distance from the previous slot (the anchor's
+                        // origin sits outside the plan).
+                        let moving_tones = previous
+                            .map(|prev| {
+                                difference(
+                                    &chord_pitch_classes(prev),
+                                    &chord_pitch_classes(slot.chord as usize),
+                                )
+                            })
+                            .unwrap_or(0);
+                        previous = Some(slot.chord as usize);
                         PlannedSlotView {
                             chord: slot.chord,
                             name: entry.name,
                             function: entry.function.name(),
                             bass: slot.bass,
+                            moving_tones,
                         }
                     })
                     .collect();
