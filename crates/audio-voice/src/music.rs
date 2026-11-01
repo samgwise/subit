@@ -571,8 +571,9 @@ enum VoiceRegister {
 /// The voice's band, derived from the spanned contour at its own phrase
 /// parameter — the registers ride the curve, so the parts spread apart
 /// as it blooms and fold in as it settles. The distant holds the floor
-/// region, the airy the top, and the bell a collar above the fence (the
-/// patterns stay clamped below it). Every band is never narrower than
+/// region, the airy the top, and the bell keeps to the range's middle:
+/// its lowest pitch anchors to the spanned bounds' centre (the patterns
+/// stay clamped below the fence). Every band is never narrower than
 /// [`MIN_BAND`], so revoice's octave fold always lands inside.
 fn voice_band(curve: &Curve, t: f64, register: VoiceRegister) -> (f64, f64) {
     let (low, high) = curve.contour(t);
@@ -580,7 +581,7 @@ fn voice_band(curve: &Curve, t: f64, register: VoiceRegister) -> (f64, f64) {
     match register {
         VoiceRegister::Distant => (low, low + (span * 0.37).max(MIN_BAND)),
         VoiceRegister::Airy => (high - (span * 0.32).max(MIN_BAND), high),
-        VoiceRegister::Bell => (high, high + MIN_BAND),
+        VoiceRegister::Bell => ((low + high) / 2.0, (low + high) / 2.0 + MIN_BAND),
     }
 }
 
@@ -1229,14 +1230,15 @@ mod tests {
                 let distant = voice_band(&curve, t, VoiceRegister::Distant);
                 let airy = voice_band(&curve, t, VoiceRegister::Airy);
                 let bell = voice_band(&curve, t, VoiceRegister::Bell);
-                // Every band holds an octave fold, and the bell sits
-                // above the fence the patterns clamp under.
+                // Every band holds an octave fold, and the bell's floor
+                // anchors to the range's centre.
                 for band in [distant, airy, bell] {
                     assert!(band.1 - band.0 >= MIN_BAND - 1e-9);
                 }
                 assert!((distant.0 - curve.contour(t).0).abs() < 1e-9);
                 assert!((airy.1 - curve.contour(t).1).abs() < 1e-9);
-                assert!((bell.0 - curve.contour(t).1).abs() < 1e-9);
+                let centre = (curve.contour(t).0 + curve.contour(t).1) / 2.0;
+                assert!((bell.0 - centre).abs() < 1e-9);
             }
         }
     }
@@ -1464,18 +1466,21 @@ mod tests {
         let (at, note) = bell[0];
         assert_secs(*at, BELL_OFFSET);
         assert_secs(note.duration_secs, BELL_SECS);
-        // The registers ride the curve but keep their order: every
-        // distant tone sits below every airy tone, and the bell rings
-        // above the fence the patterns clamp under.
+        // The registers ride the curve and keep their order, though the
+        // bell now keeps to the middle: distant below, then the bell
+        // anchored at the range's centre, then the airy on top.
         let curve = effective_curve(&state.cycle_curve, state.intensity);
-        let (_, high) = curve.contour(0.0);
+        let (bell_low, bell_high) = voice_band(&curve, 0.0, VoiceRegister::Bell);
         for &tone in &distant {
-            assert!(f64::from(tone) < f64::from(airy[0]), "distant above airy");
+            assert!(f64::from(tone) < f64::from(note.note), "distant above the bell");
         }
         for &tone in &airy {
-            assert!(f64::from(tone) < f64::from(note.note), "airy above the bell");
+            assert!(f64::from(note.note) < f64::from(tone), "the bell above the airy");
         }
-        assert!(f64::from(note.note) >= PAD_BASE + high);
+        assert!(
+            (bell_low..=bell_high).contains(&(f64::from(note.note) - PAD_BASE)),
+            "the bell left its centre band"
+        );
     }
 
     #[test]

@@ -496,10 +496,11 @@ register centre at rest (0.55) and releases the drawn shape's full
 spread at full flight — entering combat curves the voices out, leaving
 it pulls them home. The sustained voices derive their register bands
 from the spanned contour (the distant holds the floor region, the airy
-the top, the bell a collar above the fence; never narrower than an
-octave, so the octave-folding placement stays exact) — the parts spread
-apart and fold in with the curve, and common tones that stay inside
-their band hold as pivots while displaced tones re-articulate. Env:
+the top, and the bell keeps to the middle — its lowest pitch anchored
+to the bounds' centre; never narrower than an octave, so the
+octave-folding placement stays exact) — the parts spread apart and fold
+in with the curve, and common tones that stay inside their band hold as
+pivots while displaced tones re-articulate. Env:
 `OLLAMA_URL` (default `http://127.0.0.1:11434`), `OLLAMA_MODEL`
 (default `qwen3:0.6b` — verified: a validated plan in a couple of
 seconds; heavier generalists trip ollama 0.35's grammar into
@@ -597,7 +598,7 @@ at note attacks. The percussive voices stay velocity-only.
 | Composer: phrase / replan margin / request timeout | 4–8 slots (17-chord vocabulary) / 2 slots / 30 s |
 | Objective progress | 1 − BFS steps/initial, clamped 0–1, published on 1% change (Param) |
 | Form: home cycle / change chance / sequence vs episode / episode span & return | 4, 6 or 8 phrases / 60% at expiry / 60% sequence (a tone, one phrase) / 2–4 phrases, 40% return per phrase |
-|| Voices: bands & offsets | derived from the spanned contour — the distant the floor region, the airy the top, the bell a 12-semitone collar above (never narrower than 12); entries at 0 / a quaver / three 16ths |
+|| Voices: bands & offsets | derived from the spanned contour — the distant the floor region, the airy the top, the bell a 12-semitone band floored at the range's centre (never narrower than 12); entries at 0 / a quaver / three 16ths |
 || Contour tiles / span | arc, rise, fall, valley, narrow — rolled per turn, tail-stitched / 0.55 at rest → 1.0 at full flight, folded about 28 semitones |
 || Dynamic tiles | swell, dip, climb, fade — rolled with the contour |
 || Tie re-arm | three slots per boundary, via /midi/cancel |
