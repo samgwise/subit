@@ -473,3 +473,27 @@ speaks, the pattern figures contour, the bell's downbeat plink rings.
 And the sustained voices breathe the phrase continuously — the daemon
 streams CC11 (expression) on the distant and airy channels at each
 boundary, so the pads swell instead of stepping at note attacks.
+
+## Milestone 35 — The score plans for itself
+
+The deterministic fallback caught up to the composer's tools. The bass
+became a voice-led line: every pulse takes the chord tone nearest the
+spanned contour's centre echoed into the bass's octave (least movement
+breaking ties), under a small grammar — sevenths sound only at a slot's
+end and fall a step onto the next chord's third, the leading-tone third
+rises to the tonic, and the fifth never sounds twice in a row — with the
+last tone handing its role and pitch class to the next slot's planner.
+The written BASS_CYCLE and the composer's inversion field retired; the
+bass is derived for plan and fallback alike. The palette grew: the
+tonic and subdominant sevenths (i7, iiø7, v7, ♭VIImaj7) and the
+borrowed and applied colours (i+6, IV+6, ♭VI, the leading-tone triad
+vii°, II7 as V7 of V, vi7), and — the point of it all — the fallback
+stopped cycling on rails: at each turn boundary the conductor walks the
+chord network from the chord sounding now to a rolled cadence, the
+newly rolled dynamic tile supplying the movement profile, through the
+same common-tone machinery the composer's plans use. HARMONY_CYCLE
+plays once as the seed. World integrity joined the score too — the
+oldest pending gap: the streamed Param biases the walk's colours (a
+ruined world darkens, a pristine one brightens) and weights the
+cadence, so a ruined world leaves the tension open on a dominant while
+a pristine one comes home. Same seed, same walks.

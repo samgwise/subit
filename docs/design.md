@@ -652,6 +652,5 @@ at note attacks. The percussive voices stay velocity-only.
 
 ## Pending and known gaps
 
-- World integrity does not shift the harmonic mode in the audio voice yet.
 - Throwers never check line of sight before lobbing.
 - No persistence or rebinding UI.
