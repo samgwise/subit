@@ -2,8 +2,9 @@
 //! Tev1 via the `/v1/systemone` endpoint (the Jev API). Where the
 //! composer plans phrases, the counsellor makes picks: tie-breaks,
 //! shape rolls, walk steps. Every decision fails closed — a transport
-//! error, a timeout, or a low-confidence answer defers to the
-//! deterministic roll, and the score never stalls on the model.
+//! error, a timeout, or an answer that doesn't beat the roll it
+//! replaces defers to the deterministic roll, and the score never
+//! stalls on the model.
 
 use std::time::Duration;
 
@@ -17,8 +18,16 @@ use crate::harmony::HarmonyPlan;
 /// Seconds before a decision gives up; the fallback roll plays on.
 pub const DECISION_TIMEOUT_SECS: u64 = 1;
 
-/// The confidence under which a pick defers to the deterministic roll.
-pub const CONFIDENCE_FLOOR: f32 = 0.5;
+/// How far a pick's probability must clear the uniform roll it
+/// replaces. The endpoint's own confidence shrinks as the option
+/// count grows — a clear 20-way pick scores about 0.25 — so
+/// acceptance is judged against the roll itself: 0.29 over a 0.05
+/// roll is signal, a 58/42 two-option lean is a coin flip and defers.
+pub const PROBABILITY_MARGIN: f64 = 0.1;
+
+/// Seconds the warm-up's load may take — a cold 4b model loads in one
+/// lump of tens of seconds.
+pub const WARMUP_TIMEOUT_SECS: u64 = 120;
 
 /// A choice option — the key the answer names and the words the model
 /// reads.
@@ -39,7 +48,7 @@ pub struct Decision {
 }
 
 /// The outcome: the picked option's key — None when the pick defers
-/// (low confidence) to the deterministic roll.
+/// (it failed to beat the roll) to the deterministic roll.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DecisionOutcome {
     pub choice: Option<String>,
@@ -76,6 +85,15 @@ pub trait DecisionClient {
         &self,
         decision: &Decision,
     ) -> impl std::future::Future<Output = Result<DecisionOutcome, DecisionError>> + Send;
+
+    /// Bring the decision model resident — a no-op for in-memory
+    /// transports. Fired at spawn and again after a transport failure,
+    /// because a cold load (tens of seconds) dwarfs the decision
+    /// timeout: without it every decision times out while the weights
+    /// stream in.
+    fn warm_up(&self) -> impl std::future::Future<Output = ()> + Send {
+        std::future::ready(())
+    }
 }
 
 /// The ollama system-one client: POST {url}/v1/systemone with the
@@ -141,12 +159,61 @@ impl DecisionClient for SystemOneClient {
         let reply: Value = response.json().await.map_err(DecisionError::Http)?;
         Self::parse_reply(&reply, decision)
     }
+
+    fn warm_up(&self) -> impl std::future::Future<Output = ()> + Send {
+        // The cold load is one lump of many seconds — far past the
+        // decision timeout — so the warm-up posts a cheap two-option
+        // question with a generous timeout (the load, not the answer,
+        // is the point) and the usual keep_alive, leaving the model
+        // resident for the run's turns. A failed warm-up is harmless:
+        // every decision fails closed and the deterministic roll
+        // plays until one succeeds.
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(WARMUP_TIMEOUT_SECS))
+            .build()
+            .expect("the warm-up client builds");
+        let endpoint = self.endpoint.clone();
+        let model = self.model.clone();
+        async move {
+            let started = std::time::Instant::now();
+            let body = json!({
+                "model": model,
+                "state": {},
+                "questions": {
+                    "warm": {
+                        "type": "choice",
+                        "instructions": "Is this a warm-up?",
+                        "criteria": { "yes": "true", "no": "false" },
+                    }
+                },
+                "keep_alive": "10m",
+            });
+            match http
+                .post(format!("{endpoint}/v1/systemone"))
+                .json(&body)
+                .send()
+                .await
+            {
+                Ok(response) if response.status().is_success() => tracing::info!(
+                    loaded_in_secs = started.elapsed().as_secs_f32(),
+                    "the counsellor's model is warm"
+                ),
+                Ok(response) => tracing::warn!(
+                    status = %response.status(),
+                    "the counsellor's warm-up failed; the deterministic roll plays on"
+                ),
+                Err(err) => tracing::warn!(
+                    "the counsellor's warm-up failed ({err}); the deterministic roll plays on"
+                ),
+            }
+        }
+    }
 }
 
 impl SystemOneClient {
     /// Map the reply's answer back to an option key — deferring (a None
-    /// choice) when the confidence runs under the floor or the shape
-    /// surprises us.
+    /// choice) when the pick fails to beat the roll it replaces, or
+    /// the shape surprises us.
     fn parse_reply(reply: &Value, decision: &Decision) -> Result<DecisionOutcome, DecisionError> {
         let answer = reply
             .get("answers")
@@ -167,15 +234,22 @@ impl SystemOneClient {
             }
             None => None,
         };
-        let choice = if confidence >= CONFIDENCE_FLOOR { choice } else { None };
+        // The endpoint's own confidence is a margin-style number that
+        // shrinks as the option count grows (a clear 20-way pick
+        // scores about 0.25), so acceptance reads the picked option's
+        // probability against the uniform roll it replaces: it must
+        // beat the roll by [`PROBABILITY_MARGIN`].
+        let roll = 1.0 / decision.options.len().max(1) as f64;
+        let choice = choice.filter(|key| {
+            answer
+                .get("probabilities")
+                .and_then(|probabilities| probabilities.get(key.as_str()))
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0)
+                >= roll + PROBABILITY_MARGIN
+        });
         Ok(DecisionOutcome { choice, confidence })
     }
-}
-
-/// Whether the counsellor participates: `TEV1_DISABLED` unset or not "1"
-/// (the mirror of OLLAMA_DISABLED).
-pub fn enabled_from_env() -> bool {
-    std::env::var("TEV1_DISABLED").is_ok_and(|disabled| disabled != "1")
 }
 
 /// A counselled turn: the walked plan plus the shape names the
@@ -191,13 +265,16 @@ pub struct CounselledTurn {
 /// to the picked shapes and re-walk the turn with the model's picks,
 /// publishing the counselled turn on its watch channel. A failed or
 /// deferred decision publishes nothing — the deterministic walk plays
-/// on. Returns the request sender and the counselled turns' view.
+/// on. The model warms at spawn (and again after any transport
+/// failure) — a cold load dwarfs the decision timeout. Returns the
+/// request sender and the counselled turns' view.
 pub fn spawn<C: DecisionClient + Send + Sync + 'static>(
     client: C,
 ) -> (tokio::sync::mpsc::Sender<CounselRequest>, CounselView) {
     let (request_tx, mut request_rx) = tokio::sync::mpsc::channel::<CounselRequest>(4);
     let (turn_tx, turn_rx) = watch::channel(None);
     tokio::spawn(async move {
+        client.warm_up().await;
         while let Some(request) = request_rx.recv().await {
             // The tile pick: one call, two questions — the contour
             // shape and the dynamic shape the walk should follow.
@@ -215,6 +292,13 @@ pub fn spawn<C: DecisionClient + Send + Sync + 'static>(
             let outcome = client.decide(&decision).await;
             match outcome {
                 Ok(outcome) => {
+                    if let Some(key) = &outcome.choice {
+                        tracing::info!(
+                            pick = %key,
+                            confidence = outcome.confidence,
+                            "the counsellor picked the shapes"
+                        );
+                    }
                     let picked = outcome
                         .choice
                         .as_deref()
@@ -239,7 +323,10 @@ pub fn spawn<C: DecisionClient + Send + Sync + 'static>(
                     }
                 }
                 Err(err) => {
-                    tracing::warn!("the counsellor's decision failed ({err}); the deterministic roll plays on")
+                    tracing::warn!("the counsellor's decision failed ({err}); the deterministic roll plays on");
+                    // A cold model times out every decision — the load
+                    // re-fires so the next turn gets decisions again.
+                    client.warm_up().await;
                 }
             }
         }
@@ -304,10 +391,11 @@ mod tests {
     }
 
     #[test]
-    fn a_confident_pick_names_its_option() {
+    fn a_clear_pick_names_its_option() {
         let client = SystemOneClient::new("http://127.0.0.1:1".into(), "tev1:4b".into());
         let reply = json!({
-            "answers": { "pick": { "choice": "valley", "confidence": 0.9 } }
+            "answers": { "pick": { "choice": "valley", "confidence": 0.9,
+                "probabilities": { "arc": 0.25, "valley": 0.75 } } }
         });
         let outcome = SystemOneClient::parse_reply(&reply, &decision()).unwrap();
         assert_eq!(outcome.choice.as_deref(), Some("valley"));
@@ -315,12 +403,45 @@ mod tests {
     }
 
     #[test]
-    fn a_low_confidence_pick_defers() {
+    fn a_weak_pick_defers() {
+        // The 58/42 lean the real probe produced: under the roll plus
+        // margin bar (0.6 for two options) — a coin flip defers.
         let reply = json!({
-            "answers": { "pick": { "choice": "valley", "confidence": 0.2 } }
+            "answers": { "pick": { "choice": "arc", "confidence": 0.16,
+                "probabilities": { "arc": 0.58, "valley": 0.42 } } }
         });
         let outcome = SystemOneClient::parse_reply(&reply, &decision()).unwrap();
-        assert_eq!(outcome.choice, None, "under the floor: defer");
+        assert_eq!(outcome.choice, None, "under the bar: defer");
+    }
+
+    #[test]
+    fn a_twenty_way_pick_clears_its_much_lower_bar() {
+        // The real tile pick's shape: 0.292 over a 0.05 roll — clear
+        // signal at a confidence (0.255) the old floor would refuse.
+        let options: Vec<ChoiceOption> = (0..20)
+            .map(|index| ChoiceOption { key: index.to_string(), description: "a shape".into() })
+            .collect();
+        let decision = Decision { state: json!({}), instructions: "Pick.".into(), options };
+        let mut probabilities = serde_json::Map::new();
+        for index in 0..20 {
+            probabilities
+                .insert(index.to_string(), json!(if index == 3 { 0.292 } else { 0.0354 }));
+        }
+        let reply = json!({
+            "answers": { "pick": { "choice": "3", "confidence": 0.255,
+                "probabilities": probabilities } }
+        });
+        let outcome = SystemOneClient::parse_reply(&reply, &decision).unwrap();
+        assert_eq!(outcome.choice.as_deref(), Some("3"));
+    }
+
+    #[test]
+    fn a_reply_without_probabilities_defers() {
+        let reply = json!({
+            "answers": { "pick": { "choice": "valley", "confidence": 0.9 } }
+        });
+        let outcome = SystemOneClient::parse_reply(&reply, &decision()).unwrap();
+        assert_eq!(outcome.choice, None, "no probability: fail closed");
     }
 
     #[test]

@@ -468,10 +468,16 @@ deterministic one while it is live (a composer's plan outranks a
 counselled walk); and the turn's curve tiles are picked, not rolled —
 one call naming the contour/dynamic pair from the shape library's
 options, described in musical words. Every decision fails closed: a
-transport error, the (one-second) timeout, a reply under the confidence
-floor (0.5), or an off-the-menu pick defers to the deterministic roll.
-`TEV1_DISABLED=1` keeps the counsellor out entirely; unset, the
-deterministic behaviour is the fallback and the model the flourish.
+transport error, the (one-second) timeout, a pick that fails to beat
+the uniform roll it replaces (by a 0.1
+margin — the endpoint's own confidence shrinks with the option count,
+a clear 20-way pick scoring about 0.25), or an off-the-menu pick
+defers to the deterministic roll. The model loads in the background
+at startup (the cold load — about twenty seconds — dwarfs the
+decision timeout) and re-warms after any transport failure; a busy
+counsellor drops new requests rather than stalling the conductor.
+The counsellor opts in with `--jev`; without it the deterministic
+behaviour is the whole story.
 
 The composer replans when the live plan drains to two slots, or on sharp
 shifts: a corruption boundary, a level-up, a descent, a death, or the
@@ -644,7 +650,7 @@ at note attacks. The percussive voices stay velocity-only.
 || Tie re-arm | three slots per boundary, via /midi/cancel |
 || Monitor roll: window / log caps | 12 s back + 2 s ahead / 256 spans and points, 30 s trim |
 ||| Chord network: movement targets | the dynamic arc's shape at each transition — ≤⅓ holds (target 0), ≤⅔ allows one moving tone, past that two; anchors kept, walk degrades to the model's plan |
-||| Counsellor | tev1:4b (TEV1_MODEL) via /v1/systemone / 1 s timeout / confidence floor 0.5 / TEV1_DISABLED=1 to skip |
+||| Counsellor | tev1:4b (TEV1_MODEL) via /v1/systemone / 1 s timeout / pick beats the roll by 0.1 / warm-up at spawn and after failures / --jev to enable |
 | Arrangement: layer thresholds / sparse rotation / arrival lift | 1 voice, 2 past 0.33, 3 past 0.66 / all three rotating, two slots each / airy added past 0.85 progress |
 | Idle bell: polyrhythms / plink gate | 3:4, 5:4, 6:4 or 7:4 per bell slot (N over the bass's four-quaver window, repeating) / 0.6 × the plink spacing |
 | Dynamics: marks ladder / phrase band / episode shade / expression | pp–ff (16–126), interpolated / 0.7–1.15 × general / one mark in an episode / CC11 on the sustained voices at each boundary |

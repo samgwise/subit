@@ -285,7 +285,7 @@ impl MonitorApp {
         if composer.counsellor_enabled {
             ui.label("counsellor (tev1) picking ties and shapes");
         } else {
-            ui.weak("counsellor off (TEV1_DISABLED or no model)");
+            ui.weak("counsellor off (run with --jev)");
         }
         match composer.last_replan {
             Some(reason) => ui.label(format!("last replan: {reason:?}")),

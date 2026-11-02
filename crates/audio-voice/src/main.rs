@@ -43,27 +43,31 @@ const GAME_EVENTS_PATTERN: &str = "/subit/game/**";
 fn main() {
     tracing_subscriber::fmt::init();
 
+    let args: Vec<String> = std::env::args().collect();
+    // The counsellor (tev1 over ollama's Jev endpoint) opts in.
+    let jev = args.iter().any(|arg| arg == "--jev");
+
     // The window (feature `ui`, run with `--ui`) owns the main thread —
     // winit's event loop refuses to start anywhere else. The conductor
     // runs on its own thread beside it; closing the window ends the run.
     #[cfg(feature = "ui")]
-    if std::env::args().any(|arg| arg == "--ui") {
-        ui_main();
+    if args.iter().any(|arg| arg == "--ui") {
+        ui_main(jev);
         return;
     }
 
     let (monitor, _monitor_view) = audio_voice::monitor::channel();
-    block_on_conductor(monitor);
+    block_on_conductor(monitor, jev);
 }
 
 /// The `--ui` path: the conductor runs on its own thread while the
 /// window owns the main thread.
 #[cfg(feature = "ui")]
-fn ui_main() {
+fn ui_main(jev: bool) {
     let (monitor, monitor_view) = audio_voice::monitor::channel();
     let conductor_thread = std::thread::Builder::new()
         .name("audio-voice-conductor".into())
-        .spawn(move || block_on_conductor(monitor))
+        .spawn(move || block_on_conductor(monitor, jev))
         .expect("the conductor thread spawns");
     audio_voice::monitor::app::run(monitor_view);
     // The window closed — the run is over. Don't join: the conductor
@@ -73,15 +77,15 @@ fn ui_main() {
 }
 
 /// Run the conductor to completion on a fresh multi-thread runtime.
-fn block_on_conductor(monitor: Monitor) {
+fn block_on_conductor(monitor: Monitor, jev: bool) {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .expect("the tokio runtime builds")
-        .block_on(run_conductor(monitor));
+        .block_on(run_conductor(monitor, jev));
 }
 
-async fn run_conductor(monitor: Monitor) {
+async fn run_conductor(monitor: Monitor, jev: bool) {
     let mut hub = connect_with_retry().await;
     tracing::info!(voice_id = hub.voice_id, "connected to Ensemble hub");
 
@@ -120,14 +124,15 @@ async fn run_conductor(monitor: Monitor) {
     // the receiver's `changed()` from erroring when the model is disabled.
     let composer_enabled = audio_voice::composer::enabled_from_env();
     // The counsellor: the fast decision tier (tev1 over ollama's
-    // system-one endpoint) — the fallback's turns walked and the tiles
-    // picked when it participates, every decision failing closed to the
-    // deterministic roll.
-    let (counsel_tx, mut counsel_rx) = if counsellor::enabled_from_env() {
+    // system-one endpoint), opted in with `--jev` — the fallback's turns
+    // walked and the tiles picked when it participates, every decision
+    // failing closed to the deterministic roll.
+    let (counsel_tx, mut counsel_rx) = if jev {
         let (tx, view) = counsellor::spawn(counsellor::SystemOneClient::from_env());
         tracing::info!("the counsellor is listening (tev1)");
         (Some(tx), Some(view))
     } else {
+        tracing::info!("the counsellor is off (run with --jev)");
         (None, None)
     };
     let (plan_tx, mut plan_rx) = tokio::sync::watch::channel(None);
@@ -466,17 +471,21 @@ async fn run_conductor(monitor: Monitor) {
                         // the model's picks — the deterministic walk plays
                         // until the counselled one lands.
                         if let Some(counsel_tx) = &counsel_tx {
-                            let _ = counsel_tx
-                                .send(CounselRequest {
-                                    current,
-                                    contour: score.cycle_shape,
-                                    dynamic: score.cycle_dynamic_shape,
-                                    integrity: score.world_integrity,
-                                    form_summary: serde_json::to_value(form.summary())
-                                        .unwrap_or(serde_json::Value::Null),
-                                    seed: rand::random::<u64>(),
-                                })
-                                .await;
+                            // A busy counsellor must never stall the
+                            // conductor — a dropped request just leaves
+                            // the deterministic walk playing.
+                            let request = CounselRequest {
+                                current,
+                                contour: score.cycle_shape,
+                                dynamic: score.cycle_dynamic_shape,
+                                integrity: score.world_integrity,
+                                form_summary: serde_json::to_value(form.summary())
+                                    .unwrap_or(serde_json::Value::Null),
+                                seed: rand::random::<u64>(),
+                            };
+                            if let Err(err) = counsel_tx.try_send(request) {
+                                tracing::debug!("the counsellor is busy: {err}");
+                            }
                         }
                     }
                 }

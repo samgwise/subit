@@ -497,3 +497,21 @@ oldest pending gap: the streamed Param biases the walk's colours (a
 ruined world darkens, a pristine one brightens) and weights the
 cadence, so a ruined world leaves the tension open on a dominant while
 a pristine one comes home. Same seed, same walks.
+
+## Milestone 36 — The counsellor
+
+The score gained a counsellor — a fast decision tier beside the composer,
+serving ollama's decision models (`tev1:4b` over the `/v1/systemone` Jev
+endpoint, Ollama 0.35+). At each turn boundary the deterministic fallback
+walk installs as before, then the counsellor re-walks the same transitions
+picking from the same candidates — one call each, the walk so far as the
+state — and its plan replaces the deterministic one while it stays live (a
+composer's plan always outranks a counselled walk). The turn's curve tiles
+are picked too, not rolled: one call naming the contour/dynamic pair from
+the shape library's options, described in musical words. Every decision
+fails closed — a transport error, the one-second timeout, a pick that
+fails to beat the uniform roll it replaces, or an off-the-menu pick
+defers to the deterministic roll; the model loads in the background at
+startup and re-warms after any transport failure. The tier opts in
+with `--jev` (the model and endpoint stay on `TEV1_MODEL` and
+`OLLAMA_URL`); without it the score plays as before.
