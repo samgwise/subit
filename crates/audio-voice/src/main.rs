@@ -18,6 +18,7 @@ use std::time::Duration;
 use audio_voice::composer::{
     EventTallies, PlanRequest, ReplanReason, ScoreContext, SlotRecord, Tally,
 };
+use audio_voice::counsellor::{self, CounselRequest};
 use audio_voice::curve::Curve;
 use audio_voice::form::Form;
 use audio_voice::midi_log::MidiLog;
@@ -118,6 +119,17 @@ async fn run_conductor(monitor: Monitor) {
     // to the deterministic cycle. Holding our twin of the watch sender keeps
     // the receiver's `changed()` from erroring when the model is disabled.
     let composer_enabled = audio_voice::composer::enabled_from_env();
+    // The counsellor: the fast decision tier (tev1 over ollama's
+    // system-one endpoint) — the fallback's turns walked and the tiles
+    // picked when it participates, every decision failing closed to the
+    // deterministic roll.
+    let (counsel_tx, mut counsel_rx) = if counsellor::enabled_from_env() {
+        let (tx, view) = counsellor::spawn(counsellor::SystemOneClient::from_env());
+        tracing::info!("the counsellor is listening (tev1)");
+        (Some(tx), Some(view))
+    } else {
+        (None, None)
+    };
     let (plan_tx, mut plan_rx) = tokio::sync::watch::channel(None);
     let _plan_tx = plan_tx.clone();
     let (plan_requests, plan_requests_rx) =
@@ -140,6 +152,7 @@ async fn run_conductor(monitor: Monitor) {
         monitor,
         midi_log: MidiLog::default(),
         composer_enabled,
+        counsellor_enabled: counsel_tx.is_some(),
         last_replan: None,
         last_tallies: None,
     };
@@ -445,8 +458,26 @@ async fn run_conductor(monitor: Monitor) {
                             curve: score.cycle_curve.clone(),
                             dynamic: score.cycle_dynamic.clone(),
                             cursor: 0,
+                            from_composer: false,
                         };
                         tracing::info!(slots = walked.slots.len(), "the fallback walked a turn");
+                        // The counsellor reconciles: re-rolling the tiles
+                        // to a picked pair and re-walking the turn with
+                        // the model's picks — the deterministic walk plays
+                        // until the counselled one lands.
+                        if let Some(counsel_tx) = &counsel_tx {
+                            let _ = counsel_tx
+                                .send(CounselRequest {
+                                    current,
+                                    contour: score.cycle_shape,
+                                    dynamic: score.cycle_dynamic_shape,
+                                    integrity: score.world_integrity,
+                                    form_summary: serde_json::to_value(form.summary())
+                                        .unwrap_or(serde_json::Value::Null),
+                                    seed: rand::random::<u64>(),
+                                })
+                                .await;
+                        }
                     }
                 }
 
@@ -489,6 +520,29 @@ async fn run_conductor(monitor: Monitor) {
                         event_log: event_log.make_contiguous(),
                     },
                 );
+            }
+            _counselled = async { match &mut counsel_rx { Some(view) => view.changed().await, None => std::future::pending().await } } => {
+                // The counsellor's turn landed — install it only while
+                // the fallback's own walk is still what's playing; a
+                // composer plan outranks a counselled walk, and a turn
+                // already past is stale.
+                if !score.harmony.from_composer()
+                    && matches!(score.harmony, HarmonySource::Plan { .. })
+                    && let Some(turn) = counsel_rx.as_ref().and_then(|view| view.latest())
+                {
+                    score.harmony = HarmonySource::Plan {
+                        slots: turn.plan.slots.clone(),
+                        curve: score.cycle_curve.clone(),
+                        dynamic: score.cycle_dynamic.clone(),
+                        cursor: 0,
+                        from_composer: false,
+                    };
+                    tracing::info!(
+                        contour = turn.contour_shape,
+                        dynamic = turn.dynamic_shape,
+                        "the counsellor's turn is live"
+                    );
+                }
             }
             plan_changed = plan_rx.changed() => {
                 // The composer published a plan — install it for the next
@@ -539,6 +593,7 @@ async fn run_conductor(monitor: Monitor) {
                                 curve: outcome.curve,
                                 dynamic,
                                 cursor: 0,
+                                from_composer: true,
                             };
                             // The pads breathe the new phrase's opening
                             // level straight away.
@@ -581,6 +636,7 @@ struct ConductorMonitor {
     /// The scheduled MIDI's log — the piano-roll's source.
     midi_log: MidiLog,
     composer_enabled: bool,
+    counsellor_enabled: bool,
     last_replan: Option<ReplanReason>,
     last_tallies: Option<EventTallies>,
 }
@@ -629,6 +685,7 @@ impl ConductorMonitor {
             midi_log: &mut self.midi_log,
             composer: audio_voice::snapshot::ComposerInputs {
                 enabled: self.composer_enabled,
+                counsellor_enabled: self.counsellor_enabled,
                 last_replan: self.last_replan,
                 last_tallies: self.last_tallies.clone(),
             },

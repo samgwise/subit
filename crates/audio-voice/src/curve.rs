@@ -72,6 +72,29 @@ pub enum ContourShape {
 }
 
 impl ContourShape {
+    /// The shape's name — the counsellor's options and the monitor's
+    /// hover.
+    pub fn name(self) -> &'static str {
+        match self {
+            ContourShape::Arc => "arc",
+            ContourShape::Rise => "rise",
+            ContourShape::Fall => "fall",
+            ContourShape::Valley => "valley",
+            ContourShape::Narrow => "narrow",
+        }
+    }
+
+    /// The shape's musical description — the counsellor's criteria.
+    pub fn description(self) -> &'static str {
+        match self {
+            ContourShape::Arc => "a wide symmetric arch: the phrase breathes once",
+            ContourShape::Rise => "an ascending sweep: the phrase climbs the register",
+            ContourShape::Fall => "a descending sweep: the phrase sinks home",
+            ContourShape::Valley => "open high, dipping low through the middle",
+            ContourShape::Narrow => "a tight band in the middle register",
+        }
+    }
+
     /// Roll the next tile — every shape equally likely.
     pub fn roll(rng: &mut SmallRng) -> Self {
         const ALL: [ContourShape; 5] = [
@@ -113,6 +136,27 @@ pub enum DynamicShape {
 }
 
 impl DynamicShape {
+    /// The shape's name — the counsellor's options and the monitor's
+    /// hover.
+    pub fn name(self) -> &'static str {
+        match self {
+            DynamicShape::Swell => "swell",
+            DynamicShape::Dip => "dip",
+            DynamicShape::Climb => "climb",
+            DynamicShape::Fade => "fade",
+        }
+    }
+
+    /// The shape's musical description — the counsellor's criteria.
+    pub fn description(self) -> &'static str {
+        match self {
+            DynamicShape::Swell => "a gentle swell and settle: the phrase breathes once",
+            DynamicShape::Dip => "a mid-phrase dip: the tension eases then returns",
+            DynamicShape::Climb => "a steady climb: the drama builds to the end",
+            DynamicShape::Fade => "a die-away: the phrase opens loud and settles",
+        }
+    }
+
     /// Roll the next tile — every shape equally likely.
     pub fn roll(rng: &mut SmallRng) -> Self {
         const ALL: [DynamicShape; 4] = [
@@ -167,6 +211,60 @@ impl Curve {
             lower: stitch(&self.lower, &tail.lower),
         }
     }
+}
+
+/// The counsellor's shape-pair options: every contour/dynamic pairing,
+/// keyed "contour+dynamic" and described in musical words.
+pub fn shape_pair_options() -> Vec<crate::counsellor::ChoiceOption> {
+    const CONTOURS: [ContourShape; 5] = [
+        ContourShape::Arc,
+        ContourShape::Rise,
+        ContourShape::Fall,
+        ContourShape::Valley,
+        ContourShape::Narrow,
+    ];
+    const DYNAMICS: [DynamicShape; 4] = [
+        DynamicShape::Swell,
+        DynamicShape::Dip,
+        DynamicShape::Climb,
+        DynamicShape::Fade,
+    ];
+    CONTOURS
+        .iter()
+        .flat_map(|&contour| {
+            DYNAMICS.iter().map(move |&dynamic| crate::counsellor::ChoiceOption {
+                key: format!("{}+{}", contour.name(), dynamic.name()),
+                description: format!(
+                    "{}: {}; {}: {}",
+                    contour.name(),
+                    contour.description(),
+                    dynamic.name(),
+                    dynamic.description()
+                ),
+            })
+        })
+        .collect()
+}
+
+/// Parse a shape-pair key back to its shapes; None for anything else.
+pub fn shape_pair_from_key(key: &str) -> Option<(ContourShape, DynamicShape)> {
+    let (contour, dynamic) = key.split_once('+')?;
+    let contour = match contour {
+        "arc" => ContourShape::Arc,
+        "rise" => ContourShape::Rise,
+        "fall" => ContourShape::Fall,
+        "valley" => ContourShape::Valley,
+        "narrow" => ContourShape::Narrow,
+        _ => return None,
+    };
+    let dynamic = match dynamic {
+        "swell" => DynamicShape::Swell,
+        "dip" => DynamicShape::Dip,
+        "climb" => DynamicShape::Climb,
+        "fade" => DynamicShape::Fade,
+        _ => return None,
+    };
+    Some((contour, dynamic))
 }
 
 /// A generalised Bézier over `points` control values (de Casteljau) — works

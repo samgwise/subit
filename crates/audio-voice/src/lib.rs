@@ -7,6 +7,7 @@
 //! GDD.
 
 pub mod composer;
+pub mod counsellor;
 pub mod curve;
 pub mod form;
 pub mod harmony;

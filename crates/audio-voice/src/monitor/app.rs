@@ -165,7 +165,8 @@ impl MonitorApp {
             })
             .response
             .on_hover_text(format!(
-                "the patterns bend into these bounds; the marker is the slot sounding now (t = {t:.3})"
+                "the {} tile: the patterns bend into these bounds; the marker is the slot sounding now (t = {t:.3})",
+                snapshot.curves.contour_tile
             ));
 
         Plot::new("dynamic arc")
@@ -188,7 +189,10 @@ impl MonitorApp {
                 plot_ui.vline(VLine::new(t).name("sounding slot").color(egui::Color32::GRAY));
             })
             .response
-            .on_hover_text("the phrase's crescendo arc, normalised to its own hull");
+            .on_hover_text(format!(
+                "the {} arc: the phrase's crescendo shape, normalised to its own hull",
+                snapshot.curves.dynamic_tile
+            ));
     }
 
     /// The harmony strip: where the chords come from and what's coming.
@@ -277,6 +281,11 @@ impl MonitorApp {
             ui.label("ollama composer listening");
         } else {
             ui.weak("disabled (OLLAMA_DISABLED or unset model)");
+        }
+        if composer.counsellor_enabled {
+            ui.label("counsellor (tev1) picking ties and shapes");
+        } else {
+            ui.weak("counsellor off (TEV1_DISABLED or no model)");
         }
         match composer.last_replan {
             Some(reason) => ui.label(format!("last replan: {reason:?}")),

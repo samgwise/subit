@@ -128,6 +128,10 @@ pub struct CurveViews {
     /// The conductor's span factor the bounds obey (1.0 at full flight,
     /// `SPAN_REST` at rest).
     pub span: f32,
+    /// The contour tile's shape name (the monitor's hover word).
+    pub contour_tile: &'static str,
+    /// The dynamic tile's shape name.
+    pub dynamic_tile: &'static str,
 }
 
 /// The composer view: the planning tier's trace since the last publish.
@@ -135,6 +139,8 @@ pub struct CurveViews {
 pub struct ComposerView {
     /// Whether the composer tier is enabled (ollama reachable config).
     pub enabled: bool,
+    /// Whether the counsellor tier (the fast decision model) is enabled.
+    pub counsellor_enabled: bool,
     /// Why the last plan was asked for.
     pub last_replan: Option<ReplanReason>,
     /// The tallies that accompanied the last replan decision.
@@ -164,6 +170,7 @@ pub struct UiSnapshot {
 #[derive(Debug, Clone)]
 pub struct ComposerInputs {
     pub enabled: bool,
+    pub counsellor_enabled: bool,
     pub last_replan: Option<ReplanReason>,
     pub last_tallies: Option<EventTallies>,
 }
@@ -318,9 +325,12 @@ impl UiSnapshot {
                 dynamic_shape,
                 phrase_t: phrase_t(state),
                 span: span_factor(state.intensity),
+                contour_tile: state.cycle_shape.name(),
+                dynamic_tile: state.cycle_dynamic_shape.name(),
             },
             composer: ComposerView {
                 enabled: inputs.composer.enabled,
+                counsellor_enabled: inputs.composer.counsellor_enabled,
                 last_replan: inputs.composer.last_replan,
                 last_tallies: inputs.composer.last_tallies,
             },
@@ -364,6 +374,7 @@ mod tests {
             midi_log,
             composer: ComposerInputs {
                 enabled: false,
+                counsellor_enabled: false,
                 last_replan: None,
                 last_tallies: None,
             },
@@ -399,6 +410,7 @@ mod tests {
             curve: default_curve(),
             dynamic: default_phrase_curve(),
             cursor: 3,
+            from_composer: true,
         };
         let form = FormSummary::default();
         let mut midi_log = MidiLog::default();
@@ -432,6 +444,7 @@ mod tests {
             },
             dynamic: default_phrase_curve(),
             cursor: 1,
+            from_composer: true,
         };
         let form = FormSummary::default();
         let mut midi_log = MidiLog::default();

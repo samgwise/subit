@@ -21,7 +21,9 @@ use rand::rngs::SmallRng;
 use rand::seq::SliceRandom;
 use rand::RngExt;
 use scalevec::Scale;
+use serde_json::json;
 
+use crate::counsellor::{ChoiceOption, Decision, DecisionClient};
 use crate::curve::Curve;
 use crate::harmony::{
     voice_leap_is_fine, Function, HarmonyPlan, PlanSlot, Quality, VOCABULARY,
@@ -228,51 +230,8 @@ fn validate_walk(plan: &HarmonyPlan) -> bool {
 /// world's integrity weights the cadence: a ruined world leaves the
 /// tension open (a dominant's close), a pristine one comes home.
 pub fn walk_turn(current: usize, dynamic: &Curve, integrity: f32, rng: &mut SmallRng) -> HarmonyPlan {
-    // The cadence: a closable entry — tonic or dominant.
-    let tonic_close: Vec<usize> = (0..VOCABULARY.len())
-        .filter(|&index| VOCABULARY[index].function == Function::Tonic)
-        .collect();
-    let dominant_close: Vec<usize> = (0..VOCABULARY.len())
-        .filter(|&index| VOCABULARY[index].function == Function::Dominant)
-        .collect();
     for _ in 0..6 {
-        let closable = if rng.random::<f32>() < integrity {
-            &tonic_close
-        } else {
-            &dominant_close
-        };
-        let cadence = closable[rng.random_range(0..closable.len())];
-        // The skeleton: the current chord as the start anchor, the
-        // cadence as the end, the middle filled with a loose
-        // grammatical ramble — realise_plan re-picks the middle to the
-        // movement profile anyway.
-        let length = rng.random_range(5..=9);
-        let mut slots = vec![current];
-        for _ in 1..length - 1 {
-            let previous = *slots.last().unwrap();
-            let step_options: Vec<usize> = neighbours(previous)
-                .filter(|&candidate| {
-                    voice_leap_is_fine(previous, candidate)
-                        && candidate != previous
-                })
-                .collect();
-            if step_options.is_empty() {
-                break;
-            }
-            slots.push(step_options[rng.random_range(0..step_options.len())]);
-        }
-        slots.push(cadence);
-        let skeleton = HarmonyPlan {
-            slots: slots
-                .iter()
-                .map(|&chord| PlanSlot { chord: chord as u32, suggested_beats: 0.0 })
-                .collect(),
-            curve_upper: vec![],
-            curve_lower: vec![],
-            curve_dynamic: vec![],
-            intent: String::new(),
-        };
-        let walked = realise_plan(&skeleton, dynamic, integrity, rng);
+        let walked = realise_plan(&skeleton_turn(current, integrity, rng), dynamic, integrity, rng);
         if validate_walk(&walked) {
             return walked;
         }
@@ -290,6 +249,139 @@ pub fn walk_turn(current: usize, dynamic: &Curve, integrity: f32, rng: &mut Smal
         curve_dynamic: vec![],
         intent: String::new(),
     }
+}
+
+/// The skeleton for a turn's walk: the current chord as the start
+/// anchor, a rolled cadence (a tonic or a dominant — the world's
+/// integrity weighting the roll) as the end, the middle a loose
+/// grammatical ramble (realise_plan re-picks the middle to the
+/// movement profile anyway).
+fn skeleton_turn(current: usize, integrity: f32, rng: &mut SmallRng) -> HarmonyPlan {
+    let tonic_close: Vec<usize> = (0..VOCABULARY.len())
+        .filter(|&index| VOCABULARY[index].function == Function::Tonic)
+        .collect();
+    let dominant_close: Vec<usize> = (0..VOCABULARY.len())
+        .filter(|&index| VOCABULARY[index].function == Function::Dominant)
+        .collect();
+    let closable = if rng.random::<f32>() < integrity {
+        &tonic_close
+    } else {
+        &dominant_close
+    };
+    let cadence = closable[rng.random_range(0..closable.len())];
+    let length = rng.random_range(5..=9);
+    let mut slots = vec![current];
+    for _ in 1..length - 1 {
+        let previous = *slots.last().unwrap();
+        let step_options: Vec<usize> = neighbours(previous)
+            .filter(|&candidate| voice_leap_is_fine(previous, candidate) && candidate != previous)
+            .collect();
+        if step_options.is_empty() {
+            break;
+        }
+        slots.push(step_options[rng.random_range(0..step_options.len())]);
+    }
+    slots.push(cadence);
+    HarmonyPlan {
+        slots: slots
+            .iter()
+            .map(|&chord| PlanSlot { chord: chord as u32, suggested_beats: 0.0 })
+            .collect(),
+        curve_upper: vec![],
+        curve_lower: vec![],
+        curve_dynamic: vec![],
+        intent: String::new(),
+    }
+}
+
+/// The counselled walk: the fallback's turn walked with the counsellor
+/// picking each transition's chord from the same candidates the
+/// deterministic roll ranks — the model's craft riding the same rails.
+/// Any deferred or failed decision falls back to the deterministic
+/// pick; a walk that fails the grammar (retried a few times) returns
+/// None and the deterministic walk plays on.
+pub async fn counselled_walk<C: DecisionClient>(
+    client: &C,
+    current: usize,
+    dynamic: &Curve,
+    integrity: f32,
+    rng: &mut SmallRng,
+) -> Option<HarmonyPlan> {
+    for _ in 0..3 {
+        let skeleton = skeleton_turn(current, integrity, rng);
+        let targets = movement_targets(dynamic, skeleton.slots.len());
+        let mut realised = vec![skeleton.slots[0]];
+        for (slot, &target) in targets
+            .iter()
+            .enumerate()
+            .skip(1)
+            .take(skeleton.slots.len() - 2)
+        {
+            let previous = *realised.last().unwrap();
+            let prev_index = previous.chord as usize;
+            let prev_run = if realised.len() >= 2
+                && realised[realised.len() - 2].chord == previous.chord
+            {
+                1
+            } else {
+                0
+            };
+            let candidates =
+                candidates_for(&skeleton, slot, prev_index, prev_run, target, integrity, rng);
+            let deterministic = candidates.first().copied();
+            let picked = if candidates.len() > 1 {
+                // The counsellor's pick: the candidates described in
+                // musical words, the walk so far as the state.
+                let options: Vec<ChoiceOption> = candidates
+                    .iter()
+                    .enumerate()
+                    .map(|(index, candidate)| ChoiceOption {
+                        key: index.to_string(),
+                        description: format!(
+                            "{} — {}",
+                            VOCABULARY[candidate.chord as usize].name,
+                            VOCABULARY[candidate.chord as usize].function.name()
+                        ),
+                    })
+                    .collect();
+                let walk_so_far: Vec<&str> = realised
+                    .iter()
+                    .map(|slot| VOCABULARY[slot.chord as usize].name)
+                    .collect();
+                let decision = Decision {
+                    state: json!({
+                        "walk_so_far": walk_so_far,
+                        "transition": slot,
+                        "movement_target": target,
+                    }),
+                    instructions: "Which chord best continues this phrase's harmonic walk?".into(),
+                    options,
+                };
+                match client.decide(&decision).await {
+                    Ok(outcome) => outcome
+                        .choice
+                        .and_then(|key| key.parse::<usize>().ok())
+                        .and_then(|index| candidates.get(index).copied()),
+                    Err(_) => deterministic,
+                }
+            } else {
+                deterministic
+            };
+            realised.push(picked.unwrap_or(skeleton.slots[slot]));
+        }
+        realised.push(skeleton.slots[skeleton.slots.len() - 1]);
+        let outcome = HarmonyPlan {
+            slots: realised,
+            curve_upper: skeleton.curve_upper.clone(),
+            curve_lower: skeleton.curve_lower.clone(),
+            curve_dynamic: skeleton.curve_dynamic.clone(),
+            intent: String::new(),
+        };
+        if validate_walk(&outcome) {
+            return Some(outcome);
+        }
+    }
+    None
 }
 
 #[cfg(test)]

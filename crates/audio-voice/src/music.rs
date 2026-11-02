@@ -514,12 +514,25 @@ pub fn cycle_turn_complete(slot: u32) -> bool {
 /// stitched from the curve that sounded last — a plan's own curve
 /// included — so consecutive phrases join without a seam.
 pub fn advance_cycle_tiles(state: &mut MusicState, rng: &mut SmallRng) {
+    let (contour, dynamic) = (ContourShape::roll(rng), DynamicShape::roll(rng));
+    advance_cycle_tiles_with(state, contour, dynamic);
+}
+
+/// Re-roll the tiles to a CHOSEN pair — the counsellor's pick — stitched
+/// from the curve that sounded last, like any roll.
+pub fn advance_cycle_tiles_with(
+    state: &mut MusicState,
+    contour: ContourShape,
+    dynamic: DynamicShape,
+) {
     let (contour_tail, dynamic_tail) = match &state.harmony {
         HarmonySource::Plan { curve, dynamic, .. } => (curve.clone(), dynamic.clone()),
         HarmonySource::Cycle => (state.cycle_curve.clone(), state.cycle_dynamic.clone()),
     };
-    state.cycle_curve = ContourShape::roll(rng).curve().extend_from(&contour_tail);
-    state.cycle_dynamic = DynamicShape::roll(rng).curve().extend_from(&dynamic_tail);
+    state.cycle_curve = contour.curve().extend_from(&contour_tail);
+    state.cycle_dynamic = dynamic.curve().extend_from(&dynamic_tail);
+    state.cycle_shape = contour;
+    state.cycle_dynamic_shape = dynamic;
 }
 
 /// The tie re-arm window for a slot of `slot_secs` — how far ahead each
@@ -575,6 +588,9 @@ pub enum HarmonySource {
         /// The phrase's dynamic arc — the crescendo shape.
         dynamic: Curve,
         cursor: usize,
+        /// Whether the composer (as opposed to the fallback's counselled
+        /// walk) authored this plan — a walk never replaces a composer's.
+        from_composer: bool,
     },
 }
 
@@ -587,6 +603,15 @@ impl HarmonySource {
             HarmonySource::Plan { slots, cursor, .. } => {
                 Some(slots.len().saturating_sub(*cursor))
             }
+        }
+    }
+
+    /// Whether the composer authored this source (false for the cycle
+    /// and the fallback's counselled walks).
+    pub fn from_composer(&self) -> bool {
+        match self {
+            HarmonySource::Cycle => false,
+            HarmonySource::Plan { from_composer, .. } => *from_composer,
         }
     }
 
@@ -943,6 +968,11 @@ pub struct MusicState {
     pub cycle_curve: Curve,
     /// The cycle's tiled dynamic arc, rolled with the contour.
     pub cycle_dynamic: Curve,
+    /// The shape the contour tile was rolled from — the monitor's word
+    /// for it.
+    pub cycle_shape: ContourShape,
+    /// The dynamic arc tile's shape.
+    pub cycle_dynamic_shape: DynamicShape,
     /// The bass line's last tone — (role, pitch class) — handed to the
     /// next slot's voicing rules (the seventh's resolution, the leading
     /// tone's rise, the fifth's restraint).
@@ -970,6 +1000,8 @@ impl Default for MusicState {
             episode: false,
             cycle_curve: default_curve(),
             cycle_dynamic: default_phrase_curve(),
+            cycle_shape: ContourShape::Arc,
+            cycle_dynamic_shape: DynamicShape::Swell,
             last_bass: None,
             world_integrity: 1.0,
         }
@@ -1081,6 +1113,7 @@ impl Engine {
                 dynamic,
                 slots,
                 cursor,
+                ..
             } => {
                 let phrase_len = slots.len().max(1) as f64;
                 let slot_index = cursor.saturating_sub(1) as f64;
@@ -1909,6 +1942,7 @@ mod tests {
                 curve: default_curve(),
                 dynamic: default_phrase_curve(),
                 cursor: 0,
+                from_composer: true,
             },
             ..MusicState::default()
         };
@@ -1950,6 +1984,7 @@ mod tests {
                 },
                 dynamic: default_phrase_curve(),
                 cursor: 0,
+                from_composer: true,
             },
             ..MusicState::default()
         };
@@ -2325,6 +2360,7 @@ mod tests {
                     lower: vec![0.0, 1.0],
                 },
                 cursor: 0,
+                from_composer: true,
             },
             ..MusicState::default()
         };

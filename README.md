@@ -34,6 +34,9 @@ generative audio.
 - Optional: [ollama](https://ollama.com) running locally for the LLM composer —
   an unreachable ollama (or `OLLAMA_DISABLED=1`) just leaves the deterministic
   score playing.
+- Optional: the counsellor's decision model — `ollama pull tev1:4b`
+  (Ollama 0.35+; `TEV1_MODEL` to switch, `TEV1_DISABLED=1` to skip). Without
+  it the score's tie-breaks and shape rolls stay deterministic.
 
 ## Building and testing
 

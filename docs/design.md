@@ -458,6 +458,21 @@ depleted plan hands back to the deterministic cycle. The model never owns
 the clock — the conductor keeps the rhythm ladder, cuts and holds (the
 schema asks for no durations at all); it owns direction only.
 
+Beside the composer sits a counsellor — a fast decision tier over
+ollama's decision models (`tev1:4b` via the `/v1/systemone` Jev
+endpoint; Ollama 0.35+): the fallback's turns are walked twice — the
+deterministic walk installs at the turn boundary, then the counsellor
+re-walks the same transitions picking from the same candidates (one
+call each, the walk so far as the state), its plan replacing the
+deterministic one while it is live (a composer's plan outranks a
+counselled walk); and the turn's curve tiles are picked, not rolled —
+one call naming the contour/dynamic pair from the shape library's
+options, described in musical words. Every decision fails closed: a
+transport error, the (one-second) timeout, a reply under the confidence
+floor (0.5), or an off-the-menu pick defers to the deterministic roll.
+`TEV1_DISABLED=1` keeps the counsellor out entirely; unset, the
+deterministic behaviour is the fallback and the model the flourish.
+
 The composer replans when the live plan drains to two slots, or on sharp
 shifts: a corruption boundary, a level-up, a descent, a death, or the
 aggro peak racing three locks past the phrase's average. One request is in flight at
@@ -628,7 +643,8 @@ at note attacks. The percussive voices stay velocity-only.
 || Dynamic tiles | swell, dip, climb, fade — rolled with the contour |
 || Tie re-arm | three slots per boundary, via /midi/cancel |
 || Monitor roll: window / log caps | 12 s back + 2 s ahead / 256 spans and points, 30 s trim |
-|| Chord network: movement targets | the dynamic arc's shape at each transition — ≤⅓ holds (target 0), ≤⅔ allows one moving tone, past that two; anchors kept, walk degrades to the model's plan |
+||| Chord network: movement targets | the dynamic arc's shape at each transition — ≤⅓ holds (target 0), ≤⅔ allows one moving tone, past that two; anchors kept, walk degrades to the model's plan |
+||| Counsellor | tev1:4b (TEV1_MODEL) via /v1/systemone / 1 s timeout / confidence floor 0.5 / TEV1_DISABLED=1 to skip |
 | Arrangement: layer thresholds / sparse rotation / arrival lift | 1 voice, 2 past 0.33, 3 past 0.66 / all three rotating, two slots each / airy added past 0.85 progress |
 | Idle bell: polyrhythms / plink gate | 3:4, 5:4, 6:4 or 7:4 per bell slot (N over the bass's four-quaver window, repeating) / 0.6 × the plink spacing |
 | Dynamics: marks ladder / phrase band / episode shade / expression | pp–ff (16–126), interpolated / 0.7–1.15 × general / one mark in an episode / CC11 on the sustained voices at each boundary |

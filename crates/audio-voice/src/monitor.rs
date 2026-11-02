@@ -70,6 +70,7 @@ mod tests {
             midi_log: &mut midi_log,
             composer: ComposerInputs {
                 enabled: false,
+                counsellor_enabled: false,
                 last_replan: None,
                 last_tallies: None,
             },
