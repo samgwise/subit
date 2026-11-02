@@ -19,10 +19,13 @@
 
 use rand::rngs::SmallRng;
 use rand::seq::SliceRandom;
+use rand::RngExt;
 use scalevec::Scale;
 
 use crate::curve::Curve;
-use crate::harmony::{voice_leap_is_fine, HarmonyPlan, PlanSlot, VOCABULARY};
+use crate::harmony::{
+    voice_leap_is_fine, Function, HarmonyPlan, PlanSlot, VOCABULARY,
+};
 use crate::music::{curve_norm, pitch_stack};
 
 /// A chord's pitch classes, relative to the tonic — the node's identity
@@ -190,6 +193,54 @@ fn validate_walk(plan: &HarmonyPlan) -> bool {
     crate::harmony::validate(plan, None).is_ok()
 }
 
+/// Walk the network for the fallback's next turn: from `current` to a
+/// rolled cadence (a tonic or a dominant), the dynamic arc supplying
+/// the movement profile — the same machinery the composer's plans use,
+/// seeded by the form's RNG so the same seed walks the same turn.
+/// Deterministic, grammatical, and anchored where it started.
+pub fn walk_turn(current: usize, dynamic: &Curve, rng: &mut SmallRng) -> HarmonyPlan {
+    // The cadence: a closable entry — tonic or dominant.
+    let closable: Vec<usize> = (0..VOCABULARY.len())
+        .filter(|&index| {
+            matches!(
+                VOCABULARY[index].function,
+                Function::Tonic | Function::Dominant
+            )
+        })
+        .collect();
+    let cadence = closable[rng.random_range(0..closable.len())];
+    // The skeleton: the current chord as the start anchor, the cadence
+    // as the end, the middle filled with a loose grammatical ramble —
+    // realise_plan re-picks the middle to the movement profile anyway.
+    let length = rng.random_range(5..=9);
+    let mut slots = vec![current];
+    for _ in 1..length - 1 {
+        let previous = *slots.last().unwrap();
+        let step_options: Vec<usize> = neighbours(previous)
+            .filter(|&candidate| {
+                voice_leap_is_fine(previous, candidate)
+                    && candidate != *slots.last().unwrap()
+            })
+            .collect();
+        if step_options.is_empty() {
+            break;
+        }
+        slots.push(step_options[rng.random_range(0..step_options.len())]);
+    }
+    slots.push(cadence);
+    let skeleton = HarmonyPlan {
+        slots: slots
+            .iter()
+            .map(|&chord| PlanSlot { chord: chord as u32, suggested_beats: 0.0 })
+            .collect(),
+        curve_upper: vec![],
+        curve_lower: vec![],
+        curve_dynamic: vec![],
+        intent: String::new(),
+    };
+    realise_plan(&skeleton, dynamic, rng)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,6 +362,29 @@ mod tests {
                 "transition {slot} moved {moved} past its target {}",
                 targets[slot + 1]
             );
+        }
+    }
+
+    #[test]
+    fn the_fallback_walk_varies_and_cadences() {
+        // Same seed, same walk; every walk starts where it was asked,
+        // closes on a tonic or a dominant, and stays grammatical.
+        for seed in 0..12u64 {
+            let dynamic = DynamicShape::Swell.curve();
+            let first = walk_turn(0, &dynamic, &mut SmallRng::seed_from_u64(seed));
+            let again = walk_turn(0, &dynamic, &mut SmallRng::seed_from_u64(seed));
+            assert_eq!(
+                first.slots.iter().map(|slot| slot.chord).collect::<Vec<_>>(),
+                again.slots.iter().map(|slot| slot.chord).collect::<Vec<_>>(),
+                "seed {seed} walked differently twice"
+            );
+            assert_eq!(first.slots.first().unwrap().chord, 0);
+            let closer = &VOCABULARY[first.slots.last().unwrap().chord as usize];
+            assert!(
+                matches!(closer.function, Function::Tonic | Function::Dominant),
+                "seed {seed} cadenced on a colour"
+            );
+            assert!(validate(&first, None).is_ok(), "seed {seed} broke the grammar");
         }
     }
 

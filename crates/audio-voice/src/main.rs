@@ -427,6 +427,24 @@ async fn run_conductor(monitor: Monitor) {
                     // The cycle's next tiles: rolled from the form's RNG
                     // and stitched from whatever sounded last.
                     advance_cycle_tiles(&mut score, &mut form_rng);
+                    // The fallback walks: when the composer's plan isn't
+                    // live, a fresh turn is walked through the chord
+                    // network — from the chord sounding now to a rolled
+                    // cadence, the movement profile the new dynamic tile's.
+                    let depleted_plan = matches!(&score.harmony,
+                        HarmonySource::Plan { slots, cursor, .. } if *cursor >= slots.len());
+                    if score.harmony == HarmonySource::Cycle || depleted_plan {
+                        let current = score.harmony.current_vocab(score.slot);
+                        let walked =
+                            network::walk_turn(current, &score.cycle_dynamic, &mut form_rng);
+                        score.harmony = HarmonySource::Plan {
+                            slots: walked.slots.clone(),
+                            curve: score.cycle_curve.clone(),
+                            dynamic: score.cycle_dynamic.clone(),
+                            cursor: 0,
+                        };
+                        tracing::info!(slots = walked.slots.len(), "the fallback walked a turn");
+                    }
                 }
 
                 let drained = tallies.drain();
