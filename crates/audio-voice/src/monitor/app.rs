@@ -231,7 +231,9 @@ impl MonitorApp {
         if harmony.planned.is_empty() {
             ui.weak("the deterministic cycle is playing — no planned slots ahead");
         } else {
-            egui::ScrollArea::horizontal().show(ui, |ui| {
+            egui::ScrollArea::horizontal()
+                .id_salt("harmony_strip")
+                .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     for (index, slot) in harmony.planned.iter().enumerate() {
                         let cursor = harmony.cursor.unwrap_or(0);
@@ -256,13 +258,15 @@ impl MonitorApp {
             ui.weak("nothing played yet");
             return;
         }
-        egui::ScrollArea::horizontal().show(ui, |ui| {
-            ui.horizontal(|ui| {
-                for record in &snapshot.history {
-                    history_cell(ui, record);
-                }
+        egui::ScrollArea::horizontal()
+            .id_salt("history_timeline")
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    for record in &snapshot.history {
+                        history_cell(ui, record);
+                    }
+                });
             });
-        });
     }
 
     /// The composer panel: enabled, last replan reason, last tallies.
@@ -301,6 +305,7 @@ impl MonitorApp {
     fn event_log(&self, ui: &mut egui::Ui, snapshot: &UiSnapshot) {
         ui.heading("Events");
         egui::ScrollArea::vertical()
+            .id_salt("event_log")
             .max_height(180.0)
             .show(ui, |ui| {
                 if snapshot.events.is_empty() {

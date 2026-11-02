@@ -440,8 +440,9 @@ chord tone nearest the spanned contour's centre echoed into the bass's
 register — the line hugs the curve as it travels (least movement breaks
 ties) — under a small voice-leading grammar: a seventh only sounds at a
 slot's end, falling a step onto the next chord's third; a leading-tone
-third only at a slot's end, rising to the tonic; and the fifth never
-sounds twice in a row. The bass resolves through the same
+third only at a slot's end, rising to the tonic; and no tone sounds
+twice in a row (the line walks — a re-strike of a down key is the
+bridge's sticky-key hazard). The bass resolves through the same
 pitch stack as every voice — it transposes with the key and degrades
 with the corruption.
 
@@ -616,7 +617,7 @@ at note attacks. The percussive voices stay velocity-only.
 ||| Vault: min island / carved interior / mob / door open radius | 12 cells / 5×3 / 3 + 1 per 3 depths (cap 5) / 1.5 tiles |
 | Death dissolve | ~0.5 s, corruption-green eating edge |
 | Score: chord period / pattern gates / rhythm hold / smoothing | 8 → 6 → 4 → 2 crotchets, then 3+2 / 3+3+2 / 3+2+2 quavers (additive past 0.95 intensity) / A ≥1 lock, B ≥3 / 3 s before dropping down / τ 0.5 s attack, 8 s release |
-||| Bass: hug / pulses / relaxed figure / gate | every pulse hugs the curve's centre pc; sevenths fall to the next third, the leading third rises, the fifth never twice / quavers / 6 then rest (periods of 3+ beats), continuous below / 0.6 × quaver |
+||| Bass: hug / pulses / relaxed figure / gate | every pulse hugs the curve's centre pc; sevenths fall to the next third, the leading third rises, no tone twice in a row / quavers / 6 then rest (periods of 3+ beats), continuous below / 0.6 × quaver |
 ||| Bass mod wheel: floor / lift rule | 24 CC / the phrase arc; a settled final slot rises monotonically to 127 |
 | Degraded zone: chromatic rotation | ±3 semitones per mapping, hash of the pitch class |
  | Composer: phrase / replan margin / request timeout | 4–8 slots (21-chord vocabulary) / 2 slots / 30 s |

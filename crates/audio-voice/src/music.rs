@@ -336,9 +336,11 @@ struct BassPlan<'a> {
 /// bass's octave), tie-broken by the least movement from the previous
 /// tone. The voicing rules: a seventh only sounds at the slot's end,
 /// resolving down by step onto the next chord's third; the leading-tone
-/// third only at the slot's end, rising to the tonic; and the fifth
-/// never twice in a row. The degradation and transposition come along
-/// like every other voice.
+/// third only at the slot's end, rising to the tonic; and no tone ever
+/// sounds twice in a row (the fifth's restraint, generalised — the line
+/// walks, and a re-strike of a down key is the bridge's sticky-key
+/// hazard). The degradation and transposition come along like every
+/// other voice.
 fn bass_pulses(plan: BassPlan<'_>) -> Vec<(u8, u8)> {
     let BassPlan {
         chord,
@@ -434,20 +436,30 @@ fn bass_pulses(plan: BassPlan<'_>) -> Vec<(u8, u8)> {
                     if role == 1 && pc == leading_pc {
                         return is_last_pulse && next_holds_tonic;
                     }
+                    // Rule 5: the line walks — the same pitch never
+                    // twice in a row (a re-strike of a down key is the
+                    // bridge's sticky-key hazard).
+                    if previous.is_some_and(|(_, prev_pc)| pc == prev_pc) {
+                        return false;
+                    }
                     true
                 })
                 .collect()
         };
 
         // A contradicting rule set relaxes the step rules before the
-        // bass ever silences: first the handoff's steps, then any tone.
+        // bass ever silences: first the handoff's steps (keeping the
+        // fifth's restraint and the walk's no-repeat), then any tone at
+        // all.
         let mut candidates = legal(&tones);
         if candidates.is_empty() {
             candidates = tones
                 .iter()
                 .copied()
-                .filter(|&(role, _)| {
-                    !previous.is_some_and(|(prev_role, _)| prev_role == 2 && role == 2)
+                .filter(|&(role, semitone)| {
+                    !(previous.is_some_and(|(prev_role, _)| prev_role == 2 && role == 2)
+                        || previous
+                            .is_some_and(|(_, prev_pc)| semitone.rem_euclid(12.0) == prev_pc))
                 })
                 .collect();
         }
@@ -1752,28 +1764,32 @@ mod tests {
     #[test]
     fn the_bass_pulses_hug_the_curve() {
         // Every pulse takes the chord tone nearest the curve's centre:
-        // a settled curve pulls them to the middle of the chord's tones,
-        // a blooming one pushes them wider.
-        let line = |curve: &Curve| {
+        // a line under a curve centred low walks the tonic's neighbourhood,
+        // one under a curve centred on the fifth walks that.
+        let line = |centre: f64| {
             let phrase_t = |within: f64| within / CYCLE_LEN as f64;
+            let curve = Curve {
+                upper: vec![centre - 1.0, centre + 1.0],
+                lower: vec![centre - 1.0, centre + 1.0],
+            };
             bass_pulses(BassPlan {
                 chord: cycle_chord(0),
                 next_chord: Some(cycle_chord(1)),
                 tonic: 0,
                 degraded: false,
-                curve,
+                curve: &curve,
                 phrase_t: &phrase_t,
                 duration_secs: 4.0 * CROTCHET_SECS,
                 pulses: BASS_PULSES,
                 last_bass: None,
             })
         };
-        let settled = line(&effective_curve(&ContourShape::Narrow.curve(), 0.0));
-        let blooming = line(&effective_curve(&ContourShape::Arc.curve(), 1.0));
-        assert_ne!(settled, blooming, "the curve moves the bass line");
+        let tonic_centred = line(1.0); // hugging the tonic's neighbourhood
+        let fifth_centred = line(7.0); // hugging the fifth's
+        assert_ne!(tonic_centred, fifth_centred, "the curve moves the bass line");
         // Every pulse stays a chord tone of the slot (the Dm's 0, 3 or 7
         // from the tonic) in the bass's octave.
-        for line in [&settled, &blooming] {
+        for line in [&tonic_centred, &fifth_centred] {
             for &(note, _) in line {
                 assert!((TONIC_BASS..TONIC_BASS + 12).contains(&note));
                 assert!([0, 3, 7].contains(&(note - TONIC_BASS)), "a Dm tone: {note}");
@@ -1905,7 +1921,7 @@ mod tests {
         assert_eq!(state.harmony.slots_remaining(), Some(1));
 
         let (notes, _) = Engine::slot_notes(&mut state, 0.0);
-        assert_eq!(slot_bass(&notes), TONIC_BASS + 7); // the Dm's fifth hugs the centre
+        assert_eq!(slot_bass(&notes), TONIC_BASS + 3); // the Dm's third hugs (the fifth's rule set it aside)
         // Depleted but not yet reverted — the remaining count of zero
         // keeps the daemon's replan trigger firing until a late plan
         // finally lands.
@@ -1914,7 +1930,7 @@ mod tests {
         // The next slot is the deterministic cycle's again.
         let (notes, _) = Engine::slot_notes(&mut state, 0.0);
         assert_eq!(state.harmony, HarmonySource::Cycle);
-        assert_eq!(slot_bass(&notes), TONIC_BASS + 4); // the VI's fifth hugs the centre
+        assert_eq!(slot_bass(&notes), TONIC_BASS + 9); // the VI's root — the handoff's fifth set its fifth aside
         assert_eq!(state.slot, 4);
     }
 

@@ -299,7 +299,6 @@ mod tests {
     use crate::harmony::validate;
     use crate::music::default_phrase_curve;
     use rand::SeedableRng;
-    use rand::RngExt;
 
     fn plan_from(chords: &[u32]) -> HarmonyPlan {
         HarmonyPlan {
