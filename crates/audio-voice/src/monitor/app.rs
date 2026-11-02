@@ -113,6 +113,7 @@ impl MonitorApp {
                 ui.weak(format!("holding {:.1}s", snapshot.drive.rhythm_hold));
             }
             bar(ui, "objective", snapshot.drive.objective);
+            bar(ui, "world", snapshot.drive.world_integrity);
             ui.weak(format!("span {:.2}", snapshot.curves.span));
 
             ui.separator();

@@ -24,7 +24,7 @@ use scalevec::Scale;
 
 use crate::curve::Curve;
 use crate::harmony::{
-    voice_leap_is_fine, Function, HarmonyPlan, PlanSlot, VOCABULARY,
+    voice_leap_is_fine, Function, HarmonyPlan, PlanSlot, Quality, VOCABULARY,
 };
 use crate::music::{curve_norm, pitch_stack};
 
@@ -87,6 +87,22 @@ fn step_is_grammatical(prev: usize, prev_run: usize, candidate: usize) -> bool {
         && if prev == candidate { prev_run + 1 } else { 1 } <= 2
 }
 
+/// Whether a chord's quality fits the world's mood: the dark colours
+/// (the minor and diminished families) suit a ruined world, the bright
+/// ones a pristine one.
+fn colour_suits(quality: Quality, integrity: f32) -> bool {
+    let dark = matches!(
+        quality,
+        Quality::Minor
+            | Quality::Diminished
+            | Quality::Diminished7
+            | Quality::Minor7
+            | Quality::HalfDiminished7
+            | Quality::MinorSus43
+    );
+    dark == (integrity < 0.5)
+}
+
 /// The candidates for a transition, best first: the model's own pick
 /// when it fits the target, then the exact-target neighbours, then the
 /// within-target ones — each shuffled so the walks vary.
@@ -96,6 +112,7 @@ fn candidates_for(
     prev: usize,
     prev_run: usize,
     target: usize,
+    integrity: f32,
     rng: &mut SmallRng,
 ) -> Vec<PlanSlot> {
     let model = &plan.slots[slot];
@@ -106,10 +123,15 @@ fn candidates_for(
             difference(&chord_pitch_classes(prev), &chord_pitch_classes(candidate)) <= target
         })
         .collect();
-    options.sort_by_key(|&candidate| {
-        difference(&chord_pitch_classes(prev), &chord_pitch_classes(candidate))
-    });
     options.shuffle(rng);
+    // The world's mood biases the colour: the fitting qualities lead
+    // within each difference class.
+    options.sort_by_key(|&candidate| {
+        (
+            difference(&chord_pitch_classes(prev), &chord_pitch_classes(candidate)),
+            !colour_suits(VOCABULARY[candidate].quality, integrity),
+        )
+    });
 
     let mut candidates = Vec::new();
     // The model's craft wins when it already moves at the curve's pace.
@@ -142,7 +164,12 @@ fn candidates_for(
 /// it already fits, else a neighbour walked to fit (exact target
 /// preferred). A phrase whose walk fails the grammar after a few tries
 /// degrades to the model's plan untouched — the walk never fails.
-pub fn realise_plan(plan: &HarmonyPlan, dynamic: &Curve, rng: &mut SmallRng) -> HarmonyPlan {
+pub fn realise_plan(
+    plan: &HarmonyPlan,
+    dynamic: &Curve,
+    integrity: f32,
+    rng: &mut SmallRng,
+) -> HarmonyPlan {
     if plan.slots.len() <= 2 {
         return plan.clone(); // anchors only — nothing to re-pick
     }
@@ -159,7 +186,8 @@ pub fn realise_plan(plan: &HarmonyPlan, dynamic: &Curve, rng: &mut SmallRng) -> 
             } else {
                 0
             };
-            let candidates = candidates_for(plan, slot, prev_index, prev_run, target, rng);
+            let candidates =
+                candidates_for(plan, slot, prev_index, prev_run, target, integrity, rng);
             match candidates.first() {
                 Some(candidate) => realised.push(*candidate),
                 None => {
@@ -196,19 +224,23 @@ fn validate_walk(plan: &HarmonyPlan) -> bool {
 /// Walk the network for the fallback's next turn: from `current` to a
 /// rolled cadence (a tonic or a dominant), the dynamic arc supplying
 /// the movement profile — the same machinery the composer's plans use,
-/// seeded by the form's RNG so the same seed walks the same turn.
-/// Deterministic, grammatical, and anchored where it started.
-pub fn walk_turn(current: usize, dynamic: &Curve, rng: &mut SmallRng) -> HarmonyPlan {
+/// seeded by the form's RNG so the same seed walks the same turn. The
+/// world's integrity weights the cadence: a ruined world leaves the
+/// tension open (a dominant's close), a pristine one comes home.
+pub fn walk_turn(current: usize, dynamic: &Curve, integrity: f32, rng: &mut SmallRng) -> HarmonyPlan {
     // The cadence: a closable entry — tonic or dominant.
-    let closable: Vec<usize> = (0..VOCABULARY.len())
-        .filter(|&index| {
-            matches!(
-                VOCABULARY[index].function,
-                Function::Tonic | Function::Dominant
-            )
-        })
+    let tonic_close: Vec<usize> = (0..VOCABULARY.len())
+        .filter(|&index| VOCABULARY[index].function == Function::Tonic)
+        .collect();
+    let dominant_close: Vec<usize> = (0..VOCABULARY.len())
+        .filter(|&index| VOCABULARY[index].function == Function::Dominant)
         .collect();
     for _ in 0..6 {
+        let closable = if rng.random::<f32>() < integrity {
+            &tonic_close
+        } else {
+            &dominant_close
+        };
         let cadence = closable[rng.random_range(0..closable.len())];
         // The skeleton: the current chord as the start anchor, the
         // cadence as the end, the middle filled with a loose
@@ -240,7 +272,7 @@ pub fn walk_turn(current: usize, dynamic: &Curve, rng: &mut SmallRng) -> Harmony
             curve_dynamic: vec![],
             intent: String::new(),
         };
-        let walked = realise_plan(&skeleton, dynamic, rng);
+        let walked = realise_plan(&skeleton, dynamic, integrity, rng);
         if validate_walk(&walked) {
             return walked;
         }
@@ -325,7 +357,7 @@ mod tests {
         let plan = plan_from(&[0, 9, 10, 1]);
         let settled = Curve { upper: vec![0.0, 0.0], lower: vec![0.0, 0.0] };
         let mut rng = SmallRng::seed_from_u64(7);
-        let realised = realise_plan(&plan, &settled, &mut rng);
+        let realised = realise_plan(&plan, &settled, 1.0, &mut rng);
         assert_eq!(realised.slots.first().unwrap().chord, 0);
         assert_eq!(realised.slots.last().unwrap().chord, 1);
         assert!(validate(&realised, None).is_ok());
@@ -349,7 +381,7 @@ mod tests {
         // Nothing to re-pick: the plan is returned as it arrived.
         let plan = plan_from(&[0, 1]);
         let mut rng = SmallRng::seed_from_u64(3);
-        let realised = realise_plan(&plan, &DynamicShape::Climb.curve(), &mut rng);
+        let realised = realise_plan(&plan, &DynamicShape::Climb.curve(), 1.0, &mut rng);
         assert_eq!(
             realised.slots.iter().map(|slot| slot.chord).collect::<Vec<_>>(),
             vec![0, 1]
@@ -364,7 +396,7 @@ mod tests {
         let plan = plan_from(&[0, 0, 1, 0]);
         let climb = DynamicShape::Climb.curve();
         let mut rng = SmallRng::seed_from_u64(11);
-        let realised = realise_plan(&plan, &climb, &mut rng);
+        let realised = realise_plan(&plan, &climb, 1.0, &mut rng);
 
         assert_eq!(realised.slots.first().unwrap().chord, 0);
         assert_eq!(realised.slots.last().unwrap().chord, 0);
@@ -390,8 +422,8 @@ mod tests {
         // closes on a tonic or a dominant, and stays grammatical.
         for seed in 0..12u64 {
             let dynamic = DynamicShape::Swell.curve();
-            let first = walk_turn(0, &dynamic, &mut SmallRng::seed_from_u64(seed));
-            let again = walk_turn(0, &dynamic, &mut SmallRng::seed_from_u64(seed));
+            let first = walk_turn(0, &dynamic, 1.0, &mut SmallRng::seed_from_u64(seed));
+            let again = walk_turn(0, &dynamic, 1.0, &mut SmallRng::seed_from_u64(seed));
             assert_eq!(
                 first.slots.iter().map(|slot| slot.chord).collect::<Vec<_>>(),
                 again.slots.iter().map(|slot| slot.chord).collect::<Vec<_>>(),
@@ -408,6 +440,41 @@ mod tests {
     }
 
     #[test]
+    fn the_worlds_mood_weights_the_cadence_and_the_colours() {
+        // A pristine world comes home: every walk cadences on a tonic.
+        for seed in 0..8u64 {
+            let walked = walk_turn(
+                0,
+                &DynamicShape::Swell.curve(),
+                1.0,
+                &mut SmallRng::seed_from_u64(seed),
+            );
+            let closer = &VOCABULARY[walked.slots.last().unwrap().chord as usize];
+            assert_eq!(closer.function, Function::Tonic, "seed {seed} left home");
+        }
+        // A ruined world leaves the tension open: every walk cadences on
+        // a dominant.
+        for seed in 0..8u64 {
+            let walked = walk_turn(
+                0,
+                &DynamicShape::Swell.curve(),
+                0.0,
+                &mut SmallRng::seed_from_u64(seed),
+            );
+            let closer = &VOCABULARY[walked.slots.last().unwrap().chord as usize];
+            assert_eq!(closer.function, Function::Dominant, "seed {seed} came home");
+        }
+        // The colour bias: the dark qualities suit a ruined world, the
+        // bright ones a pristine one.
+        assert!(colour_suits(Quality::Minor, 0.0));
+        assert!(colour_suits(Quality::Diminished7, 0.25));
+        assert!(!colour_suits(Quality::Major, 0.25));
+        assert!(colour_suits(Quality::Major, 1.0));
+        assert!(colour_suits(Quality::Major7, 0.85));
+        assert!(!colour_suits(Quality::HalfDiminished7, 1.0));
+    }
+
+    #[test]
     fn every_realisation_stays_grammatical_and_anchored() {
         // Across shapes, starts and seeds: anchors preserved, grammar held.
         // (Every prefix closes on a tonic or a dominant — the inputs are
@@ -421,7 +488,7 @@ mod tests {
                 DynamicShape::Fade,
             ][seed as usize % 4];
             let plan = plan_from(&[0, 1, 10, 1, 0][..2 + seed as usize % 4]);
-            let realised = realise_plan(&plan, &shape.curve(), &mut rng);
+            let realised = realise_plan(&plan, &shape.curve(), 1.0, &mut rng);
             assert!(validate(&realised, None).is_ok(), "seed {seed} broke the grammar");
             assert_eq!(realised.slots.first().unwrap().chord, plan.slots[0].chord);
             assert_eq!(

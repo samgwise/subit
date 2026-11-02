@@ -61,10 +61,13 @@ pub struct DriveView {
     pub degraded: bool,
     /// The player's slow-field progress toward the exit (0–1).
     pub objective: f32,
-    /// The form sits in an episode — the dynamic sits one mark quieter.
+    /// The form sits in an episode — the general dynamic sits one mark
+    /// quieter while it lasts.
     pub episode: bool,
+    /// The world's integrity — the map's decay level (0 ruined, 1
+    /// pristine); the walk's colour bias.
+    pub world_integrity: f32,
 }
-
 /// One planned chord slot, named for the UI.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PlannedSlotView {
@@ -295,6 +298,7 @@ impl UiSnapshot {
                 degraded: state.degraded,
                 objective: state.objective,
                 episode: state.episode,
+                world_integrity: state.world_integrity,
             },
             harmony: HarmonyView {
                 source,

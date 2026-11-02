@@ -186,10 +186,9 @@ async fn run_conductor(monitor: Monitor) {
 
                 match address.as_str() {
                     "/subit/game/telemetry/world" => {
-                        tracing::info!(
-                            integrity = get_float(&payload, "integrity").unwrap_or(0.0),
-                            "world integrity reported"
-                        );
+                        let integrity = get_float(&payload, "integrity").unwrap_or(0.0);
+                        score.world_integrity = (integrity as f32).clamp(0.0, 1.0);
+                        tracing::info!(integrity, "world integrity reported");
                     }
                     "/subit/game/telemetry/objective" => {
                         // The objective's slow field: the run's arc — the
@@ -435,8 +434,12 @@ async fn run_conductor(monitor: Monitor) {
                         HarmonySource::Plan { slots, cursor, .. } if *cursor >= slots.len());
                     if score.harmony == HarmonySource::Cycle || depleted_plan {
                         let current = score.harmony.current_vocab(score.slot);
-                        let walked =
-                            network::walk_turn(current, &score.cycle_dynamic, &mut form_rng);
+                        let walked = network::walk_turn(
+                            current,
+                            &score.cycle_dynamic,
+                            score.world_integrity,
+                            &mut form_rng,
+                        );
                         score.harmony = HarmonySource::Plan {
                             slots: walked.slots.clone(),
                             curve: score.cycle_curve.clone(),
@@ -516,8 +519,12 @@ async fn run_conductor(monitor: Monitor) {
                             // re-picks the middle slots to keep the common
                             // tones the arc asks for — the composer's anchors
                             // and intent survive.
-                            let realised =
-                                network::realise_plan(&outcome.plan, &dynamic, &mut form_rng);
+                            let realised = network::realise_plan(
+                                &outcome.plan,
+                                &dynamic,
+                                score.world_integrity,
+                                &mut form_rng,
+                            );
                             let repicked = realised
                                 .slots
                                 .iter()

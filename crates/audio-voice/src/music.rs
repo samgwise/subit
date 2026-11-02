@@ -935,6 +935,9 @@ pub struct MusicState {
     /// next slot's voicing rules (the seventh's resolution, the leading
     /// tone's rise, the fifth's restraint).
     pub last_bass: Option<(u8, u8)>,
+    /// The world's integrity — the map's decay level (0 ruined, 1
+    /// pristine). The chord walk biases its colours with it.
+    pub world_integrity: f32,
 }
 
 impl Default for MusicState {
@@ -956,6 +959,7 @@ impl Default for MusicState {
             cycle_curve: default_curve(),
             cycle_dynamic: default_phrase_curve(),
             last_bass: None,
+            world_integrity: 1.0,
         }
     }
 }
