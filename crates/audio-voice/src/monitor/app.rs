@@ -360,16 +360,15 @@ fn chord_cell(ui: &mut egui::Ui, slot: &PlannedSlotView, state: CellState) {
         CellState::Future => (egui::Stroke::new(1.0_f32, egui::Color32::GRAY), egui::Color32::BLACK),
     };
     // The transition's movement reads as dots: a ring for a held
-    // common-tone pivot, one dot per moving tone after it.
+    // common-tone pivot, one dot per moving tone after it. The bass is
+    // the conductor's derivation now — the root downbeat, then the
+    // tones hugging the curve.
     let movement = if slot.moving_tones == 0 {
         "◦".to_string()
     } else {
         "●".repeat(slot.moving_tones)
     };
-    let label = match slot.bass {
-        Some(tone) => format!("{}\n(inv {tone}) {movement}", short_name(slot.name)),
-        None => format!("{} {movement}", short_name(slot.name)),
-    };
+    let label = format!("{} {movement}", short_name(slot.name));
     egui::Frame::default()
         .stroke(stroke)
         .fill(fill)

@@ -381,9 +381,8 @@ spells nine chord slots as degrees of a D major/minor mixture collection
 semitones, and the chromatic ladder hands them to MIDI as note numbers.
 The cycle — Dm, Bm, D, B, F#, C#m4-3, B/D, E, G#dim7 — puts E major
 penultimate to prepare the dim7 (the shared G# and B make the slide smooth),
-and the dim7 resolves home to Dm. The bass is locked to the cycle in
-lockstep, sounding its slot's designated bass (the D under B/D included) as
-quaver pulses — six of them and then rest until the next change in the
+and the dim7 resolves home to Dm. The bass hugs the spanned contour in
+quaver pulses, six of them and then rest until the next change in the
 relaxed regimes (3+ beats per chord), continuous quavers through the short
 ones, so the busier harmonic rhythms carry the bass drive with them — every
 pairing is intentional, and later harmonic disintegration can be a
@@ -422,24 +421,29 @@ performed slots: chord, duration, whether the conductor cut or held it)
 and the game's present (tallies since the last plan: mob sweeps, kills,
 level-ups, corruption boundaries, descents, and the aggro average and
 peak, and deaths) and lays out the next phrase — 4–8 chord slots picked
-from a twenty-three-entry vocabulary (the cycle's nine plus submarine's
+from a twenty-one-entry vocabulary (the cycle's nine plus submarine's
 function palette and the calm colours: supertonic, subdominant, dominant,
-dominant seventh, and the sixths and sevenths of home),
+dominant seventh, and the sevenths of home),
 each labelled with its harmonic function, plus optional Bézier control
 points for the phrase's voicing contour. The palette stretches past the
 submarine set for the run's dramatic arc: F major (the borrowed third),
 C major (the natural seventh), Am (the modal v), and D7 (the tonic's own
 pull to the subdominant — the palette's second closable dominant). The
-common-tone walk brought the calm colours: i7 and i6 (the tonic's own
-seventh and Dorian sixth), iiø7 (the half-diminished pre-dominant),
-IV6, v7, and ♭VIImaj7 — sixths and sevenths that hold the voices close
-so settled phrases can vary without leaping.
+common-tone walk brought the calm colours: i7 (the tonic's own
+seventh), iiø7 (the half-diminished pre-dominant), v7, and ♭VIImaj7 —
+sevenths that hold the voices close so settled phrases can vary without
+leaping.
 
-The vocabulary speaks roman numerals relative to the key, and a slot may
-set its bass to any chord tone — an inversion mid-phrase for stepwise
-bass motion (the validator pins the phrase edges to the root). The bass
-resolves through the same pitch stack as every voice — it transposes
-with the key and degrades with the corruption.
+The vocabulary speaks roman numerals relative to the key. The bass is
+the conductor's derivation, not the model's: every pulse takes the
+chord tone nearest the spanned contour's centre echoed into the bass's
+register — the line hugs the curve as it travels (least movement breaks
+ties) — under a small voice-leading grammar: a seventh only sounds at a
+slot's end, falling a step onto the next chord's third; a leading-tone
+third only at a slot's end, rising to the tonic; and the fifth never
+sounds twice in a row. The bass resolves through the same
+pitch stack as every voice — it transposes with the key and degrades
+with the corruption.
 
 The plan travels as flat JSON (it doubles as the ollama response schema —
 grammar-constrained sampling misbehaves on nested shapes) and must pass
@@ -470,12 +474,11 @@ voice-leading distance) weights the transitions. The plan's dynamic arc
 sets a movement target per transition — a settled phrase holds voices,
 a crescendo moves them — and a backtracking walk re-picks the middle
 slots to follow it, keeping the model's own picks wherever they already
-fit and the first/last slots as cadence anchors always. Re-picked slots
-drop their inversions; a dead end or a grammar failure degrades to the
-model's plan untouched — the walk never fails, and the validator still
-gates everything. The deterministic cycle keeps its fixed walk (the
-bass's lockstep depends on it); a network-walking fallback is future
-work.
+fit and the first/last slots as cadence anchors always. The bass is the
+conductor's derivation everywhere (the cycle's written line retired); a
+dead end or a grammar failure degrades to the model's plan untouched —
+the walk never fails, and the validator still gates everything. A
+network-walking fallback cycle is future work.
 
 The run has an arc, and it is the composer's to score: the player's
 slow-field progress toward the exit (BFS distance to the goal,
@@ -613,10 +616,10 @@ at note attacks. The percussive voices stay velocity-only.
 ||| Vault: min island / carved interior / mob / door open radius | 12 cells / 5×3 / 3 + 1 per 3 depths (cap 5) / 1.5 tiles |
 | Death dissolve | ~0.5 s, corruption-green eating edge |
 | Score: chord period / pattern gates / rhythm hold / smoothing | 8 → 6 → 4 → 2 crotchets, then 3+2 / 3+3+2 / 3+2+2 quavers (additive past 0.95 intensity) / A ≥1 lock, B ≥3 / 3 s before dropping down / τ 0.5 s attack, 8 s release |
-|| Bass: pulse rate / relaxed figure / gate | quavers / 6 then rest (periods of 3+ beats), continuous below / 0.6 × quaver |
+||| Bass: hug / pulses / relaxed figure / gate | every pulse hugs the curve's centre pc; sevenths fall to the next third, the leading third rises, the fifth never twice / quavers / 6 then rest (periods of 3+ beats), continuous below / 0.6 × quaver |
 ||| Bass mod wheel: floor / lift rule | 24 CC / the phrase arc; a settled final slot rises monotonically to 127 |
 | Degraded zone: chromatic rotation | ±3 semitones per mapping, hash of the pitch class |
-| Composer: phrase / replan margin / request timeout | 4–8 slots (23-chord vocabulary) / 2 slots / 30 s |
+ | Composer: phrase / replan margin / request timeout | 4–8 slots (21-chord vocabulary) / 2 slots / 30 s |
 | Objective progress | 1 − BFS steps/initial, clamped 0–1, published on 1% change (Param) |
 | Form: home cycle / change chance / sequence vs episode / episode span & return | 4, 6 or 8 phrases / 60% at expiry / 60% sequence (a tone, one phrase) / 2–4 phrases, 40% return per phrase |
 || Voices: bands & offsets | derived from the spanned contour — the distant the floor region, the airy the top, the bell a 12-semitone band floored at the range's centre (never narrower than 12); entries at 0 / a quaver / three 16ths |

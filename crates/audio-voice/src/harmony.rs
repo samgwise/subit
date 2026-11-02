@@ -22,11 +22,6 @@ pub enum Quality {
     MinorSus43,
     Diminished7,
     Dominant7,
-    /// The minor sixth (a Dorian colour): the major sixth beside the minor
-    /// triad — the tonic's warmest hold.
-    Minor6,
-    /// The major sixth (an added-sixth colour).
-    Major6,
     /// The minor seventh (the mode's own seventh beside the triad).
     Minor7,
     /// The half-diminished seventh (the minor mode's pre-dominant).
@@ -43,8 +38,6 @@ impl Quality {
             Quality::MinorSus43 => &[0.0, 3.0, 4.0, 7.0],
             Quality::Diminished7 => &[0.0, 3.0, 6.0, 9.0],
             Quality::Dominant7 => &[0.0, 4.0, 7.0, 10.0],
-            Quality::Minor6 => &[0.0, 3.0, 7.0, 9.0],
-            Quality::Major6 => &[0.0, 4.0, 7.0, 9.0],
             Quality::Minor7 => &[0.0, 3.0, 7.0, 10.0],
             Quality::HalfDiminished7 => &[0.0, 3.0, 6.0, 10.0],
             Quality::Major7 => &[0.0, 4.0, 7.0, 11.0],
@@ -109,27 +102,21 @@ pub const VOCABULARY: &[VocabEntry] = &[
     VocabEntry { degree: 6.0, quality: Quality::Minor, function: Function::Colour, name: "v (the modal v)" },
     VocabEntry { degree: 0.0, quality: Quality::Dominant7, function: Function::Dominant, name: "I7 (the pull to the subdominant)" },
     // The calm colours the chord network's common-tone walk wanted: the
-    // tonic and subdominant space's sixths and sevenths — many shared
-    // tones, so the settled phrases can vary without the voices leaping.
+    // tonic and subdominant space's sevenths — many shared tones, so the
+    // settled phrases can vary without the voices leaping.
     VocabEntry { degree: 0.0, quality: Quality::Minor7, function: Function::Tonic, name: "i7 (the tonic's seventh)" },
-    VocabEntry { degree: 0.0, quality: Quality::Minor6, function: Function::Tonic, name: "i6 (the tonic's Dorian sixth)" },
     VocabEntry { degree: 1.0, quality: Quality::HalfDiminished7, function: Function::Subdominant, name: "iiø7 (the half-diminished pre-dominant)" },
-    VocabEntry { degree: 4.0, quality: Quality::Major6, function: Function::Subdominant, name: "IV6 (the subdominant's sixth)" },
     VocabEntry { degree: 6.0, quality: Quality::Minor7, function: Function::Dominant, name: "v7 (the modal dominant's seventh)" },
     VocabEntry { degree: 8.0, quality: Quality::Major7, function: Function::Colour, name: "♭VIImaj7 (the natural seventh's majesty)" },
 ];
 
-/// One planned chord: a vocabulary index, an optional bass tone (an
-/// inversion — 0 root, 1 third, 2 fifth, 3 seventh), and an advisory
-/// duration. The conductor owns the clock (the M25 regime ladder, cuts,
-/// holds) — the suggestion is logged and ignored by the engine in v1,
-/// kept in the schema for a later hand-off. The bass may invert
-/// mid-phrase; the validator pins the phrase edges to the root.
+/// One planned chord: a vocabulary index. The conductor owns the clock
+/// (the M25 regime ladder, cuts, holds) and derives the bass (the root
+/// downbeat, then the tones hugging the phrase curve) — the plan speaks
+/// direction only.
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
 pub struct PlanSlot {
     pub chord: u32,
-    #[serde(default)]
-    pub bass: Option<u32>,
     #[serde(default)]
     pub suggested_beats: f32,
 }
@@ -204,21 +191,6 @@ pub fn validate(plan: &HarmonyPlan, prev_chord: Option<usize>) -> Result<(), Str
         return Err("boundary voice leap exceeds the span".into());
     }
 
-    // The bass: a slot may invert mid-phrase (any chord tone the quality
-    // has), but the phrase edges stay rooted — stable starts and closes.
-    for (index, slot) in plan.slots.iter().enumerate() {
-        let Some(bass) = slot.bass else {
-            continue;
-        };
-        let tones = VOCABULARY[slot.chord as usize].quality.intervals().len() as u32;
-        if bass >= tones {
-            return Err(format!("bass tone {bass} is off the chord"));
-        }
-        if index == 0 || index == plan.slots.len() - 1 {
-            return Err("phrase edges stay on the root bass".into());
-        }
-    }
-
     // Restraint: the same chord at most twice in a row.
     let mut run = 1;
     for pair in plan.slots.windows(2) {
@@ -268,7 +240,7 @@ mod tests {
         HarmonyPlan {
             slots: chords
                 .iter()
-                .map(|&chord| PlanSlot { chord, bass: None, suggested_beats: 0.0 })
+                .map(|&chord| PlanSlot { chord, suggested_beats: 0.0 })
             .collect(),
             curve_upper: vec![],
             curve_lower: vec![],
@@ -282,24 +254,6 @@ mod tests {
         assert_eq!(VOCABULARY[0].function, Function::Tonic);
         assert_eq!(VOCABULARY[6].name, "II (V of V, prepares the dim7)");
         assert_eq!(VOCABULARY[9].function, Function::Subdominant);
-    }
-
-    #[test]
-    fn the_bass_may_invert_mid_phrase_but_not_at_the_edges() {
-        // A mid-phrase inversion is grammatical.
-        let mut plan = plan_from(&[9, 10, 0, 0]);
-        plan.slots[1].bass = Some(2); // the dominant over its fifth
-        assert!(validate(&plan, None).is_ok());
-        // A phrase edge on an inversion is not.
-        plan.slots[0].bass = Some(1);
-        assert!(validate(&plan, None).is_err());
-        let mut closing = plan_from(&[9, 10, 0, 0]);
-        closing.slots[3].bass = Some(1);
-        assert!(validate(&closing, None).is_err());
-        // And the tone must exist on the chord: a triad has no seventh.
-        let mut seventhless = plan_from(&[9, 10, 0, 0]);
-        seventhless.slots[1].bass = Some(3);
-        assert!(validate(&seventhless, None).is_err());
     }
 
     #[test]

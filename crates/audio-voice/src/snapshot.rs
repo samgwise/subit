@@ -71,9 +71,6 @@ pub struct PlannedSlotView {
     pub chord: u32,
     pub name: &'static str,
     pub function: &'static str,
-    /// The slot's optional bass tone (an inversion — 0 root, 1 third,
-    /// 2 fifth, 3 seventh).
-    pub bass: Option<u32>,
     /// The transition's moving tones — the common-tone distance from
     /// the previous slot (0 for the anchor and unknown origins).
     pub moving_tones: usize,
@@ -252,7 +249,6 @@ impl UiSnapshot {
                             chord: slot.chord,
                             name: entry.name,
                             function: entry.function.name(),
-                            bass: slot.bass,
                             moving_tones,
                         }
                     })
@@ -391,10 +387,10 @@ mod tests {
         state.key = KeyState { tonic: 2 };
         state.harmony = HarmonySource::Plan {
             slots: vec![
-                PlanSlot { chord: 9, bass: None, suggested_beats: 0.0 },
-                PlanSlot { chord: 10, bass: None, suggested_beats: 0.0 },
-                PlanSlot { chord: 0, bass: None, suggested_beats: 0.0 },
-                PlanSlot { chord: 1, bass: None, suggested_beats: 0.0 },
+                PlanSlot { chord: 9, suggested_beats: 0.0 },
+                PlanSlot { chord: 10, suggested_beats: 0.0 },
+                PlanSlot { chord: 0, suggested_beats: 0.0 },
+                PlanSlot { chord: 1, suggested_beats: 0.0 },
             ],
             curve: default_curve(),
             dynamic: default_phrase_curve(),
@@ -421,10 +417,10 @@ mod tests {
         state.intensity = 1.0;
         state.harmony = HarmonySource::Plan {
             slots: vec![
-                PlanSlot { chord: 0, bass: None, suggested_beats: 0.0 },
-                PlanSlot { chord: 9, bass: None, suggested_beats: 0.0 },
-                PlanSlot { chord: 10, bass: None, suggested_beats: 0.0 },
-                PlanSlot { chord: 1, bass: None, suggested_beats: 0.0 },
+                PlanSlot { chord: 0, suggested_beats: 0.0 },
+                PlanSlot { chord: 9, suggested_beats: 0.0 },
+                PlanSlot { chord: 10, suggested_beats: 0.0 },
+                PlanSlot { chord: 1, suggested_beats: 0.0 },
             ],
             curve: Curve {
                 upper: vec![48.0, 20.0, 50.0],

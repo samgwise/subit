@@ -125,7 +125,7 @@ fn candidates_for(
         .copied()
         .filter(|&candidate| step_is_grammatical(prev, prev_run, candidate));
     for candidate in exact.chain(close) {
-        candidates.push(PlanSlot { chord: candidate as u32, bass: None, suggested_beats: 0.0 });
+        candidates.push(PlanSlot { chord: candidate as u32, suggested_beats: 0.0 });
         if candidates.len() >= 4 {
             break; // a handful is plenty — the walk backtracks above us
         }
@@ -203,7 +203,7 @@ mod tests {
         HarmonyPlan {
             slots: chords
                 .iter()
-                .map(|&chord| PlanSlot { chord, bass: None, suggested_beats: 0.0 })
+                .map(|&chord| PlanSlot { chord, suggested_beats: 0.0 })
                 .collect(),
             curve_upper: vec![],
             curve_lower: vec![],

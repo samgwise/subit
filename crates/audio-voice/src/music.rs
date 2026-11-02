@@ -310,51 +310,181 @@ const HARMONY_CYCLE: [(f64, Quality); 9] = [
 /// locked to (and the seam later disintegration effects deform).
 pub const CYCLE_LEN: usize = HARMONY_CYCLE.len();
 
-/// The bass line: one (degree, octave) per chord slot, locked to the
-/// harmony cycle — the roots with the VI slot's inversion (the bass sounds
-/// the tonic under it) and the line's written contour (the v under, the
-/// #vii below). The degrees resolve through the pitch stack like every
-/// other voice — transposed by the key, degraded with it.
-const BASS_CYCLE: [(f64, i32); 9] = [
-    (0.0, 0),
-    (7.0, -1),
-    (0.0, 0),
-    (7.0, -1),
-    (3.0, 0),
-    (9.0, -1),
-    (0.0, 0),
-    (1.0, 0),
-    (5.0, 0),
-];
-
-/// The tonic's bass note (D2) — every bass note sits relative to it: the
-/// key's offset, the degree's semitones, and the line's own octave.
+/// The tonic's bass note (D2) — the bass register: every pulse sits in
+/// this octave, hugging the curve's centre's pitch class.
 const TONIC_BASS: u8 = 38;
 
-/// The bass note for a written line's (degree, octave) under the key: the
-/// stack resolves the transposed degree, the degradation rotates the pitch
-/// class like every voice, and the line's octave keeps its contour.
-fn bass_for_line(degree: f64, octave: i32, tonic: i32, degraded: bool) -> u8 {
-    let semitone = pitch_stack().step(degree) + tonic as f64;
-    (TONIC_BASS as i32 + 12 * octave + chromatic_map(semitone, degraded).rem_euclid(12.0) as i32)
-        as u8
-}
-
-/// The bass note for a planned chord, honouring an optional inversion: the
-/// named chord tone's pitch class (0 root, 1 third, 2 fifth, 3 seventh)
-/// resolves through the stack under the key. The plan's bass sits in the
-/// home octave of the register.
-fn bass_for_tone(
-    degree: f64,
-    quality: Quality,
-    tone: Option<u32>,
+/// The bass planner's inputs — everything the voicing rules and the
+/// curve hug read.
+struct BassPlan<'a> {
+    chord: SlotChord,
+    /// The next chord (the plan's next slot, or the cycle's next) — the
+    /// seventh's and leading tone's lookahead.
+    next_chord: Option<SlotChord>,
     tonic: i32,
     degraded: bool,
-) -> u8 {
-    let intervals = quality.intervals();
-    let tone = tone.map_or(0, |tone| (tone as usize).min(intervals.len() - 1));
-    let semitone = pitch_stack().step(degree) + tonic as f64 + intervals[tone];
-    TONIC_BASS + chromatic_map(semitone, degraded).rem_euclid(12.0) as u8
+    curve: &'a Curve,
+    phrase_t: &'a dyn Fn(f64) -> f64,
+    duration_secs: f64,
+    pulses: usize,
+    /// The previous slot's last tone — (role, pitch class).
+    last_bass: Option<(u8, u8)>,
+}
+
+/// The bass pulses for a slot: every pulse takes the legal chord tone
+/// nearest the spanned contour's centre (echoed by pitch class into the
+/// bass's octave), tie-broken by the least movement from the previous
+/// tone. The voicing rules: a seventh only sounds at the slot's end,
+/// resolving down by step onto the next chord's third; the leading-tone
+/// third only at the slot's end, rising to the tonic; and the fifth
+/// never twice in a row. The degradation and transposition come along
+/// like every other voice.
+fn bass_pulses(plan: BassPlan<'_>) -> Vec<(u8, u8)> {
+    let BassPlan {
+        chord,
+        next_chord,
+        tonic,
+        degraded,
+        curve,
+        phrase_t,
+        duration_secs,
+        pulses,
+        last_bass,
+    } = plan;
+    let root_semitone = pitch_stack().step(chord.degree) + tonic as f64;
+    // (role, semitone-from-tonic) for each chord tone.
+    let tones: Vec<(u8, f64)> = chord
+        .quality
+        .intervals()
+        .iter()
+        .enumerate()
+        .map(|(role, &interval)| (role as u8, chromatic_map(root_semitone + interval, degraded)))
+        .collect();
+    // The tones' space is semitones above the home D (0 = D), so the
+    // key's tonic sits at the offset itself and the leading tone a
+    // semitone under the octave.
+    let tonic_pc = (tonic as f64).rem_euclid(12.0);
+    let leading_pc = (tonic as f64 + 11.0).rem_euclid(12.0);
+    // The next chord's third's pitch class — the seventh's resolution.
+    let next_third = next_chord.as_ref().map(|next| {
+        (pitch_stack().step(next.degree) + tonic as f64 + next.quality.intervals()[1])
+            .rem_euclid(12.0)
+    });
+    // Whether the next chord holds the tonic — the leading tone's rise.
+    let next_holds_tonic = next_chord.as_ref().is_some_and(|next| {
+        next.quality
+            .intervals()
+            .iter()
+            .any(|&interval| {
+                (pitch_stack().step(next.degree) + tonic as f64 + interval).rem_euclid(12.0)
+                    == tonic_pc
+            })
+    });
+
+    // The state's handoff arrives as (role, pitch class) u8s; the walk
+    // works in semitones-from-tonic f64s.
+    let mut previous = last_bass.map(|(role, pc)| (role, f64::from(pc)));
+    let mut line = Vec::with_capacity(pulses);
+    for pulse in 0..pulses {
+        let t = phrase_t(pulse as f64 * QUAVER_SECS / duration_secs);
+        let (low, high) = curve.contour(t);
+        let centre_pc = ((low + high) / 2.0).rem_euclid(12.0);
+        let is_last_pulse = pulse + 1 == pulses;
+
+        let legal = |tones: &[(u8, f64)]| -> Vec<(u8, f64)> {
+            tones
+                .iter()
+                .copied()
+                .filter(|&(role, semitone)| {
+                    let pc = semitone.rem_euclid(12.0);
+                    // Rule 2: a seventh resolves forward — onto the next
+                    // chord's third, a step down. Only the slot's end can
+                    // hand over.
+                    if role == 3 {
+                        return is_last_pulse
+                            && next_third
+                                .is_some_and(|third| {
+                                    let step = (pc - third).rem_euclid(12.0);
+                                    step == 1.0 || step == 2.0
+                                });
+                    }
+                    if let Some((prev_role, prev_pc)) = previous {
+                        // Rule 2's handoff: the previous tone was a
+                        // seventh — this one lands a step below it, on
+                        // this chord's third.
+                        if prev_role == 3
+                            && !(role == 1
+                                && matches!((prev_pc - pc).rem_euclid(12.0), 1.0 | 2.0))
+                        {
+                            return false;
+                        }
+                        // Rule 3's handoff: the previous was the
+                        // leading-tone third — this one rises to the
+                        // tonic.
+                        if prev_role == 1 && prev_pc == leading_pc && pc != tonic_pc {
+                            return false;
+                        }
+                        // Rule 4: the fifth never twice in a row.
+                        if prev_role == 2 && role == 2 {
+                            return false;
+                        }
+                    }
+                    // Rule 3: the leading-tone third rises — only the
+                    // slot's end, into a next chord that holds the tonic.
+                    if role == 1 && pc == leading_pc {
+                        return is_last_pulse && next_holds_tonic;
+                    }
+                    true
+                })
+                .collect()
+        };
+
+        // A contradicting rule set relaxes the step rules before the
+        // bass ever silences: first the handoff's steps, then any tone.
+        let mut candidates = legal(&tones);
+        if candidates.is_empty() {
+            candidates = tones
+                .iter()
+                .copied()
+                .filter(|&(role, _)| {
+                    !previous.is_some_and(|(prev_role, _)| prev_role == 2 && role == 2)
+                })
+                .collect();
+        }
+        if candidates.is_empty() {
+            candidates = tones.clone();
+        }
+
+        let previous_pc = previous.map(|(_, pc)| pc);
+        let (role, semitone) = candidates
+            .iter()
+            .copied()
+            .min_by(|&(role_a, semitone_a), &(role_b, semitone_b)| {
+                let hug = |semitone: f64| {
+                    let distance = (semitone.rem_euclid(12.0) - centre_pc).rem_euclid(12.0);
+                    distance.min(12.0 - distance)
+                };
+                hug(semitone_a)
+                    .total_cmp(&hug(semitone_b))
+                    .then_with(|| {
+                        let walk = |semitone: f64| {
+                            previous_pc
+                                .map_or(0.0, |previous| {
+                                    let distance =
+                                        (semitone.rem_euclid(12.0) - previous).rem_euclid(12.0);
+                                    distance.min(12.0 - distance)
+                                })
+                        };
+                        walk(semitone_a).total_cmp(&walk(semitone_b))
+                    })
+                    .then_with(|| role_a.cmp(&role_b))
+            })
+            .unwrap();
+        let note = TONIC_BASS + semitone.rem_euclid(12.0) as u8;
+        line.push((note, role));
+        previous = Some((role, semitone.rem_euclid(12.0)));
+    }
+    line
 }
 
 /// The deterministic cycle's slots as vocabulary indices — the history and
@@ -491,24 +621,18 @@ impl KeyState {
     }
 }
 
-/// One slot's resolved chord: the root's scale degree, its quality, and the
-/// bass note that sounds beneath it.
+/// One slot's resolved chord: the root's scale degree and its quality
+/// (the bass derives from these at render time).
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct SlotChord {
     degree: f64,
     quality: Quality,
-    bass: u8,
 }
 
-/// The cycle's chord for a slot — the harmony and its locked bass.
-fn cycle_chord(slot: u32, tonic: i32, degraded: bool) -> SlotChord {
+/// The cycle's chord for a slot.
+fn cycle_chord(slot: u32) -> SlotChord {
     let (degree, quality) = HARMONY_CYCLE[(slot as usize) % CYCLE_LEN];
-    let (bass_degree, octave) = BASS_CYCLE[(slot as usize) % CYCLE_LEN];
-    SlotChord {
-        degree,
-        quality,
-        bass: bass_for_line(bass_degree, octave, tonic, degraded),
-    }
+    SlotChord { degree, quality }
 }
 
 /// Resolve the slot's chord from the harmony source: the plan's next slot
@@ -522,28 +646,19 @@ fn resolve_slot(state: &mut MusicState) -> SlotChord {
     if depleted {
         state.harmony = HarmonySource::Cycle;
     }
-    // A live plan performs its next slot — advancing the cursor — with the
-    // bass on the root unless the slot names an inversion (a mid-phrase
-    // chord tone); the key transposes and the degradation reaches it like
-    // every voice.
+    // A live plan performs its next slot — advancing the cursor. The
+    // key transposes and the degradation reach it like every voice.
     if let HarmonySource::Plan { slots, cursor, .. } = &mut state.harmony {
         let planned = &slots[*cursor];
         let entry = &VOCABULARY[planned.chord as usize];
         let chord = SlotChord {
             degree: entry.degree,
             quality: entry.quality,
-            bass: bass_for_tone(
-                entry.degree,
-                entry.quality,
-                planned.bass,
-                state.key.tonic,
-                state.degraded,
-            ),
         };
         *cursor += 1;
         return chord;
     }
-    cycle_chord(state.slot, state.key.tonic, state.degraded)
+    cycle_chord(state.slot)
 }
 
 /// The pad voicing for a resolved chord: the pitch stack turns the root
@@ -816,6 +931,10 @@ pub struct MusicState {
     pub cycle_curve: Curve,
     /// The cycle's tiled dynamic arc, rolled with the contour.
     pub cycle_dynamic: Curve,
+    /// The bass line's last tone — (role, pitch class) — handed to the
+    /// next slot's voicing rules (the seventh's resolution, the leading
+    /// tone's rise, the fifth's restraint).
+    pub last_bass: Option<(u8, u8)>,
 }
 
 impl Default for MusicState {
@@ -836,6 +955,7 @@ impl Default for MusicState {
             episode: false,
             cycle_curve: default_curve(),
             cycle_dynamic: default_phrase_curve(),
+            last_bass: None,
         }
     }
 }
@@ -910,6 +1030,26 @@ impl Engine {
         state.last_slot_secs = duration_secs;
         let slot_end = slot_start + duration_secs;
 
+        // The bass's lookahead, read before the slot is resolved: the
+        // next chord (the plan's next slot, or the cycle's next) — the
+        // seventh's and leading tone's rules read it.
+        let depleted = matches!(&state.harmony, HarmonySource::Plan { slots, cursor, .. } if *cursor >= slots.len());
+        let next_chord = if depleted {
+            Some(cycle_chord(state.slot + 1))
+        } else {
+            match &state.harmony {
+                HarmonySource::Plan { slots, cursor, .. } => {
+                    if cursor + 1 < slots.len() {
+                        let entry = &VOCABULARY[slots[cursor + 1].chord as usize];
+                        Some(SlotChord { degree: entry.degree, quality: entry.quality })
+                    } else {
+                        Some(cycle_chord(state.slot + 1))
+                    }
+                }
+                HarmonySource::Cycle => Some(cycle_chord(state.slot + 1)),
+            }
+        };
+
         // The slot's chord: the plan's next slot when the composer is
         // live, else the deterministic cycle.
         let slot_chord = resolve_slot(state);
@@ -971,13 +1111,24 @@ impl Engine {
         } else {
             slot_quavers
         };
+        let bass_line = bass_pulses(BassPlan {
+            chord: slot_chord,
+            next_chord,
+            tonic: state.key.tonic,
+            degraded: state.degraded,
+            curve: &curve,
+            phrase_t: &phrase_t,
+            duration_secs,
+            pulses,
+            last_bass: state.last_bass,
+        });
         for k in 0..pulses {
             let phrase = phrase_dynamic(&dynamic_curve, phrase_t(k as f64 * QUAVER_SECS / duration_secs));
             notes.push((
                 k as f64 * QUAVER_SECS,
                 NoteEvent {
                     channel: CHANNEL_BASS,
-                    note: slot_chord.bass,
+                    note: bass_line[k].0,
                     velocity: velocity_for(
                         88,
                         BASS_GESTURE[k % BASS_GESTURE.len()],
@@ -987,6 +1138,11 @@ impl Engine {
                     duration_secs: QUAVER_SECS * BASS_PULSE_GATE,
                 },
             ));
+        }
+        // The handoff: the line's last tone — (role, pitch class) — the
+        // next slot's voicing rules read it.
+        if let Some(&(note, role)) = bass_line.last() {
+            state.last_bass = Some((role, note - TONIC_BASS));
         }
 
         // The three voices: the arrangement decides who sounds this slot —
@@ -1277,17 +1433,17 @@ mod tests {
         assert_semitone(scale.step(10.0), 12.0); // the octave boundary
     }
 
-    /// Plan slots from chord indices, roots in the bass.
+    /// Plan slots from chord indices.
     fn plan_slots(chords: &[u32]) -> Vec<PlanSlot> {
         chords
             .iter()
-            .map(|&chord| PlanSlot { chord, bass: None, suggested_beats: 0.0 })
+            .map(|&chord| PlanSlot { chord, suggested_beats: 0.0 })
             .collect()
     }
 
     /// The cycle's voicing for a slot — what the deterministic path plays.
     fn cycle_voicing(slot: u32, degraded: bool) -> Vec<u8> {
-        let chord = cycle_chord(slot, 0, degraded);
+        let chord = cycle_chord(slot);
         voicing_for(chord.degree, chord.quality, 0, degraded)
     }
 
@@ -1300,14 +1456,10 @@ mod tests {
             .collect()
     }
 
-    /// The single bass note a slot sounded — the pulses all strike it.
+    /// The slot's bass downbeat — the first pulse, the chord's root.
     fn slot_bass(notes: &[(f64, NoteEvent)]) -> u8 {
         let bass = bass_notes(notes);
         assert!(!bass.is_empty(), "the slot sounded a bass");
-        assert!(
-            bass.iter().all(|&note| note == bass[0]),
-            "the slot's bass pulses agree: {bass:?}"
-        );
         bass[0]
     }
 
@@ -1315,9 +1467,10 @@ mod tests {
     fn cycles_wrap_exactly() {
         for slot in 0..(CYCLE_LEN as u32 * 3) {
             let next = slot + CYCLE_LEN as u32;
-            let chord = cycle_chord(slot, 0, false);
-            let wrapped = cycle_chord(next, 0, false);
-            assert_eq!(chord.bass, wrapped.bass);
+            let chord = cycle_chord(slot);
+            let wrapped = cycle_chord(next);
+            assert_eq!(chord.degree, wrapped.degree);
+            assert_eq!(chord.quality, wrapped.quality);
             assert_eq!(
                 voicing_for(chord.degree, chord.quality, 0, false),
                 voicing_for(wrapped.degree, wrapped.quality, 0, false)
@@ -1550,46 +1703,172 @@ mod tests {
 
     #[test]
     fn transposition_moves_every_voice_by_the_offset() {
-        // The same slot a tone higher: the voicing and the bass differ by
-        // exactly two semitones — the whole dictionary travels with the
-        // key.
-        let home = cycle_chord(4, 0, false);
-        let up = cycle_chord(4, 2, false);
+        // The same slot a tone higher: the voicing and the bass downbeat
+        // differ by exactly two semitones — the dictionary travels with
+        // the key.
+        let home = cycle_chord(4);
+        let up = cycle_chord(4);
         let home_voicing = voicing_for(home.degree, home.quality, 0, false);
         let up_voicing = voicing_for(up.degree, up.quality, 2, false);
         for (home_tone, up_tone) in home_voicing.iter().zip(up_voicing.iter()) {
             assert_eq!(up_tone - home_tone, 2);
         }
-        assert_eq!(up.bass - home.bass, 2);
+        let downbeat = |tonic: i32| {
+            TONIC_BASS
+                + (pitch_stack().step(home.degree) + tonic as f64).rem_euclid(12.0) as u8
+        };
+        assert_eq!(downbeat(2) - downbeat(0), 2);
     }
 
     #[test]
     fn degradation_reaches_the_bass_and_survives_transposition() {
         // The bass degrades with the stack now: deterministic, within the
         // spread, and the rotation composes with a transposed key.
-        let clean = cycle_chord(0, 0, false);
-        let degraded = cycle_chord(0, 0, true);
-        assert_ne!(degraded.bass, clean.bass, "the corrupted bass is heard");
-        assert_eq!(cycle_chord(0, 0, true).bass, degraded.bass, "deterministic");
-        let shift = (degraded.bass as i64 - clean.bass as i64).rem_euclid(12);
+        let downbeat = |tonic: i32, degraded: bool| {
+            let chord = cycle_chord(0);
+            TONIC_BASS
+                + chromatic_map(pitch_stack().step(chord.degree) + tonic as f64, degraded)
+                    .rem_euclid(12.0) as u8
+        };
+        let clean = downbeat(0, false);
+        let degraded = downbeat(0, true);
+        assert_ne!(degraded, clean, "the corrupted bass is heard");
+        assert_eq!(downbeat(0, true), degraded, "deterministic");
+        let shift = (degraded as i64 - clean as i64).rem_euclid(12);
         let shift = shift.min(12 - shift);
         assert!(shift <= DEGRADATION_SEMITONES, "the bass moved {shift} semitones");
 
         // A transposed key degrades on its own pitch classes.
-        let up_clean = cycle_chord(0, 2, false);
-        let up_degraded = cycle_chord(0, 2, true);
-        assert_ne!(up_degraded.bass, up_clean.bass);
-        assert_ne!(up_degraded.bass, degraded.bass, "the key moves the rotation");
+        let up_clean = downbeat(2, false);
+        let up_degraded = downbeat(2, true);
+        assert_ne!(up_degraded, up_clean);
+        assert_ne!(up_degraded, degraded, "the key moves the rotation");
     }
 
     #[test]
-    fn bass_is_locked_to_the_harmony() {
-        // Every slot sounds its designated bass: the D under B/D, the E
-        // under the E major prepare, the G# under the dim7.
-        assert_eq!(cycle_chord(6, 0, false).bass, 38); // B/D sounds its D
-        assert_eq!(cycle_chord(7, 0, false).bass, 40); // E
-        assert_eq!(cycle_chord(8, 0, false).bass, 44); // G#
-        assert_eq!(cycle_chord(0, 0, false).bass, 38); // home
+    fn the_bass_pulses_hug_the_curve() {
+        // Every pulse takes the chord tone nearest the curve's centre:
+        // a settled curve pulls them to the middle of the chord's tones,
+        // a blooming one pushes them wider.
+        let line = |curve: &Curve| {
+            let phrase_t = |within: f64| within / CYCLE_LEN as f64;
+            bass_pulses(BassPlan {
+                chord: cycle_chord(0),
+                next_chord: Some(cycle_chord(1)),
+                tonic: 0,
+                degraded: false,
+                curve,
+                phrase_t: &phrase_t,
+                duration_secs: 4.0 * CROTCHET_SECS,
+                pulses: BASS_PULSES,
+                last_bass: None,
+            })
+        };
+        let settled = line(&effective_curve(&ContourShape::Narrow.curve(), 0.0));
+        let blooming = line(&effective_curve(&ContourShape::Arc.curve(), 1.0));
+        assert_ne!(settled, blooming, "the curve moves the bass line");
+        // Every pulse stays a chord tone of the slot (the Dm's 0, 3 or 7
+        // from the tonic) in the bass's octave.
+        for line in [&settled, &blooming] {
+            for &(note, _) in line {
+                assert!((TONIC_BASS..TONIC_BASS + 12).contains(&note));
+                assert!([0, 3, 7].contains(&(note - TONIC_BASS)), "a Dm tone: {note}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_seventh_resolves_down_to_the_next_third() {
+        // A V7 slot whose next chord is the tonic: the seventh may sound
+        // — but only at the slot's end, falling to the third.
+        let phrase_t = |within: f64| within / CYCLE_LEN as f64;
+        let v7 = SlotChord { degree: 6.0, quality: Quality::Dominant7 };
+        let tonic = SlotChord { degree: 0.0, quality: Quality::Minor };
+        // V7 → i: the seventh falls a step to the i's third.
+        let with_tonic = |chord: SlotChord, next: Option<SlotChord>, pulses: usize| {
+            bass_pulses(BassPlan {
+                chord,
+                next_chord: next,
+                tonic: 0,
+                degraded: false,
+                curve: &effective_curve(&ContourShape::Arc.curve(), 1.0),
+                phrase_t: &phrase_t,
+                duration_secs: 2.0 * CROTCHET_SECS,
+                pulses,
+                last_bass: None,
+            })
+        };
+        let resolves = with_tonic(v7, Some(tonic), BASS_PULSES);
+        assert_eq!(resolves.last().unwrap().1, 3, "the seventh sounds at the end");
+        // V7 → IV: the seventh has no third a step below — it never sounds.
+        let subdominant = SlotChord { degree: 4.0, quality: Quality::Major };
+        let refused = with_tonic(v7, Some(subdominant), BASS_PULSES);
+        assert!(refused.iter().all(|&(_, role)| role != 3));
+        // Mid-slot pulses never carry the seventh.
+        assert!(with_tonic(v7, Some(tonic), BASS_PULSES)
+            .iter()
+            .take(BASS_PULSES - 1)
+            .all(|&(_, role)| role != 3));
+    }
+
+    #[test]
+    fn the_leading_third_rises_to_the_tonic() {
+        // The V's third is the leading tone; it sounds at the slot's end
+        // (the next chord holds the tonic) and the next slot's downbeat
+        // rises to the tonic.
+        let phrase_t = |within: f64| within / CYCLE_LEN as f64;
+        let v = SlotChord { degree: 6.0, quality: Quality::Major };
+        let tonic_chord = SlotChord { degree: 0.0, quality: Quality::Minor };
+        // A curve centred on the leading tone: the hug wants the third
+        // all through the slot, the rule defers it to the end.
+        let lead_curve = Curve { upper: vec![10.0, 12.0], lower: vec![10.0, 12.0] };
+        let lead_out = bass_pulses(BassPlan {
+            chord: v,
+            next_chord: Some(tonic_chord),
+            tonic: 0,
+            degraded: false,
+            curve: &lead_curve,
+            phrase_t: &phrase_t,
+            duration_secs: 2.0 * CROTCHET_SECS,
+            pulses: BASS_PULSES,
+            last_bass: None,
+        });
+        assert_eq!(lead_out.last().unwrap().1, 1, "the leading-tone third sounds");
+        assert!(
+            lead_out.iter().take(BASS_PULSES - 1).all(|&(_, role)| role != 1),
+            "the early pulses defer: {lead_out:?}"
+        );
+        // The handoff: the next slot's downbeat rises to the tonic.
+        let handed = bass_pulses(BassPlan {
+            chord: tonic_chord,
+            next_chord: Some(v),
+            tonic: 0,
+            degraded: false,
+            curve: &effective_curve(&ContourShape::Arc.curve(), 1.0),
+            phrase_t: &phrase_t,
+            duration_secs: 2.0 * CROTCHET_SECS,
+            pulses: BASS_PULSES,
+            last_bass: Some((1, 11)), // the leading tone (C#)
+        });
+        assert_eq!(handed[0].0, TONIC_BASS, "rises to the tonic's pitch class");
+    }
+
+    #[test]
+    fn the_fifth_never_repeats() {
+        // A handoff on the fifth: the downbeat takes any other role.
+        let phrase_t = |within: f64| within / CYCLE_LEN as f64;
+        let handed = bass_pulses(BassPlan {
+            chord: cycle_chord(0),
+            next_chord: Some(cycle_chord(1)),
+            tonic: 0,
+            degraded: false,
+            curve: &effective_curve(&ContourShape::Arc.curve(), 1.0),
+            phrase_t: &phrase_t,
+            duration_secs: 2.0 * CROTCHET_SECS,
+            pulses: BASS_PULSES,
+            last_bass: Some((2, 9)), // the fifth
+        });
+        assert_ne!(handed[0].1, 2);
     }
 
     #[test]
@@ -1622,7 +1901,7 @@ mod tests {
         assert_eq!(state.harmony.slots_remaining(), Some(1));
 
         let (notes, _) = Engine::slot_notes(&mut state, 0.0);
-        assert_eq!(slot_bass(&notes), TONIC_BASS); // Dm, home
+        assert_eq!(slot_bass(&notes), TONIC_BASS + 7); // the Dm's fifth hugs the centre
         // Depleted but not yet reverted — the remaining count of zero
         // keeps the daemon's replan trigger firing until a late plan
         // finally lands.
@@ -1631,7 +1910,7 @@ mod tests {
         // The next slot is the deterministic cycle's again.
         let (notes, _) = Engine::slot_notes(&mut state, 0.0);
         assert_eq!(state.harmony, HarmonySource::Cycle);
-        assert_eq!(slot_bass(&notes), 35); // the cycle's B under B
+        assert_eq!(slot_bass(&notes), TONIC_BASS + 4); // the VI's fifth hugs the centre
         assert_eq!(state.slot, 4);
     }
 
@@ -1766,7 +2045,9 @@ mod tests {
         assert_eq!(bass.len(), BASS_PULSES);
         for (k, (at, note)) in bass.iter().enumerate() {
             assert_secs(*at, k as f64 * QUAVER_SECS);
-            assert_eq!(*note, 38); // the D under Dm
+            // Every pulse hugs the curve within the chord's tones — the
+            // Dm's D, F or A, in the bass's octave.
+            assert!([38, 41, 45].contains(note), "a Dm tone: {note}");
         }
         for (_, n) in notes
             .iter()

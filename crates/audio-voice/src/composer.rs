@@ -51,10 +51,9 @@ in a related key — so compose within the key the context reports, and \
 let its phrase count colour how much ground you cover.
 
 Reply with only a JSON plan: `slots` picks 4-8 chords from the numbered \
-vocabulary — roman numerals relative to the key the context reports — \
-and each slot may set `bass` to a chord-tone index (0 root, 1 third, \
-2 fifth, 3 seventh) to invert mid-phrase for stepwise bass motion; the \
-phrase edges always stay on the root. Optionally `curve_upper` and \
+vocabulary — roman numerals relative to the key the context reports. \
+The conductor derives the bass itself — it hugs the phrase curve and \
+steps the sevenths and leading tones home. Optionally `curve_upper` and \
 `curve_lower` give 2-8 control points each — voicing bounds in \
 semitones from the tonic, drawn as gentle arcs; `curve_dynamic` shapes \
 the phrase's dynamics — the crescendo arc across the phrase, where it \
@@ -66,9 +65,8 @@ sounding chord and of each other), never more than two of the same chord \
 in a row, and close the phrase on a tonic or a dominant. Save the dim7 \
 for a dominant's approach — E major prepares it. Calm scenes live on \
 tonic and subdominant space; combat earns dominants and colour; a \
-corrupted zone asks for the darker colour. The sixths and sevenths of \
-the tonic and subdominant are calm's own colours — they hold the \
-voices close.
+corrupted zone asks for the darker colour. The sevenths of the tonic \
+and subdominant are calm's own colours — they hold the voices close.
 
 The run has an arc, and it is yours to score: the player's \
 objective_progress (0 fresh from the spawn or just died back, 1 at the \
@@ -101,8 +99,7 @@ pub const PLAN_SCHEMA: &str = r#"{
             "items": {
                 "type": "object",
                 "properties": {
-                    "chord": { "type": "integer", "minimum": 0, "maximum": 22 },
-                    "bass": { "type": "integer", "minimum": 0, "maximum": 3 }
+                    "chord": { "type": "integer", "minimum": 0, "maximum": 20 }
                 },
                 "required": ["chord"]
             },
@@ -510,7 +507,6 @@ mod tests {
                 .iter()
                 .map(|&chord| crate::harmony::PlanSlot {
                     chord,
-                    bass: None,
                     suggested_beats: 0.0,
                 })
                 .collect(),
