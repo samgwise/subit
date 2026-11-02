@@ -208,28 +208,48 @@ pub fn walk_turn(current: usize, dynamic: &Curve, rng: &mut SmallRng) -> Harmony
             )
         })
         .collect();
-    let cadence = closable[rng.random_range(0..closable.len())];
-    // The skeleton: the current chord as the start anchor, the cadence
-    // as the end, the middle filled with a loose grammatical ramble —
-    // realise_plan re-picks the middle to the movement profile anyway.
-    let length = rng.random_range(5..=9);
-    let mut slots = vec![current];
-    for _ in 1..length - 1 {
-        let previous = *slots.last().unwrap();
-        let step_options: Vec<usize> = neighbours(previous)
-            .filter(|&candidate| {
-                voice_leap_is_fine(previous, candidate)
-                    && candidate != *slots.last().unwrap()
-            })
-            .collect();
-        if step_options.is_empty() {
-            break;
+    for _ in 0..6 {
+        let cadence = closable[rng.random_range(0..closable.len())];
+        // The skeleton: the current chord as the start anchor, the
+        // cadence as the end, the middle filled with a loose
+        // grammatical ramble — realise_plan re-picks the middle to the
+        // movement profile anyway.
+        let length = rng.random_range(5..=9);
+        let mut slots = vec![current];
+        for _ in 1..length - 1 {
+            let previous = *slots.last().unwrap();
+            let step_options: Vec<usize> = neighbours(previous)
+                .filter(|&candidate| {
+                    voice_leap_is_fine(previous, candidate)
+                        && candidate != previous
+                })
+                .collect();
+            if step_options.is_empty() {
+                break;
+            }
+            slots.push(step_options[rng.random_range(0..step_options.len())]);
         }
-        slots.push(step_options[rng.random_range(0..step_options.len())]);
+        slots.push(cadence);
+        let skeleton = HarmonyPlan {
+            slots: slots
+                .iter()
+                .map(|&chord| PlanSlot { chord: chord as u32, suggested_beats: 0.0 })
+                .collect(),
+            curve_upper: vec![],
+            curve_lower: vec![],
+            curve_dynamic: vec![],
+            intent: String::new(),
+        };
+        let walked = realise_plan(&skeleton, dynamic, rng);
+        if validate_walk(&walked) {
+            return walked;
+        }
     }
-    slots.push(cadence);
-    let skeleton = HarmonyPlan {
-        slots: slots
+    // The guaranteed ground: through the dominant, home — reachable and
+    // grammatical from any chord (the dim7 exempt, the rest within the
+    // span).
+    HarmonyPlan {
+        slots: [current, 10, 0]
             .iter()
             .map(|&chord| PlanSlot { chord: chord as u32, suggested_beats: 0.0 })
             .collect(),
@@ -237,8 +257,7 @@ pub fn walk_turn(current: usize, dynamic: &Curve, rng: &mut SmallRng) -> Harmony
         curve_lower: vec![],
         curve_dynamic: vec![],
         intent: String::new(),
-    };
-    realise_plan(&skeleton, dynamic, rng)
+    }
 }
 
 #[cfg(test)]

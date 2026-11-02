@@ -66,7 +66,9 @@ in a row, and close the phrase on a tonic or a dominant. Save the dim7 \
 for a dominant's approach — E major prepares it. Calm scenes live on \
 tonic and subdominant space; combat earns dominants and colour; a \
 corrupted zone asks for the darker colour. The sevenths of the tonic \
-and subdominant are calm's own colours — they hold the voices close.
+and subdominant are calm's own colours — they hold the voices close; \
+the borrowed sixth is their Dorian twin. The applied dominants (II7, \
+III, I7) lean toward their targets and make fine passing chords.
 
 The run has an arc, and it is yours to score: the player's \
 objective_progress (0 fresh from the spawn or just died back, 1 at the \
@@ -99,7 +101,7 @@ pub const PLAN_SCHEMA: &str = r#"{
             "items": {
                 "type": "object",
                 "properties": {
-                    "chord": { "type": "integer", "minimum": 0, "maximum": 20 }
+                    "chord": { "type": "integer", "minimum": 0, "maximum": 26 }
                 },
                 "required": ["chord"]
             },

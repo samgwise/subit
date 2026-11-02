@@ -22,12 +22,21 @@ pub enum Quality {
     MinorSus43,
     Diminished7,
     Dominant7,
+    /// The diminished triad — the leading-tone triad's flavour of
+    /// dominant, lighter than its seventh.
+    Diminished,
     /// The minor seventh (the mode's own seventh beside the triad).
     Minor7,
     /// The half-diminished seventh (the minor mode's pre-dominant).
     HalfDiminished7,
     /// The major seventh.
     Major7,
+    /// The minor sixth (a Dorian colour): the major sixth beside the
+    /// minor triad — borrowed from the parallel major, the tonic's
+    /// warmest hold.
+    Minor6,
+    /// The major sixth (an added-sixth colour).
+    Major6,
 }
 
 impl Quality {
@@ -38,9 +47,12 @@ impl Quality {
             Quality::MinorSus43 => &[0.0, 3.0, 4.0, 7.0],
             Quality::Diminished7 => &[0.0, 3.0, 6.0, 9.0],
             Quality::Dominant7 => &[0.0, 4.0, 7.0, 10.0],
+            Quality::Diminished => &[0.0, 3.0, 6.0],
             Quality::Minor7 => &[0.0, 3.0, 7.0, 10.0],
             Quality::HalfDiminished7 => &[0.0, 3.0, 6.0, 10.0],
             Quality::Major7 => &[0.0, 4.0, 7.0, 11.0],
+            Quality::Minor6 => &[0.0, 3.0, 7.0, 9.0],
+            Quality::Major6 => &[0.0, 4.0, 7.0, 9.0],
         }
     }
 }
@@ -108,6 +120,16 @@ pub const VOCABULARY: &[VocabEntry] = &[
     VocabEntry { degree: 1.0, quality: Quality::HalfDiminished7, function: Function::Subdominant, name: "iiø7 (the half-diminished pre-dominant)" },
     VocabEntry { degree: 6.0, quality: Quality::Minor7, function: Function::Dominant, name: "v7 (the modal dominant's seventh)" },
     VocabEntry { degree: 8.0, quality: Quality::Major7, function: Function::Colour, name: "♭VIImaj7 (the natural seventh's majesty)" },
+    // The borrowed and applied colours: the Dorian sixth and the added
+    // sixth (modal mixture — the + keeps the menu clear of figured-bass
+    // inversions), the lament sixth, the leading-tone triad, and the
+    // applied dominant seventh of V.
+    VocabEntry { degree: 0.0, quality: Quality::Minor6, function: Function::Tonic, name: "i+6 (the Dorian sixth, borrowed)" },
+    VocabEntry { degree: 4.0, quality: Quality::Major6, function: Function::Subdominant, name: "IV+6 (the subdominant's added sixth)" },
+    VocabEntry { degree: 8.0, quality: Quality::Major, function: Function::Colour, name: "♭VI (the lament sixth)" },
+    VocabEntry { degree: 9.0, quality: Quality::Diminished, function: Function::Dominant, name: "vii° (the leading-tone triad)" },
+    VocabEntry { degree: 1.0, quality: Quality::Dominant7, function: Function::Dominant, name: "II7 (V7 of V)" },
+    VocabEntry { degree: 7.0, quality: Quality::Minor7, function: Function::Colour, name: "vi7 (the submediant's seventh)" },
 ];
 
 /// One planned chord: a vocabulary index. The conductor owns the clock
