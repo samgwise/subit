@@ -389,7 +389,6 @@ mod tests {
     use super::*;
     use crate::curve::DynamicShape;
     use crate::harmony::validate;
-    use crate::music::default_phrase_curve;
     use rand::SeedableRng;
 
     fn plan_from(chords: &[u32]) -> HarmonyPlan {

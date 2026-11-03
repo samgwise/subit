@@ -352,9 +352,7 @@ mod tests {
 
     /// A default state with a chosen slot count.
     fn state_at(slot: u32) -> MusicState {
-        let mut state = MusicState::default();
-        state.slot = slot;
-        state
+        MusicState { slot, ..MusicState::default() }
     }
 
     fn inputs<'a>(
@@ -397,20 +395,22 @@ mod tests {
 
     #[test]
     fn the_plan_derives_its_phrase_t_from_the_cursor() {
-        let mut state = MusicState::default();
-        state.slot = 100;
-        state.key = KeyState { tonic: 2 };
-        state.harmony = HarmonySource::Plan {
-            slots: vec![
-                PlanSlot { chord: 9, suggested_beats: 0.0 },
-                PlanSlot { chord: 10, suggested_beats: 0.0 },
-                PlanSlot { chord: 0, suggested_beats: 0.0 },
-                PlanSlot { chord: 1, suggested_beats: 0.0 },
-            ],
-            curve: default_curve(),
-            dynamic: default_phrase_curve(),
-            cursor: 3,
-            from_composer: true,
+        let state = MusicState {
+            slot: 100,
+            key: KeyState { tonic: 2 },
+            harmony: HarmonySource::Plan {
+                slots: vec![
+                    PlanSlot { chord: 9, suggested_beats: 0.0 },
+                    PlanSlot { chord: 10, suggested_beats: 0.0 },
+                    PlanSlot { chord: 0, suggested_beats: 0.0 },
+                    PlanSlot { chord: 1, suggested_beats: 0.0 },
+                ],
+                curve: default_curve(),
+                dynamic: default_phrase_curve(),
+                cursor: 3,
+                from_composer: true,
+            },
+            ..MusicState::default()
         };
         let form = FormSummary::default();
         let mut midi_log = MidiLog::default();

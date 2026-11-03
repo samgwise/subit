@@ -1454,9 +1454,11 @@ mod tests {
         // wide band's floor; at rest the folded bounds lift it into the
         // pulled-in register.
         let pad_note = |intensity: f32| {
-            let mut state = MusicState::default();
-            state.intensity = intensity;
-            state.rhythm_intensity = intensity;
+            let mut state = MusicState {
+                intensity,
+                rhythm_intensity: intensity,
+                ..MusicState::default()
+            };
             let (notes, _) = Engine::slot_notes(&mut state, 0.0);
             notes
                 .iter()
@@ -1700,7 +1702,7 @@ mod tests {
         let bell: Vec<(f64, NoteEvent)> = notes
             .iter()
             .filter(|(_, n)| n.channel == CHANNEL_BELL)
-            .map(|(at, n)| (*at, n.clone()))
+            .map(|(at, n)| (*at, *n))
             .collect();
         // An eight-crotchet slot spans four windows: twenty-four 6:4
         // plinks, evenly spaced (a sixth of a window apart), gated short
@@ -2330,8 +2332,7 @@ mod tests {
         // The cycle's final slot (post-render slot 9): the default arc
         // ends settled, so the wheel rises monotonically to the ceiling —
         // the lift into the next turn.
-        let mut state = MusicState::default();
-        state.slot = 8;
+        let mut state = MusicState { slot: 8, ..MusicState::default() };
         let (_, end) = Engine::slot_notes(&mut state, 0.0);
         let levels: Vec<u8> = wheel_trajectory(&state, 0.0, end)
             .into_iter()
