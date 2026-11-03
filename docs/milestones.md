@@ -557,3 +557,18 @@ favourite biases the order instead of being accepted or deferred).
 The per-transition call train and its margin picks retired; the
 shared decision timeout rose to two seconds (the multi-question
 calls brush a second on a warm model, and nothing waits on them).
+
+## Milestone 39 — The counsellor picks the bass's character
+
+The bass gained characters, and the counsellor chooses between
+them. Each slot's line can hug the curve (today's default — the
+centre first, least movement second), anchor the root (grounded,
+pedal-like), or walk stepwise along the chord's tones (melodic,
+wandering) — the strategy only re-orders the legal candidates'
+comparator, so the grammar stays law and every line is grammatical
+by construction. The characters live on the plan itself (per slot,
+all hugs unless picked otherwise), and the turn's second ranked
+call asks after them: one question per slot, the characters
+described in musical words, the favourite taking the slot. The
+plans and walks without a counsellor play byte-identically to
+Milestone 38.

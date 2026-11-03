@@ -409,6 +409,7 @@ mod tests {
                 dynamic: default_phrase_curve(),
                 cursor: 3,
                 from_composer: true,
+                bass: vec![crate::music::BassStrategy::Hug; 4],
             },
             ..MusicState::default()
         };
@@ -445,6 +446,7 @@ mod tests {
             dynamic: default_phrase_curve(),
             cursor: 1,
             from_composer: true,
+            bass: vec![crate::music::BassStrategy::Hug; 4],
         };
         let form = FormSummary::default();
         let mut midi_log = MidiLog::default();

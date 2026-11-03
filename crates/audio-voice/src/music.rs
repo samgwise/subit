@@ -314,6 +314,54 @@ pub const CYCLE_LEN: usize = HARMONY_CYCLE.len();
 /// this octave, hugging the curve's centre's pitch class.
 const TONIC_BASS: u8 = 38;
 
+/// The bass line's character — which legal tone leads the pick. The
+/// grammar is law under every strategy; only the comparator's order
+/// changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BassStrategy {
+    /// The curve's centre first, least movement second — today's line.
+    Hug,
+    /// The chord's root's pitch class first, then the curve —
+    /// grounded, pedal-like.
+    Anchor,
+    /// The smallest step from the previous tone first, then the curve —
+    /// melodic, wandering.
+    Walk,
+}
+
+impl BassStrategy {
+    /// The strategy's name — the counsellor's key.
+    pub fn name(self) -> &'static str {
+        match self {
+            BassStrategy::Hug => "hug",
+            BassStrategy::Anchor => "anchor",
+            BassStrategy::Walk => "walk",
+        }
+    }
+
+    /// The strategy's musical description — the counsellor's criteria.
+    pub fn description(self) -> &'static str {
+        match self {
+            BassStrategy::Hug => {
+                "hug: follows the phrase's contour — the line breathes with the curve"
+            }
+            BassStrategy::Anchor => {
+                "anchor: holds the chord's root — grounded, pedal-like"
+            }
+            BassStrategy::Walk => {
+                "walk: steps along the chord's tones — melodic, wandering"
+            }
+        }
+    }
+
+    /// Every character, hug first.
+    pub const ALL: [BassStrategy; 3] = [
+        BassStrategy::Hug,
+        BassStrategy::Anchor,
+        BassStrategy::Walk,
+    ];
+}
+
 /// The bass planner's inputs — everything the voicing rules and the
 /// curve hug read.
 struct BassPlan<'a> {
@@ -329,6 +377,8 @@ struct BassPlan<'a> {
     pulses: usize,
     /// The previous slot's last tone — (role, pitch class).
     last_bass: Option<(u8, u8)>,
+    /// The line's character — which legal tone leads the pick.
+    strategy: BassStrategy,
 }
 
 /// The bass pulses for a slot: every pulse takes the legal chord tone
@@ -352,8 +402,11 @@ fn bass_pulses(plan: BassPlan<'_>) -> Vec<(u8, u8)> {
         duration_secs,
         pulses,
         last_bass,
+        strategy,
     } = plan;
     let root_semitone = pitch_stack().step(chord.degree) + tonic as f64;
+    // The root's pitch class — the anchor character's lead.
+    let root_pc = root_semitone.rem_euclid(12.0);
     // (role, semitone-from-tonic) for each chord tone.
     let tones: Vec<(u8, f64)> = chord
         .quality
@@ -476,20 +529,37 @@ fn bass_pulses(plan: BassPlan<'_>) -> Vec<(u8, u8)> {
                     let distance = (semitone.rem_euclid(12.0) - centre_pc).rem_euclid(12.0);
                     distance.min(12.0 - distance)
                 };
-                hug(semitone_a)
-                    .total_cmp(&hug(semitone_b))
-                    .then_with(|| {
-                        let walk = |semitone: f64| {
-                            previous_pc
-                                .map_or(0.0, |previous| {
-                                    let distance =
-                                        (semitone.rem_euclid(12.0) - previous).rem_euclid(12.0);
-                                    distance.min(12.0 - distance)
-                                })
-                        };
-                        walk(semitone_a).total_cmp(&walk(semitone_b))
-                    })
-                    .then_with(|| role_a.cmp(&role_b))
+                let walk = |semitone: f64| {
+                    previous_pc
+                        .map_or(0.0, |previous| {
+                            let distance =
+                                (semitone.rem_euclid(12.0) - previous).rem_euclid(12.0);
+                            distance.min(12.0 - distance)
+                        })
+                };
+                let root = |semitone: f64| {
+                    let distance = (semitone.rem_euclid(12.0) - root_pc).rem_euclid(12.0);
+                    distance.min(12.0 - distance)
+                };
+                // The character leads the comparator; the others follow
+                // as tie-breaks, the role last.
+                let order = |primary: f64, primary_b: f64, secondary: f64, secondary_b: f64| {
+                    primary
+                        .total_cmp(&primary_b)
+                        .then_with(|| secondary.total_cmp(&secondary_b))
+                        .then_with(|| role_a.cmp(&role_b))
+                };
+                match strategy {
+                    BassStrategy::Hug => {
+                        order(hug(semitone_a), hug(semitone_b), walk(semitone_a), walk(semitone_b))
+                    }
+                    BassStrategy::Anchor => {
+                        order(root(semitone_a), root(semitone_b), hug(semitone_a), hug(semitone_b))
+                    }
+                    BassStrategy::Walk => {
+                        order(walk(semitone_a), walk(semitone_b), hug(semitone_a), hug(semitone_b))
+                    }
+                }
             })
             .unwrap();
         let note = TONIC_BASS + semitone.rem_euclid(12.0) as u8;
@@ -591,6 +661,9 @@ pub enum HarmonySource {
         /// Whether the composer (as opposed to the fallback's counselled
         /// walk) authored this plan — a walk never replaces a composer's.
         from_composer: bool,
+        /// The bass line's character per slot — all hugs unless the
+        /// counsellor picked otherwise.
+        bass: Vec<BassStrategy>,
     },
 }
 
@@ -1160,6 +1233,15 @@ impl Engine {
         } else {
             slot_quavers
         };
+        // The bass line's character: the plan's own pick for this slot
+        // (all hugs unless the counsellor chose otherwise).
+        let bass_strategy = match &state.harmony {
+            HarmonySource::Plan { bass, cursor, .. } => bass
+                .get(cursor.saturating_sub(1))
+                .copied()
+                .unwrap_or(BassStrategy::Hug),
+            HarmonySource::Cycle => BassStrategy::Hug,
+        };
         let bass_line = bass_pulses(BassPlan {
             chord: slot_chord,
             next_chord,
@@ -1170,6 +1252,7 @@ impl Engine {
             duration_secs,
             pulses,
             last_bass: state.last_bass,
+            strategy: bass_strategy,
         });
         for k in 0..pulses {
             let phrase = phrase_dynamic(&dynamic_curve, phrase_t(k as f64 * QUAVER_SECS / duration_secs));
@@ -1817,6 +1900,7 @@ mod tests {
                 duration_secs: 4.0 * CROTCHET_SECS,
                 pulses: BASS_PULSES,
                 last_bass: None,
+                strategy: BassStrategy::Hug,
             })
         };
         let tonic_centred = line(1.0); // hugging the tonic's neighbourhood
@@ -1851,6 +1935,7 @@ mod tests {
                 duration_secs: 2.0 * CROTCHET_SECS,
                 pulses,
                 last_bass: None,
+                strategy: BassStrategy::Hug,
             })
         };
         let resolves = with_tonic(v7, Some(tonic), BASS_PULSES);
@@ -1887,6 +1972,7 @@ mod tests {
             duration_secs: 2.0 * CROTCHET_SECS,
             pulses: BASS_PULSES,
             last_bass: None,
+            strategy: BassStrategy::Hug,
         });
         assert_eq!(lead_out.last().unwrap().1, 1, "the leading-tone third sounds");
         assert!(
@@ -1904,6 +1990,7 @@ mod tests {
             duration_secs: 2.0 * CROTCHET_SECS,
             pulses: BASS_PULSES,
             last_bass: Some((1, 11)), // the leading tone (C#)
+            strategy: BassStrategy::Hug,
         });
         assert_eq!(handed[0].0, TONIC_BASS, "rises to the tonic's pitch class");
     }
@@ -1922,8 +2009,94 @@ mod tests {
             duration_secs: 2.0 * CROTCHET_SECS,
             pulses: BASS_PULSES,
             last_bass: Some((2, 9)), // the fifth
+            strategy: BassStrategy::Hug,
         });
         assert_ne!(handed[0].1, 2);
+    }
+
+    #[test]
+    fn the_anchor_character_leans_the_root() {
+        // A curve centred on the fifth: the hug takes the fifth, the
+        // anchor comes home to the root.
+        let line = |strategy| {
+            bass_pulses(BassPlan {
+                chord: cycle_chord(0),
+                next_chord: Some(cycle_chord(1)),
+                tonic: 0,
+                degraded: false,
+                curve: &Curve { upper: vec![7.0, 7.0], lower: vec![7.0, 7.0] },
+                phrase_t: &|within: f64| within,
+                duration_secs: 4.0 * CROTCHET_SECS,
+                pulses: 4,
+                last_bass: None,
+                strategy,
+            })
+        };
+        assert_eq!(line(BassStrategy::Hug)[0].0, TONIC_BASS + 7);
+        assert_eq!(line(BassStrategy::Anchor)[0].0, TONIC_BASS);
+    }
+
+    #[test]
+    fn the_walk_character_prefers_the_step() {
+        // The centre jumps to the fifth: the hug jumps with it, the
+        // walk steps to the nearest tone instead.
+        let curve = Curve { upper: vec![0.0, 28.0], lower: vec![0.0, 28.0] };
+        let line = |strategy| {
+            bass_pulses(BassPlan {
+                chord: cycle_chord(0),
+                next_chord: Some(cycle_chord(1)),
+                tonic: 0,
+                degraded: false,
+                curve: &curve,
+                phrase_t: &|within: f64| within,
+                duration_secs: 2.0 * CROTCHET_SECS,
+                pulses: 2,
+                last_bass: None,
+                strategy,
+            })
+        };
+        assert_eq!(line(BassStrategy::Hug)[1].0, TONIC_BASS + 7);
+        assert_eq!(line(BassStrategy::Walk)[1].0, TONIC_BASS + 3);
+    }
+
+    #[test]
+    fn every_character_keeps_the_grammar() {
+        // The walk across the whole cycle under each character: the
+        // no-repeat and the fifth's restraint hold, and every pulse
+        // stays a chord tone in the bass's octave.
+        for strategy in BassStrategy::ALL {
+            let mut last_bass = None;
+            for slot in 0..CYCLE_LEN as u32 {
+                let line = bass_pulses(BassPlan {
+                    chord: cycle_chord(slot),
+                    next_chord: Some(cycle_chord(slot + 1)),
+                    tonic: 0,
+                    degraded: false,
+                    curve: &effective_curve(&ContourShape::Arc.curve(), 1.0),
+                    phrase_t: &|within: f64| within,
+                    duration_secs: 2.0 * CROTCHET_SECS,
+                    pulses: 4,
+                    last_bass,
+                    strategy,
+                });
+                for window in line.windows(2) {
+                    assert_ne!(
+                        window[0].0, window[1].0,
+                        "no repeat under {strategy:?} at slot {slot}"
+                    );
+                    if window[0].1 == 2 {
+                        assert_ne!(
+                            window[1].1, 2,
+                            "the fifth never twice under {strategy:?} at slot {slot}"
+                        );
+                    }
+                }
+                for &(note, _) in &line {
+                    assert!((TONIC_BASS..TONIC_BASS + 12).contains(&note));
+                }
+                last_bass = line.last().map(|&(note, role)| (role, note - TONIC_BASS));
+            }
+        }
     }
 
     #[test]
@@ -1945,6 +2118,7 @@ mod tests {
                 dynamic: default_phrase_curve(),
                 cursor: 0,
                 from_composer: true,
+                bass: vec![BassStrategy::Hug; 3],
             },
             ..MusicState::default()
         };
@@ -1987,6 +2161,7 @@ mod tests {
                 dynamic: default_phrase_curve(),
                 cursor: 0,
                 from_composer: true,
+                bass: vec![BassStrategy::Hug; 8],
             },
             ..MusicState::default()
         };
@@ -2362,6 +2537,7 @@ mod tests {
                 },
                 cursor: 0,
                 from_composer: true,
+                bass: vec![BassStrategy::Hug; 2],
             },
             ..MusicState::default()
         };

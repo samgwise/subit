@@ -514,6 +514,7 @@ async fn run_conductor(monitor: Monitor, jev: bool) {
                             dynamic: score.cycle_dynamic.clone(),
                             cursor: 0,
                             from_composer: false,
+                            bass: vec![music::BassStrategy::Hug; walked.slots.len()],
                         };
                         tracing::info!(slots = walked.slots.len(), "the fallback walked a turn");
                         // The counsellor reconciles: re-rolling the tiles
@@ -629,12 +630,21 @@ async fn run_conductor(monitor: Monitor, jev: bool) {
                     && matches!(score.harmony, HarmonySource::Plan { .. })
                     && let Some(turn) = counsel_rx.as_ref().and_then(|view| view.latest())
                 {
+                    // The bass's characters ride the turn: the picked
+                    // strategies, padded with hugs.
+                    let mut bass: Vec<music::BassStrategy> = turn
+                        .bass
+                        .into_iter()
+                        .map(|strategy| strategy.unwrap_or(music::BassStrategy::Hug))
+                        .collect();
+                    bass.resize(turn.plan.slots.len(), music::BassStrategy::Hug);
                     score.harmony = HarmonySource::Plan {
                         slots: turn.plan.slots.clone(),
                         curve: score.cycle_curve.clone(),
                         dynamic: score.cycle_dynamic.clone(),
                         cursor: 0,
                         from_composer: false,
+                        bass,
                     };
                     tracing::info!(
                         contour = turn.contour_shape,
@@ -694,6 +704,7 @@ async fn run_conductor(monitor: Monitor, jev: bool) {
                                 dynamic,
                                 cursor: 0,
                                 from_composer: true,
+                                bass: vec![music::BassStrategy::Hug; realised.slots.len()],
                             };
                             // The pads breathe the new phrase's opening
                             // level straight away.

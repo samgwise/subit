@@ -442,9 +442,14 @@ ties) — under a small voice-leading grammar: a seventh only sounds at a
 slot's end, falling a step onto the next chord's third; a leading-tone
 third only at a slot's end, rising to the tonic; and no tone sounds
 twice in a row (the line walks — a re-strike of a down key is the
-bridge's sticky-key hazard). The bass resolves through the same
-pitch stack as every voice — it transposes with the key and degrades
-with the corruption.
+bridge's sticky-key hazard). Under `--jev` the line's CHARACTER is
+the counsellor's pick: each slot's candidate lines — hug (the
+default), anchor (the root, grounded and pedal-like), walk (stepping
+along the tones, melodic) — ride one ranked call per turn, the
+favourite taking the slot. The plans carry the picks (all hugs
+otherwise); the grammar stays law under every character. The bass
+resolves through the same pitch stack as every voice — it
+transposes with the key and degrades with the corruption.
 
 The plan travels as flat JSON (it doubles as the ollama response schema —
 grammar-constrained sampling misbehaves on nested shapes) and must pass
@@ -472,7 +477,9 @@ highest-probability grammatical path wins. The distributions match
 by chord (the model scored chords, not edges), an unscored chord
 follows the scored ones, and a failed call realises the same
 skeleton deterministically — the ranking never accepts, only orders,
-and the grammar still gates. The counselled plan replaces the
+and the grammar still gates. The bass's character rides a second
+ranked call (a question per slot: hug, anchor or walk); the
+counselled plan — chords, characters and tiles — replaces the
 deterministic one while it is live (a composer's plan outranks a
 counselled walk); and the turn's curve tiles are picked, not rolled —
 one call naming the contour/dynamic pair from the shape library's
@@ -662,7 +669,7 @@ at note attacks. The percussive voices stay velocity-only.
 ||| Vault: min island / carved interior / mob / door open radius | 12 cells / 5×3 / 3 + 1 per 3 depths (cap 5) / 1.5 tiles |
 | Death dissolve | ~0.5 s, corruption-green eating edge |
 | Score: chord period / pattern gates / rhythm hold / smoothing | 8 → 6 → 4 → 2 crotchets, then 3+2 / 3+3+2 / 3+2+2 quavers (additive past 0.95 intensity) / A ≥1 lock, B ≥3 / 3 s before dropping down / τ 0.5 s attack, 8 s release |
-||| Bass: hug / pulses / relaxed figure / gate | every pulse hugs the curve's centre pc; sevenths fall to the next third, the leading third rises, no tone twice in a row / quavers / 6 then rest (periods of 3+ beats), continuous below / 0.6 × quaver |
+||| Bass: hug / pulses / relaxed figure / gate | every pulse hugs the curve's centre pc; sevenths fall to the next third, the leading third rises, no tone twice in a row / quavers / 6 then rest (periods of 3+ beats), continuous below / 0.6 × quaver ||| Bass characters (counselled) | hug / anchor (the root) / walk (stepwise) — one ranked call per turn, a question per slot; the plans carry the picks, all hugs otherwise |
 ||| Bass mod wheel: floor / lift rule | 24 CC / the phrase arc; a settled final slot rises monotonically to 127 |
 | Degraded zone: chromatic rotation | ±3 semitones per mapping, hash of the pitch class |
  | Composer: phrase / replan margin / request timeout | 4–8 slots (21-chord vocabulary) / 2 slots / 30 s |

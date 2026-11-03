@@ -15,7 +15,8 @@ use serde_json::{json, Value};
 use tokio::sync::watch;
 
 use crate::form::FormDecisions;
-use crate::harmony::HarmonyPlan;
+use crate::harmony::{HarmonyPlan, VOCABULARY};
+use crate::music::BassStrategy;
 
 /// Seconds before a decision gives up; the fallback roll plays on.
 /// Every decision is asynchronous and fail-closed, so the budget is
@@ -314,11 +315,11 @@ impl DecisionClient for SystemOneClient {
         // read of the walk.
         for (question, map) in questions.iter().zip(maps.iter()) {
             if let Some(favourite) = map.as_ref().and_then(ProbabilityMap::favourite) {
-                tracing::info!(
+                    tracing::info!(
                     transition = %question.name,
                     pick = favourite.0,
                     probability = favourite.1,
-                    "the counsellor ranked the walk's step"
+                    "the counsellor's ranked pick"
                 );
             }
         }
@@ -448,13 +449,15 @@ impl SystemOneClient {
     }
 }
 
-/// A counselled turn: the walked plan plus the shape names the
-/// counsellor picked (for the log and the monitor).
+/// A counselled turn: the walked plan, the shape names the counsellor
+/// picked (for the log and the monitor), and the bass character per
+/// slot (None = the hug).
 #[derive(Debug, Clone)]
 pub struct CounselledTurn {
     pub plan: HarmonyPlan,
     pub contour_shape: &'static str,
     pub dynamic_shape: &'static str,
+    pub bass: Vec<Option<BassStrategy>>,
 }
 
 /// Spawn the counsellor task: consume requests — a turn's counselled
@@ -516,10 +519,67 @@ pub fn spawn<C: DecisionClient + Send + Sync + 'static>(
                                 &mut rng,
                             );
                             if let Some(plan) = walked.await {
+                                // The bass's character: a second ranked
+                                // call, a question per slot of the walked
+                                // plan (the strategies as criteria, keyed
+                                // by name).
+                                let questions: Vec<RankedQuestion> = plan
+                                    .slots
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(slot, chord)| RankedQuestion {
+                                        name: format!("b{slot}"),
+                                        instructions: format!(
+                                            "The bass line for this phrase's {} — which character \
+                                             should it take?",
+                                            VOCABULARY[chord.chord as usize].name
+                                        ),
+                                        options: BassStrategy::ALL
+                                            .iter()
+                                            .map(|strategy| ChoiceOption {
+                                                key: strategy.name().into(),
+                                                description: strategy.description().into(),
+                                            })
+                                            .collect(),
+                                    })
+                                    .collect();
+                                let state = json!({
+                                    "form": turn.form_summary,
+                                    "world_integrity": turn.integrity,
+                                    "contour": turn.contour.name(),
+                                    "dynamic": turn.dynamic.name(),
+                                    "walk": plan
+                                        .slots
+                                        .iter()
+                                        .map(|slot| VOCABULARY[slot.chord as usize].name)
+                                        .collect::<Vec<_>>(),
+                                });
+                                let bass = match client.decide_ranked(&state, &questions).await {
+                                    Ok(maps) => maps
+                                        .iter()
+                                        .map(|map| {
+                                            map.as_ref()
+                                                .and_then(ProbabilityMap::favourite)
+                                                .and_then(|(key, _)| match key {
+                                                    "hug" => Some(BassStrategy::Hug),
+                                                    "anchor" => Some(BassStrategy::Anchor),
+                                                    "walk" => Some(BassStrategy::Walk),
+                                                    _ => None,
+                                                })
+                                        })
+                                        .collect(),
+                                    Err(err) => {
+                                        tracing::warn!(
+                                            "the counsellor's bass pick failed ({err}); the hug plays on"
+                                        );
+                                        Vec::new()
+                                    }
+                                };
                                 let _ = turn_tx.send(Some(CounselledTurn {
                                     plan,
                                     contour_shape: contour.name(),
                                     dynamic_shape: dynamic.name(),
+                                    bass,
                                 }));
                             }
                         }
@@ -752,7 +812,11 @@ mod tests {
                 confidence: 0.9,
             })]),
             noul_replies: std::sync::Mutex::new(Vec::new()),
-            ranked_replies: std::sync::Mutex::new(vec![Ok(Vec::new())]),
+            // Enough empty maps for the walk's retries and the bass's
+            // pick — every answer empty, the deterministic order plays.
+            ranked_replies: std::sync::Mutex::new(
+                (0..6).map(|_| Ok(Vec::new())).collect(),
+            ),
         });
         tx.send(CounselRequest::Turn(TurnRequest {
             current: 0,
@@ -768,7 +832,71 @@ mod tests {
         let turn = view.latest().expect("the counselled turn is live");
         assert_eq!(turn.contour_shape, "arc");
         assert_eq!(turn.dynamic_shape, "climb");
+        // The empty maps defer everything — no bass picks.
+        assert!(turn.bass.is_empty(), "no answers: no picks");
         // The walk stays grammatical — the validator's own rules.
+        assert!(crate::harmony::validate(&turn.plan, None).is_ok());
+    }
+
+    /// A client whose bass questions (b*) come back anchored and whose
+    /// walk questions (t*) come back empty.
+    struct AnchorBassClient;
+
+    impl DecisionClient for AnchorBassClient {
+        async fn decide(&self, _decision: &Decision) -> Result<DecisionOutcome, DecisionError> {
+            Ok(DecisionOutcome { choice: Some("arc+climb".into()), confidence: 0.9 })
+        }
+
+        async fn decide_noul(
+            &self,
+            _state: &Value,
+            questions: &[NoulQuestion],
+        ) -> Result<Vec<Option<bool>>, DecisionError> {
+            Ok(questions.iter().map(|_| None).collect())
+        }
+
+        async fn decide_ranked(
+            &self,
+            _state: &Value,
+            questions: &[RankedQuestion],
+        ) -> Result<Vec<Option<ProbabilityMap>>, DecisionError> {
+            Ok(questions
+                .iter()
+                .map(|question| {
+                    if question.name.starts_with('b') {
+                        ProbabilityMap::from_value(&json!({
+                            "probabilities": { "anchor": 1.0, "hug": 0.0, "walk": 0.0 }
+                        }))
+                    } else {
+                        None
+                    }
+                })
+                .collect())
+        }
+    }
+
+    #[tokio::test]
+    async fn the_turns_bass_picks_land_by_name() {
+        let (tx, mut view) = spawn(AnchorBassClient);
+        tx.send(CounselRequest::Turn(TurnRequest {
+            current: 0,
+            contour: crate::curve::ContourShape::Arc,
+            dynamic: crate::curve::DynamicShape::Climb,
+            integrity: 1.0,
+            form_summary: json!({ "state": "home" }),
+            seed: 7,
+        }))
+        .await
+        .expect("the request queues");
+        view.changed().await.expect("the turn lands");
+        let turn = view.latest().expect("the counselled turn is live");
+        // A pick per slot, the anchor's favourite taken by name.
+        assert_eq!(turn.bass.len(), turn.plan.slots.len());
+        assert!(
+            turn.bass.iter().all(|pick| *pick == Some(BassStrategy::Anchor)),
+            "the anchor picked: {:?}",
+            turn.bass
+        );
         assert!(crate::harmony::validate(&turn.plan, None).is_ok());
     }
 
