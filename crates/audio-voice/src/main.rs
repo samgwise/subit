@@ -677,6 +677,7 @@ async fn run_conductor(monitor: Monitor, jev: bool) {
                                 &dynamic,
                                 score.world_integrity,
                                 &mut form_rng,
+                                None,
                             );
                             let repicked = realised
                                 .slots

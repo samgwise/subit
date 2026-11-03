@@ -536,3 +536,24 @@ the next tick applies the reply behind a generation guard, so a late
 answer is discarded and the loaded rolls play on. The direction, the
 episode's destination and span, and the home cycle's length stay
 rolled.
+
+## Milestone 38 — The walk ranks by probability
+
+The counsellor's distributions stopped being thinned to an argmax.
+Every reply carries the full probability distribution over its
+options — the walk now USES it: one multi-question call per walk
+attempt (a choice question per middle transition, the candidates as
+criteria, the whole skeleton and the movement profile as the state —
+a nine-slot turn's seven questions in one ~0.2 s call), and the
+realisation re-sorts each transition's candidates by the model's
+probability for the chord, descending, stable. The
+highest-probability grammatical path wins; the distributions match
+by chord, so a walk that deviated from the skeleton still reads
+them; an unscored chord follows the scored ones; a failed call
+realises the same skeleton deterministically. The probabilities
+order, they never accept — the movement target and the grammar stay
+the law, and the old argmax-versus-margin tension dissolves (a weak
+favourite biases the order instead of being accepted or deferred).
+The per-transition call train and its margin picks retired; the
+shared decision timeout rose to two seconds (the multi-question
+calls brush a second on a warm model, and nothing waits on them).

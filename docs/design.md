@@ -462,13 +462,22 @@ Beside the composer sits a counsellor — a fast decision tier over
 ollama's decision models (`tev1:4b` via the `/v1/systemone` Jev
 endpoint; Ollama 0.35+): the fallback's turns are walked twice — the
 deterministic walk installs at the turn boundary, then the counsellor
-re-walks the same transitions picking from the same candidates (one
-call each, the walk so far as the state), its plan replacing the
+re-walks the same skeleton with its probabilities RANKING every
+transition's candidates: one multi-question call per attempt (a
+choice question per middle transition, the candidates as criteria,
+the whole skeleton and the movement profile as the state), and the
+realisation re-sorts each transition's candidates by the model's
+probability for the chord, descending, stable — the
+highest-probability grammatical path wins. The distributions match
+by chord (the model scored chords, not edges), an unscored chord
+follows the scored ones, and a failed call realises the same
+skeleton deterministically — the ranking never accepts, only orders,
+and the grammar still gates. The counselled plan replaces the
 deterministic one while it is live (a composer's plan outranks a
 counselled walk); and the turn's curve tiles are picked, not rolled —
 one call naming the contour/dynamic pair from the shape library's
 options, described in musical words. Every decision fails closed: a
-transport error, the (one-second) timeout, a pick that fails to beat
+transport error, the (two-second) timeout, a pick that fails to beat
 the uniform roll it replaces (by a 0.1
 margin — the endpoint's own confidence shrinks with the option count,
 a clear 20-way pick scoring about 0.25), or an off-the-menu pick
@@ -665,7 +674,7 @@ at note attacks. The percussive voices stay velocity-only.
 || Tie re-arm | three slots per boundary, via /midi/cancel |
 || Monitor roll: window / log caps | 12 s back + 2 s ahead / 256 spans and points, 30 s trim |
 ||| Chord network: movement targets | the dynamic arc's shape at each transition — ≤⅓ holds (target 0), ≤⅔ allows one moving tone, past that two; anchors kept, walk degrades to the model's plan |
-||| Counsellor | tev1:4b (TEV1_MODEL) via /v1/systemone / 1 s timeout / pick beats the roll by 0.1 / warm-up at spawn and after failures / --jev to enable |
+||| Counsellor | tev1:4b (TEV1_MODEL) via /v1/systemone / 2 s timeout / tile pick beats the roll by 0.1 / the walk ranked by probability (one multi-question call per attempt) / warm-up at spawn and after failures / --jev to enable |
 ||| Form rolls (counselled) | the live rolls as noul in one call per tick (expiry asks change+sequence, an episode asks return; mid-cycle asks nothing) / state: the form's stretch arithmetic, integrity, progress, just-moved, the phrase's drama tallies / opinion taken past |P(true) − 0.5| ≥ 0.1, else the loaded 60/40 rolls |
 | Arrangement: layer thresholds / sparse rotation / arrival lift | 1 voice, 2 past 0.33, 3 past 0.66 / all three rotating, two slots each / airy added past 0.85 progress |
 | Idle bell: polyrhythms / plink gate | 3:4, 5:4, 6:4 or 7:4 per bell slot (N over the bass's four-quaver window, repeating) / 0.6 × the plink spacing |

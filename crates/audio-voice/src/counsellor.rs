@@ -18,7 +18,10 @@ use crate::form::FormDecisions;
 use crate::harmony::HarmonyPlan;
 
 /// Seconds before a decision gives up; the fallback roll plays on.
-pub const DECISION_TIMEOUT_SECS: u64 = 1;
+/// Every decision is asynchronous and fail-closed, so the budget is
+/// generous — the multi-question calls (the form's, the ranked walk's)
+/// brush a full second on a warm model.
+pub const DECISION_TIMEOUT_SECS: u64 = 2;
 
 /// How far a pick's probability must clear the uniform roll it
 /// replaces. The endpoint's own confidence shrinks as the option
@@ -62,6 +65,44 @@ pub const RETURN_QUESTION: NoulQuestion = NoulQuestion {
     name: "return_home",
     instructions: "Should the episode end and the form return home now?",
 };
+
+/// One ranked transition's distribution: the criteria keys mapped to
+/// their probabilities. A missing or malformed answer is no map at all
+/// (fail closed) — the probabilities ORDER the walk's candidates;
+/// they never accept.
+#[derive(Debug, Clone, Default)]
+pub struct ProbabilityMap(serde_json::Map<String, Value>);
+
+impl ProbabilityMap {
+    /// Read a reply answer's probabilities object; None when the
+    /// answer carries no distribution.
+    pub(crate) fn from_value(answer: &Value) -> Option<Self> {
+        Some(Self(answer.get("probabilities")?.as_object()?.clone()))
+    }
+
+    /// The probability the model gave this key (None when unscored or
+    /// not a number).
+    pub fn probability(&self, key: &str) -> Option<f64> {
+        self.0.get(key)?.as_f64()
+    }
+
+    /// The distribution's favourite — the key and its probability.
+    pub fn favourite(&self) -> Option<(&str, f64)> {
+        self.0
+            .iter()
+            .filter_map(|(key, probability)| Some((key.as_str(), probability.as_f64()?)))
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+    }
+}
+
+/// One ranked transition's question — a named choice over the
+/// transition's candidates, answered with their distribution.
+#[derive(Debug, Clone)]
+pub struct RankedQuestion {
+    pub name: String,
+    pub instructions: String,
+    pub options: Vec<ChoiceOption>,
+}
 
 /// One decision: the state to judge and a choice question over it.
 #[derive(Debug, Clone)]
@@ -120,6 +161,17 @@ pub trait DecisionClient {
         state: &Value,
         questions: &[NoulQuestion],
     ) -> impl std::future::Future<Output = Result<Vec<Option<bool>>, DecisionError>> + Send;
+
+    /// The ranked questions: ONE call, each answered with its
+    /// candidates' probability distribution (None where the answer is
+    /// missing or malformed — fail closed). The probabilities ORDER
+    /// the walk's candidates; they never accept.
+    fn decide_ranked(
+        &self,
+        state: &Value,
+        questions: &[RankedQuestion],
+    ) -> impl std::future::Future<Output = Result<Vec<Option<ProbabilityMap>>, DecisionError>>
+           + Send;
 
     /// Bring the decision model resident — a no-op for in-memory
     /// transports. Fired at spawn and again after a transport failure,
@@ -217,6 +269,60 @@ impl DecisionClient for SystemOneClient {
             .iter()
             .map(|question| Self::parse_noul(&reply, question.name))
             .collect())
+    }
+
+    async fn decide_ranked(
+        &self,
+        state: &Value,
+        questions: &[RankedQuestion],
+    ) -> Result<Vec<Option<ProbabilityMap>>, DecisionError> {
+        let entries: Value = questions
+            .iter()
+            .map(|question| {
+                let criteria: Value = question
+                    .options
+                    .iter()
+                    .map(|option| (option.key.clone(), json!(option.description)))
+                    .collect();
+                (
+                    question.name.clone(),
+                    json!({
+                        "type": "choice",
+                        "instructions": question.instructions,
+                        "criteria": criteria,
+                    }),
+                )
+            })
+            .collect();
+        let body = json!({
+            "model": self.model,
+            "state": state,
+            "questions": entries,
+            "keep_alive": "10m",
+        });
+        let reply = self.post_systemone(body).await?;
+        let maps: Vec<Option<ProbabilityMap>> = questions
+            .iter()
+            .map(|question| {
+                reply
+                    .get("answers")
+                    .and_then(|answers| answers.get(&question.name))
+                    .and_then(ProbabilityMap::from_value)
+            })
+            .collect();
+        // The favourites ride the log — the model's per-transition
+        // read of the walk.
+        for (question, map) in questions.iter().zip(maps.iter()) {
+            if let Some(favourite) = map.as_ref().and_then(ProbabilityMap::favourite) {
+                tracing::info!(
+                    transition = %question.name,
+                    pick = favourite.0,
+                    probability = favourite.1,
+                    "the counsellor ranked the walk's step"
+                );
+            }
+        }
+        Ok(maps)
     }
 
     fn warm_up(&self) -> impl std::future::Future<Output = ()> + Send {
@@ -406,6 +512,7 @@ pub fn spawn<C: DecisionClient + Send + Sync + 'static>(
                                 turn.current,
                                 &dynamic_curve,
                                 turn.integrity,
+                                &turn.form_summary,
                                 &mut rng,
                             );
                             if let Some(plan) = walked.await {
@@ -521,6 +628,7 @@ mod tests {
     struct MockClient {
         replies: std::sync::Mutex<Vec<Result<DecisionOutcome, DecisionError>>>,
         noul_replies: std::sync::Mutex<Vec<Result<Vec<Option<bool>>, DecisionError>>>,
+        ranked_replies: std::sync::Mutex<Vec<Result<Vec<Option<ProbabilityMap>>, DecisionError>>>,
     }
 
     impl DecisionClient for MockClient {
@@ -534,6 +642,14 @@ mod tests {
             _questions: &[NoulQuestion],
         ) -> Result<Vec<Option<bool>>, DecisionError> {
             self.noul_replies.lock().unwrap().remove(0)
+        }
+
+        async fn decide_ranked(
+            &self,
+            _state: &Value,
+            _questions: &[RankedQuestion],
+        ) -> Result<Vec<Option<ProbabilityMap>>, DecisionError> {
+            self.ranked_replies.lock().unwrap().remove(0)
         }
     }
 
@@ -602,6 +718,61 @@ mod tests {
     }
 
     #[test]
+    fn a_probability_map_reads_the_distribution() {
+        let answer = json!({ "choice": "b", "probabilities": { "a": 0.2, "b": 0.7 } });
+        let map = ProbabilityMap::from_value(&answer).unwrap();
+        assert_eq!(map.probability("b"), Some(0.7));
+        assert_eq!(map.probability("unscored"), None);
+        assert_eq!(map.favourite(), Some(("b", 0.7)));
+    }
+
+    #[test]
+    fn a_mapless_or_malformed_answer_has_no_distribution() {
+        // No probabilities at all…
+        assert!(
+            ProbabilityMap::from_value(&json!({ "choice": "b" })).is_none(),
+            "mapless: fail closed"
+        );
+        // …and a probabilities that isn't an object.
+        assert!(
+            ProbabilityMap::from_value(&json!({ "probabilities": "strong" })).is_none(),
+            "not an object: fail closed"
+        );
+        // A bad ENTRY, though, only unscores that key — the rest of
+        // the distribution survives.
+        let map = ProbabilityMap::from_value(&json!({ "probabilities": { "a": "strong" } }));
+        assert_eq!(map.and_then(|map| map.probability("a")), None);
+    }
+
+    #[tokio::test]
+    async fn a_turn_request_walks_ranked_and_lands() {
+        let (tx, mut view) = spawn(MockClient {
+            replies: std::sync::Mutex::new(vec![Ok(DecisionOutcome {
+                choice: Some("arc+climb".into()),
+                confidence: 0.9,
+            })]),
+            noul_replies: std::sync::Mutex::new(Vec::new()),
+            ranked_replies: std::sync::Mutex::new(vec![Ok(Vec::new())]),
+        });
+        tx.send(CounselRequest::Turn(TurnRequest {
+            current: 0,
+            contour: crate::curve::ContourShape::Arc,
+            dynamic: crate::curve::DynamicShape::Climb,
+            integrity: 1.0,
+            form_summary: json!({ "state": "home" }),
+            seed: 7,
+        }))
+        .await
+        .expect("the request queues");
+        view.changed().await.expect("the turn lands");
+        let turn = view.latest().expect("the counselled turn is live");
+        assert_eq!(turn.contour_shape, "arc");
+        assert_eq!(turn.dynamic_shape, "climb");
+        // The walk stays grammatical — the validator's own rules.
+        assert!(crate::harmony::validate(&turn.plan, None).is_ok());
+    }
+
+    #[test]
     fn a_clear_noul_opinion_is_taken() {
         let reply = json!({ "answers": { "change": { "noul": 0.72 } } });
         assert_eq!(SystemOneClient::parse_noul(&reply, "change"), Some(true));
@@ -648,6 +819,7 @@ mod tests {
                 None,
                 Some(false),
             ])]),
+            ranked_replies: std::sync::Mutex::new(Vec::new()),
         });
         tx.send(CounselRequest::Form(FormRequest {
             generation: 5,
@@ -671,6 +843,7 @@ mod tests {
         let (tx, mut view) = spawn(MockClient {
             replies: std::sync::Mutex::new(Vec::new()),
             noul_replies: std::sync::Mutex::new(vec![Ok(vec![Some(true)])]),
+            ranked_replies: std::sync::Mutex::new(Vec::new()),
         });
         tx.send(CounselRequest::Form(FormRequest {
             generation: 2,

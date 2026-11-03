@@ -23,7 +23,7 @@ use rand::RngExt;
 use scalevec::Scale;
 use serde_json::json;
 
-use crate::counsellor::{ChoiceOption, Decision, DecisionClient};
+use crate::counsellor::{ChoiceOption, DecisionClient, ProbabilityMap, RankedQuestion};
 use crate::curve::Curve;
 use crate::harmony::{
     voice_leap_is_fine, Function, HarmonyPlan, PlanSlot, Quality, VOCABULARY,
@@ -164,13 +164,18 @@ fn candidates_for(
 /// slots are the composer's anchors, and each middle transition follows
 /// the dynamic arc's movement target — the model's own slot kept when
 /// it already fits, else a neighbour walked to fit (exact target
-/// preferred). A phrase whose walk fails the grammar after a few tries
-/// degrades to the model's plan untouched — the walk never fails.
+/// preferred). The counsellor's per-transition distributions (by slot,
+/// `None` at the anchors) re-order each transition's candidates — the
+/// highest-probability grammatical candidate leads, an unscored chord
+/// following the scored ones. `None` rankings walk exactly as before.
+/// A phrase whose walk fails the grammar after a few tries degrades to
+/// the model's plan untouched — the walk never fails.
 pub fn realise_plan(
     plan: &HarmonyPlan,
     dynamic: &Curve,
     integrity: f32,
     rng: &mut SmallRng,
+    rankings: Option<&[Option<ProbabilityMap>]>,
 ) -> HarmonyPlan {
     if plan.slots.len() <= 2 {
         return plan.clone(); // anchors only — nothing to re-pick
@@ -188,8 +193,21 @@ pub fn realise_plan(
             } else {
                 0
             };
-            let candidates =
+            let mut candidates =
                 candidates_for(plan, slot, prev_index, prev_run, target, integrity, rng);
+            // The distribution re-orders the candidates — stable, so a
+            // chord the model never scored follows the scored ones,
+            // its shuffled order kept among the unscored.
+            if let Some(map) = rankings
+                .and_then(|rankings| rankings.get(slot))
+                .and_then(|map| map.as_ref())
+            {
+                let key = |chord: u32| {
+                    map.probability(&chord.to_string())
+                        .unwrap_or(f64::NEG_INFINITY)
+                };
+                candidates.sort_by(|a, b| key(b.chord).total_cmp(&key(a.chord)));
+            }
             match candidates.first() {
                 Some(candidate) => realised.push(*candidate),
                 None => {
@@ -231,7 +249,13 @@ fn validate_walk(plan: &HarmonyPlan) -> bool {
 /// tension open (a dominant's close), a pristine one comes home.
 pub fn walk_turn(current: usize, dynamic: &Curve, integrity: f32, rng: &mut SmallRng) -> HarmonyPlan {
     for _ in 0..6 {
-        let walked = realise_plan(&skeleton_turn(current, integrity, rng), dynamic, integrity, rng);
+        let walked = realise_plan(
+            &skeleton_turn(current, integrity, rng),
+            dynamic,
+            integrity,
+            rng,
+            None,
+        );
         if validate_walk(&walked) {
             return walked;
         }
@@ -294,91 +318,100 @@ fn skeleton_turn(current: usize, integrity: f32, rng: &mut SmallRng) -> HarmonyP
     }
 }
 
-/// The counselled walk: the fallback's turn walked with the counsellor
-/// picking each transition's chord from the same candidates the
-/// deterministic roll ranks — the model's craft riding the same rails.
-/// Any deferred or failed decision falls back to the deterministic
-/// pick; a walk that fails the grammar (retried a few times) returns
-/// None and the deterministic walk plays on.
+/// The counselled walk: the fallback's turn walked with the
+/// counsellor's probabilities ranking every transition's candidates —
+/// ONE ranked call per attempt (a question per middle transition, the
+/// candidates as criteria, the whole skeleton as the state), the
+/// highest-probability grammatical candidate leading. The
+/// distributions match by chord, so a walk that deviated from the
+/// skeleton still reads them; a failed call realises the same
+/// skeleton deterministically; a walk that fails the grammar (retried
+/// a few times) returns None and the deterministic walk plays on.
 pub async fn counselled_walk<C: DecisionClient>(
     client: &C,
     current: usize,
     dynamic: &Curve,
     integrity: f32,
+    form_summary: &serde_json::Value,
     rng: &mut SmallRng,
 ) -> Option<HarmonyPlan> {
     for _ in 0..3 {
         let skeleton = skeleton_turn(current, integrity, rng);
         let targets = movement_targets(dynamic, skeleton.slots.len());
-        let mut realised = vec![skeleton.slots[0]];
-        for (slot, &target) in targets
-            .iter()
-            .enumerate()
-            .skip(1)
-            .take(skeleton.slots.len() - 2)
-        {
-            let previous = *realised.last().unwrap();
-            let prev_index = previous.chord as usize;
-            let prev_run = if realised.len() >= 2
-                && realised[realised.len() - 2].chord == previous.chord
+        // The ranked call: one per attempt, a question per middle
+        // transition over the candidates the walk would consider from
+        // the skeleton's own chord there (a forced move needs no
+        // ranking).
+        let mut questions = Vec::new();
+        for (slot, &target) in targets.iter().enumerate().skip(1).take(skeleton.slots.len() - 2) {
+            let previous = skeleton.slots[slot - 1].chord as usize;
+            let prev_run = if slot >= 2
+                && skeleton.slots[slot - 2].chord == skeleton.slots[slot - 1].chord
             {
                 1
             } else {
                 0
             };
             let candidates =
-                candidates_for(&skeleton, slot, prev_index, prev_run, target, integrity, rng);
-            let deterministic = candidates.first().copied();
-            let picked = if candidates.len() > 1 {
-                // The counsellor's pick: the candidates described in
-                // musical words, the walk so far as the state.
-                let options: Vec<ChoiceOption> = candidates
+                candidates_for(&skeleton, slot, previous, prev_run, target, integrity, rng);
+            if candidates.len() < 2 {
+                continue;
+            }
+            questions.push(RankedQuestion {
+                name: format!("t{slot}"),
+                instructions: format!(
+                    "The walk is at {} — which chord best continues this phrase's harmonic walk? \
+                     The phrase wants about {} moving voices here.",
+                    VOCABULARY[previous].name, target
+                ),
+                options: candidates
                     .iter()
-                    .enumerate()
-                    .map(|(index, candidate)| ChoiceOption {
-                        key: index.to_string(),
+                    .map(|candidate| ChoiceOption {
+                        key: candidate.chord.to_string(),
                         description: format!(
                             "{} — {}",
                             VOCABULARY[candidate.chord as usize].name,
                             VOCABULARY[candidate.chord as usize].function.name()
                         ),
                     })
-                    .collect();
-                let walk_so_far: Vec<&str> = realised
+                    .collect(),
+            });
+        }
+        // The maps aligned back to the skeleton's slots (None at the
+        // anchors and any transition the reply skipped).
+        let mut rankings: Vec<Option<ProbabilityMap>> = vec![None; skeleton.slots.len()];
+        if !questions.is_empty() {
+            let state = json!({
+                "form": form_summary,
+                "world_integrity": integrity,
+                "walk": skeleton
+                    .slots
                     .iter()
                     .map(|slot| VOCABULARY[slot.chord as usize].name)
-                    .collect();
-                let decision = Decision {
-                    state: json!({
-                        "walk_so_far": walk_so_far,
-                        "transition": slot,
-                        "movement_target": target,
-                    }),
-                    instructions: "Which chord best continues this phrase's harmonic walk?".into(),
-                    options,
-                };
-                match client.decide(&decision).await {
-                    Ok(outcome) => outcome
-                        .choice
-                        .and_then(|key| key.parse::<usize>().ok())
-                        .and_then(|index| candidates.get(index).copied()),
-                    Err(_) => deterministic,
+                    .collect::<Vec<_>>(),
+                "movement_targets": targets,
+            });
+            match client.decide_ranked(&state, &questions).await {
+                Ok(maps) => {
+                    for (question, map) in questions.iter().zip(maps) {
+                        if let Some(slot) = question
+                            .name
+                            .strip_prefix('t')
+                            .and_then(|name| name.parse::<usize>().ok())
+                            && slot < rankings.len()
+                        {
+                            rankings[slot] = map;
+                        }
+                    }
                 }
-            } else {
-                deterministic
-            };
-            realised.push(picked.unwrap_or(skeleton.slots[slot]));
+                Err(err) => tracing::warn!(
+                    "the counsellor's ranked walk failed ({err}); the deterministic realisation plays on"
+                ),
+            }
         }
-        realised.push(skeleton.slots[skeleton.slots.len() - 1]);
-        let outcome = HarmonyPlan {
-            slots: realised,
-            curve_upper: skeleton.curve_upper.clone(),
-            curve_lower: skeleton.curve_lower.clone(),
-            curve_dynamic: skeleton.curve_dynamic.clone(),
-            intent: String::new(),
-        };
-        if validate_walk(&outcome) {
-            return Some(outcome);
+        let realised = realise_plan(&skeleton, dynamic, integrity, rng, Some(&rankings));
+        if validate_walk(&realised) {
+            return Some(realised);
         }
     }
     None
@@ -389,7 +422,79 @@ mod tests {
     use super::*;
     use crate::curve::DynamicShape;
     use crate::harmony::validate;
+    use crate::counsellor::{Decision, DecisionError, DecisionOutcome, NoulQuestion};
     use rand::SeedableRng;
+    use serde_json::Value;
+
+    /// A client whose ranked replies favour the LAST option of every
+    /// question — the walk should follow where it can. The questions
+    /// are captured for the shape assertions.
+    struct LastRankedClient {
+        asked: std::sync::Mutex<Vec<Vec<String>>>,
+    }
+
+    impl DecisionClient for LastRankedClient {
+        async fn decide(&self, _decision: &Decision) -> Result<DecisionOutcome, DecisionError> {
+            Ok(DecisionOutcome { choice: None, confidence: 0.0 })
+        }
+
+        async fn decide_noul(
+            &self,
+            _state: &Value,
+            questions: &[NoulQuestion],
+        ) -> Result<Vec<Option<bool>>, DecisionError> {
+            Ok(questions.iter().map(|_| None).collect())
+        }
+
+        async fn decide_ranked(
+            &self,
+            _state: &Value,
+            questions: &[RankedQuestion],
+        ) -> Result<Vec<Option<ProbabilityMap>>, DecisionError> {
+            self.asked.lock().unwrap().push(
+                questions
+                    .iter()
+                    .map(|question| question.options.iter().map(|o| o.key.clone()).collect())
+                    .collect(),
+            );
+            Ok(questions
+                .iter()
+                .map(|question| {
+                    let mut probabilities = serde_json::Map::new();
+                    for (index, option) in question.options.iter().enumerate() {
+                        probabilities.insert(option.key.clone(), json!(index as f64));
+                    }
+                    ProbabilityMap::from_value(&json!({ "probabilities": probabilities }))
+                })
+                .collect())
+        }
+    }
+
+    /// A client whose ranked call always fails — the deterministic
+    /// realisation plays on.
+    struct RankedErrorClient;
+
+    impl DecisionClient for RankedErrorClient {
+        async fn decide(&self, _decision: &Decision) -> Result<DecisionOutcome, DecisionError> {
+            Ok(DecisionOutcome { choice: None, confidence: 0.0 })
+        }
+
+        async fn decide_noul(
+            &self,
+            _state: &Value,
+            questions: &[NoulQuestion],
+        ) -> Result<Vec<Option<bool>>, DecisionError> {
+            Ok(questions.iter().map(|_| None).collect())
+        }
+
+        async fn decide_ranked(
+            &self,
+            _state: &Value,
+            _questions: &[RankedQuestion],
+        ) -> Result<Vec<Option<ProbabilityMap>>, DecisionError> {
+            Err(DecisionError::Invalid("the model is down".into()))
+        }
+    }
 
     fn plan_from(chords: &[u32]) -> HarmonyPlan {
         HarmonyPlan {
@@ -447,7 +552,7 @@ mod tests {
         let plan = plan_from(&[0, 9, 10, 1]);
         let settled = Curve { upper: vec![0.0, 0.0], lower: vec![0.0, 0.0] };
         let mut rng = SmallRng::seed_from_u64(7);
-        let realised = realise_plan(&plan, &settled, 1.0, &mut rng);
+        let realised = realise_plan(&plan, &settled, 1.0, &mut rng, None);
         assert_eq!(realised.slots.first().unwrap().chord, 0);
         assert_eq!(realised.slots.last().unwrap().chord, 1);
         assert!(validate(&realised, None).is_ok());
@@ -471,7 +576,7 @@ mod tests {
         // Nothing to re-pick: the plan is returned as it arrived.
         let plan = plan_from(&[0, 1]);
         let mut rng = SmallRng::seed_from_u64(3);
-        let realised = realise_plan(&plan, &DynamicShape::Climb.curve(), 1.0, &mut rng);
+        let realised = realise_plan(&plan, &DynamicShape::Climb.curve(), 1.0, &mut rng, None);
         assert_eq!(
             realised.slots.iter().map(|slot| slot.chord).collect::<Vec<_>>(),
             vec![0, 1]
@@ -486,7 +591,7 @@ mod tests {
         let plan = plan_from(&[0, 0, 1, 0]);
         let climb = DynamicShape::Climb.curve();
         let mut rng = SmallRng::seed_from_u64(11);
-        let realised = realise_plan(&plan, &climb, 1.0, &mut rng);
+        let realised = realise_plan(&plan, &climb, 1.0, &mut rng, None);
 
         assert_eq!(realised.slots.first().unwrap().chord, 0);
         assert_eq!(realised.slots.last().unwrap().chord, 0);
@@ -504,6 +609,80 @@ mod tests {
                 targets[slot + 1]
             );
         }
+    }
+
+    #[test]
+    fn the_ranking_leads_the_walk() {
+        // The same seed, two rankings: the walk's middle follows the
+        // distribution's favourite — and never leaves the target or
+        // the grammar.
+        let plan = plan_from(&[0, 9, 1]);
+        let climb = DynamicShape::Climb.curve();
+        let target = movement_targets(&climb, 3)[1];
+        let favourite = |chord: usize| {
+            let mut rankings: Vec<Option<ProbabilityMap>> = vec![None, None, None];
+            let answer = json!({ "probabilities": { (chord.to_string()): 1.0 } });
+            rankings[1] = Some(ProbabilityMap::from_value(&answer).unwrap());
+            realise_plan(&plan, &climb, 1.0, &mut SmallRng::seed_from_u64(3), Some(&rankings))
+        };
+        let grammatical = |candidate: usize| {
+            step_is_grammatical(0, 0, candidate)
+                && difference(&chord_pitch_classes(0), &chord_pitch_classes(candidate)) <= target
+        };
+        let first = neighbours(0)
+            .find(|&candidate| grammatical(candidate))
+            .expect("the start has a grammatical neighbour");
+        let with_first = favourite(first);
+        assert_eq!(with_first.slots[1].chord, first as u32);
+        assert!(validate_walk(&with_first));
+        if let Some(other) = neighbours(0).find(|&c| c != first && grammatical(c)) {
+            let with_other = favourite(other);
+            assert_eq!(with_other.slots[1].chord, other as u32);
+            assert!(validate_walk(&with_other));
+        }
+    }
+
+    #[tokio::test]
+    async fn the_counselled_walk_asks_one_ranked_call_and_lands() {
+        let client = LastRankedClient { asked: std::sync::Mutex::new(Vec::new()) };
+        let dynamic = DynamicShape::Swell.curve();
+        let ranked = counselled_walk(
+            &client,
+            0,
+            &dynamic,
+            1.0,
+            &json!({ "state": "home" }),
+            &mut SmallRng::seed_from_u64(9),
+        )
+        .await
+        .expect("the ranked walk lands");
+        // One call, its questions the middle transitions' candidate
+        // sets (chord indices as keys) — and the grammar holds.
+        let asked = client.asked.lock().unwrap();
+        assert_eq!(asked.len(), 1, "one ranked call per walk");
+        for options in asked.iter() {
+            assert!(options.len() >= 2, "a real choice: {options:?}");
+            for key in options {
+                assert!(key.parse::<usize>().is_ok(), "a chord key: {key}");
+            }
+        }
+        assert!(validate_walk(&ranked));
+        assert_eq!(ranked.slots.first().unwrap().chord, 0, "the start anchor");
+    }
+
+    #[tokio::test]
+    async fn a_failed_ranked_call_walks_deterministically() {
+        let walked = counselled_walk(
+            &RankedErrorClient,
+            0,
+            &DynamicShape::Swell.curve(),
+            1.0,
+            &json!({}),
+            &mut SmallRng::seed_from_u64(5),
+        )
+        .await
+        .expect("the deterministic realisation walks");
+        assert!(validate_walk(&walked));
     }
 
     #[test]
@@ -578,7 +757,7 @@ mod tests {
                 DynamicShape::Fade,
             ][seed as usize % 4];
             let plan = plan_from(&[0, 1, 10, 1, 0][..2 + seed as usize % 4]);
-            let realised = realise_plan(&plan, &shape.curve(), 1.0, &mut rng);
+            let realised = realise_plan(&plan, &shape.curve(), 1.0, &mut rng, None);
             assert!(validate(&realised, None).is_ok(), "seed {seed} broke the grammar");
             assert_eq!(realised.slots.first().unwrap().chord, plan.slots[0].chord);
             assert_eq!(
