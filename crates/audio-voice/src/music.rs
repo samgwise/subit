@@ -71,6 +71,12 @@ const DEGRADATION_SEMITONES: i64 = 3;
 const ATTACK_TAU: f32 = 0.5;
 /// Slow release time constant (seconds) — combat fades out over bars.
 const RELEASE_TAU: f32 = 8.0;
+/// Attack time constant (seconds) for the sustained-combat accumulator —
+/// a fight held for a few seconds fills it.
+const TENSION_ATTACK_TAU: f32 = 4.0;
+/// Release time constant (seconds) for the sustained-combat accumulator —
+/// longer than the intensity's, so a settled room is believed.
+const TENSION_RELEASE_TAU: f32 = 12.0;
 /// Lock count mapped to full intensity (deep fights sit past this).
 const FULL_INTENSITY_LOCKS: f32 = 6.0;
 /// The chord voices register their tones above this (D3); the patterns sit
@@ -835,18 +841,70 @@ pub struct Arrangement {
     pub airy: bool,
 }
 
-/// The arrangement for a slot: the drive layers the voices up — one at
-/// rest, two past a third of full flight (the floor plus the airy), three
-/// in combat. When sparse, the soloist rotates through all three (two
-/// slots each) so calm exploration never sits still, and the arrival lift
-/// (progress past 0.85) adds the airy beside the soloist: the goal's
-/// glow, audible from afar.
-pub fn arrangement(intensity: f32, progress: f32, slot: u32) -> Arrangement {
-    if intensity >= 0.66 {
-        return Arrangement { distant: true, bell: true, airy: true };
+/// The arrangement's drive tiers — the hysteresis bands over the smoothed
+/// intensity. A tier is entered at the classic threshold and left below
+/// it, so a value hovering at the boundary holds its tier instead of
+/// strobing the texture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DriveTier {
+    /// At rest — the sparse soloist rotates.
+    #[default]
+    Sparse,
+    /// Past a third of full flight — the floor plus the airy.
+    Mid,
+    /// In combat — all three voices.
+    Full,
+}
+
+/// The smoothed intensity past which the mid tier is entered.
+const MID_ENTER: f32 = 0.33;
+/// The smoothed intensity past which the full tier is entered.
+const FULL_ENTER: f32 = 0.66;
+/// The smoothed intensity below which the mid tier is left — sits below
+/// its enter, the hysteresis.
+const MID_EXIT: f32 = 0.28;
+/// The smoothed intensity below which the full tier is left.
+const FULL_EXIT: f32 = 0.58;
+
+/// The next drive tier: entered at the classic thresholds, left below
+/// them. A fall through the full tier's exit re-reads the mid tier's
+/// rules, so a collapsed intensity lands sparse at once.
+pub fn drive_tier(previous: DriveTier, intensity: f32) -> DriveTier {
+    match previous {
+        DriveTier::Sparse => {
+            if intensity >= FULL_ENTER {
+                DriveTier::Full
+            } else if intensity >= MID_ENTER {
+                DriveTier::Mid
+            } else {
+                DriveTier::Sparse
+            }
+        }
+        DriveTier::Mid => {
+            if intensity >= FULL_ENTER {
+                DriveTier::Full
+            } else if intensity < MID_EXIT {
+                DriveTier::Sparse
+            } else {
+                DriveTier::Mid
+            }
+        }
+        DriveTier::Full if intensity >= FULL_EXIT => DriveTier::Full,
+        DriveTier::Full => drive_tier(DriveTier::Mid, intensity),
     }
-    if intensity >= 0.33 {
-        return Arrangement { distant: true, bell: false, airy: true };
+}
+
+/// The arrangement for a slot at a drive tier: the tier layers the voices
+/// up — one at rest, two past a third of full flight (the floor plus the
+/// airy), three in combat. When sparse, the soloist rotates through all
+/// three (two slots each) so calm exploration never sits still, and the
+/// arrival lift (progress past 0.85) adds the airy beside the soloist:
+/// the goal's glow, audible from afar.
+pub fn arrangement_tier(tier: DriveTier, progress: f32, slot: u32) -> Arrangement {
+    match tier {
+        DriveTier::Full => return Arrangement { distant: true, bell: true, airy: true },
+        DriveTier::Mid => return Arrangement { distant: true, bell: false, airy: true },
+        DriveTier::Sparse => {}
     }
     let mut sparse = match (slot / 2) % 3 {
         0 => Arrangement { distant: true, bell: false, airy: false },
@@ -857,6 +915,13 @@ pub fn arrangement(intensity: f32, progress: f32, slot: u32) -> Arrangement {
         sparse.airy = true;
     }
     sparse
+}
+
+/// The arrangement for a memoryless read of the smoothed intensity —
+/// the classic entry bands; the performed path keeps the tier on
+/// [`MusicState`] for the hysteresis.
+pub fn arrangement(intensity: f32, progress: f32, slot: u32) -> Arrangement {
+    arrangement_tier(drive_tier(DriveTier::Sparse, intensity), progress, slot)
 }
 
 /// A set of sounding tones: (channel, note) pairs.
@@ -953,10 +1018,10 @@ pub fn current_slot_period_secs(intensity: f32) -> f64 {
     }
 }
 
-/// The density dropout: which 16th steps of the cycle sound at this smoothed
-/// intensity — quarter-note pulses when quiet, everything at full combat.
-/// Indexed by the global step modulo the cycle length, so the rhythm keeps
-/// flowing across slots of any length.
+/// The density dropout for a memoryless read of the smoothed intensity —
+/// quarter-note pulses when quiet, everything at full combat; the tests'
+/// entry point. The performed path keeps the keep-level on
+/// [`MusicState`] for the hysteresis.
 pub fn density_mask(smoothed: f32) -> [bool; 16] {
     let keep = if smoothed < 0.25 {
         2
@@ -967,11 +1032,59 @@ pub fn density_mask(smoothed: f32) -> [bool; 16] {
     } else {
         16
     };
+    density_mask_for(keep)
+}
+
+/// The density mask for a keep-level: which 16th steps of the cycle
+/// sound — indexed by the global step modulo the cycle length, so the
+/// rhythm keeps flowing across slots of any length.
+pub fn density_mask_for(keep: usize) -> [bool; 16] {
     let mut mask = [false; 16];
     for step in (0..16).step_by(16 / keep) {
         mask[step] = true;
     }
     mask
+}
+
+/// The next density keep-level from the previous one and the smoothed
+/// intensity: entered at the classic bands, left below them — the same
+/// hysteresis the drive tiers keep. A fast change walks the levels one
+/// slot at a time; the smoother's glide sets the pace.
+pub fn density_keep(previous: usize, smoothed: f32) -> usize {
+    match previous {
+        2 => {
+            if smoothed >= 0.25 {
+                4
+            } else {
+                2
+            }
+        }
+        4 => {
+            if smoothed >= 0.55 {
+                8
+            } else if smoothed < 0.20 {
+                2
+            } else {
+                4
+            }
+        }
+        8 => {
+            if smoothed >= 0.85 {
+                16
+            } else if smoothed < 0.50 {
+                4
+            } else {
+                8
+            }
+        }
+        _ => {
+            if smoothed < 0.80 {
+                8
+            } else {
+                16
+            }
+        }
+    }
 }
 
 /// The first grid boundary strictly after `now`.
@@ -1009,6 +1122,16 @@ pub struct MusicState {
     pub degraded: bool,
     /// Compressor-smoothed 0–1 intensity.
     pub intensity: f32,
+    /// The sustained-combat accumulator (0–1): how long the fight has
+    /// lasted, smoothed slower than the intensity — a flicker of locks
+    /// barely moves it, a sustained fight fills it.
+    pub combat_tension: f32,
+    /// The arrangement's drive tier — the hysteresis state for the
+    /// voices' layering (see `drive_tier`).
+    pub drive_tier: DriveTier,
+    /// The patterns' density keep-level — the hysteresis state for the
+    /// density dropout (see `density_keep`).
+    pub density_keep: usize,
     /// Chord slots elapsed — the harmonic cycle's phase.
     pub slot: u32,
     /// The intensity the harmonic rhythm plays at — it follows the smoothed
@@ -1061,6 +1184,9 @@ impl Default for MusicState {
             aggro_locks: 0,
             degraded: false,
             intensity: 0.0,
+            combat_tension: 0.0,
+            drive_tier: DriveTier::Sparse,
+            density_keep: 2,
             slot: 0,
             rhythm_intensity: 0.0,
             rhythm_hold: 0.0,
@@ -1106,6 +1232,21 @@ fn follow_rhythm(state: &mut MusicState, dt_secs: f32) {
     }
 }
 
+/// Tick the sustained-combat accumulator toward its target — 1.0 while
+/// any aggro locks are held, 0.0 at rest — with much longer time
+/// constants than the intensity smoother: the accumulator reads the
+/// fight's duration, not its flicker. Non-positive `dt` changes nothing.
+fn follow_tension(state: &mut MusicState, dt_secs: f32) {
+    let target = f32::from(state.aggro_locks > 0);
+    state.combat_tension = smooth_value(
+        state.combat_tension,
+        target,
+        TENSION_ATTACK_TAU,
+        TENSION_RELEASE_TAU,
+        dt_secs,
+    );
+}
+
 /// Tick the smoother toward the raw lock count across `dt` seconds — the
 /// mid-slot recalculation path (slots normally tick it as they render).
 pub fn retune(state: &mut MusicState, locks: u32, dt_secs: f32) {
@@ -1113,6 +1254,18 @@ pub fn retune(state: &mut MusicState, locks: u32, dt_secs: f32) {
     let target = intensity_target(locks);
     state.intensity = smooth_value(state.intensity, target, ATTACK_TAU, RELEASE_TAU, dt_secs);
     follow_rhythm(state, dt_secs);
+    follow_tension(state, dt_secs);
+}
+
+/// The sustained-combat tension past which the mid-turn cover may
+/// re-walk the fallback's turn — the fight has held long enough to be
+/// a scene, not a skirmish.
+pub const COMBAT_ONSET_TENSION: f32 = 0.5;
+
+/// Whether the accumulator crossed the onset threshold this tick —
+/// below before, at or above now: one fire per onset.
+pub fn crossed_combat_onset(previous: f32, current: f32) -> bool {
+    previous < COMBAT_ONSET_TENSION && current >= COMBAT_ONSET_TENSION
 }
 
 /// Renders chord slots deterministically from the state.
@@ -1136,6 +1289,7 @@ impl Engine {
             state.last_slot_secs as f32,
         );
         follow_rhythm(state, state.last_slot_secs as f32);
+        follow_tension(state, state.last_slot_secs as f32);
 
         // The slot's duration: a crotchet-band period, or the next entry of
         // the additive cycle at full flight — the rhythm's intensity, which
@@ -1284,7 +1438,8 @@ impl Engine {
         // enter rhythmically offset rather than in a block. The sustained
         // voices schedule generously — the daemon holds common tones
         // across the change and trims the rest with note-offs.
-        let arrangement = arrangement(state.intensity, state.objective, state.slot);
+        state.drive_tier = drive_tier(state.drive_tier, state.intensity);
+        let arrangement = arrangement_tier(state.drive_tier, state.objective, state.slot);
         let voicing: Vec<u8> = voicing_for(
             slot_chord.degree,
             slot_chord.quality,
@@ -1389,7 +1544,8 @@ impl Engine {
         // A joins at one lock; B at three, on even steps only — an
         // eighth-note shadow under A's sixteenths.
         if state.aggro_locks >= 1 {
-            let mask = density_mask(state.intensity);
+            state.density_keep = density_keep(state.density_keep, state.intensity);
+            let mask = density_mask_for(state.density_keep);
             let steps = (duration_secs / STEP_SECS).round() as usize;
             for k in 0..steps {
                 let global = state.pattern_step + k;
@@ -1716,6 +1872,44 @@ mod tests {
         // goal's glow, audible from afar.
         let lift = arrangement(0.0, 0.9, 0);
         assert!(lift.distant && lift.airy && !lift.bell);
+    }
+
+    #[test]
+    fn the_drive_tier_holds_at_a_hovering_boundary() {
+        // Enter: the classic bands, from sparse.
+        assert_eq!(drive_tier(DriveTier::Sparse, 0.33), DriveTier::Mid);
+        assert_eq!(drive_tier(DriveTier::Sparse, 0.66), DriveTier::Full);
+        // Hold: just below an enter, an occupied tier stays.
+        assert_eq!(drive_tier(DriveTier::Mid, 0.60), DriveTier::Mid);
+        assert_eq!(drive_tier(DriveTier::Full, 0.60), DriveTier::Full);
+        // Exit: below the exit, one tier down.
+        assert_eq!(drive_tier(DriveTier::Mid, 0.27), DriveTier::Sparse);
+        assert_eq!(drive_tier(DriveTier::Full, 0.57), DriveTier::Mid);
+        // A collapse falls through: full at rest lands sparse at once.
+        assert_eq!(drive_tier(DriveTier::Full, 0.0), DriveTier::Sparse);
+    }
+
+    #[test]
+    fn the_density_keep_walks_one_level_at_a_time() {
+        // Up one level per slot, whatever the jump.
+        assert_eq!(density_keep(2, 1.0), 4);
+        assert_eq!(density_keep(4, 1.0), 8);
+        assert_eq!(density_keep(8, 1.0), 16);
+        // Down one level per slot, the exits sitting below the enters.
+        assert_eq!(density_keep(16, 0.5), 8);
+        assert_eq!(density_keep(8, 0.5), 8);
+        assert_eq!(density_keep(8, 0.49), 4);
+        assert_eq!(density_keep(4, 0.1), 2);
+        // Hovering: nothing moves.
+        assert_eq!(density_keep(8, 0.55), 8);
+    }
+
+    #[test]
+    fn the_tiered_arrangement_matches_the_memoryless_bands() {
+        for &intensity in &[0.0f32, 0.32, 0.34, 0.65, 0.67, 1.0] {
+            let tier = drive_tier(DriveTier::Sparse, intensity);
+            assert_eq!(arrangement_tier(tier, 0.0, 0), arrangement(intensity, 0.0, 0));
+        }
     }
 
     #[test]
@@ -2152,6 +2346,7 @@ mod tests {
             aggro_locks: 6,
             intensity: 1.0,
             rhythm_intensity: 1.0,
+            density_keep: 16, // the clamp is under test, not the density walk
             harmony: HarmonySource::Plan {
                 slots: plan_slots(&[0, 0, 1, 0, 0, 1, 0, 0]),
                 curve: Curve {
@@ -2181,6 +2376,7 @@ mod tests {
             aggro_locks: 6,
             intensity: 1.0,
             rhythm_intensity: 1.0,
+            density_keep: 16, // the clamp is under test, not the density walk
             ..MusicState::default()
         };
         let (notes, _) = Engine::slot_notes(&mut free, 0.0);
@@ -2436,6 +2632,53 @@ mod tests {
         retune(&mut state, 0, 0.5);
         assert!(state.intensity > 0.55, "release barely falls");
         assert_eq!(state.aggro_locks, 0);
+    }
+
+    #[test]
+    fn the_tension_accumulator_builds_with_a_sustained_fight() {
+        let mut state = MusicState::default();
+        // A flicker of locks barely moves it.
+        retune(&mut state, 1, 0.1);
+        assert!(state.combat_tension < 0.05, "a flicker is not a fight");
+        // Twenty seconds of held locks fills it.
+        for _ in 0..20 {
+            retune(&mut state, 1, 1.0);
+        }
+        assert!(
+            state.combat_tension > 0.9,
+            "a sustained fight fills the accumulator"
+        );
+    }
+
+    #[test]
+    fn the_cover_fires_once_per_onset() {
+        assert!(crossed_combat_onset(0.4, 0.5));
+        assert!(!crossed_combat_onset(0.5, 0.6), "already above — no refire");
+        assert!(!crossed_combat_onset(0.6, 0.2), "falling is not an onset");
+        assert!(
+            !crossed_combat_onset(0.4, 0.49),
+            "below the threshold — not yet"
+        );
+    }
+
+    #[test]
+    fn the_tension_accumulator_eases_out_after_the_fight() {
+        let mut state = MusicState {
+            combat_tension: 1.0,
+            ..MusicState::default()
+        };
+        retune(&mut state, 0, 0.5);
+        assert!(
+            state.combat_tension > 0.9,
+            "half a second of release barely falls"
+        );
+        for _ in 0..60 {
+            retune(&mut state, 0, 1.0);
+        }
+        assert!(
+            state.combat_tension < 0.1,
+            "the accumulator empties after the fight"
+        );
     }
 
     #[test]

@@ -22,7 +22,7 @@ use audio_voice::counsellor::{
     self, CHANGE_QUESTION, CounselRequest, FormRequest, NoulQuestion, RETURN_QUESTION,
     SEQUENCE_QUESTION, TurnRequest,
 };
-use audio_voice::curve::Curve;
+use audio_voice::curve::{Curve, DynamicShape};
 use audio_voice::form::Form;
 use audio_voice::midi_log::MidiLog;
 use audio_voice::monitor::Monitor;
@@ -31,9 +31,9 @@ use audio_voice::snapshot::{EventLogEntry, SnapshotInputs, UiSnapshot, EVENT_LOG
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
 use audio_voice::music::{
-    self, advance_cycle_tiles, change_point, current_slot_period_secs, retune, tie_window, Engine,
-    HarmonySource, MusicState, CHANNEL_AIRY, CHANNEL_BASS, CHANNEL_DISTANT, CHANNEL_PATTERN_B,
-    CROTCHET_SECS, QUAVER_SECS, STUB_BPM,
+    self, advance_cycle_tiles, change_point, crossed_combat_onset, current_slot_period_secs,
+    retune, tie_window, Engine, HarmonySource, MusicState, CHANNEL_AIRY, CHANNEL_BASS,
+    CHANNEL_DISTANT, CHANNEL_PATTERN_B, CROTCHET_SECS, QUAVER_SECS, STUB_BPM,
 };
 use audio_voice::{GameEvent, EXPRESSION_CC, MOD_WHEEL_CC, NoteEvent, Quantiser, Subdivision, perform_event};
 use ensemble_client::Hub;
@@ -105,6 +105,10 @@ async fn run_conductor(monitor: Monitor, jev: bool) {
     let mut sounding: Vec<(u8, u8)> = Vec::new();
     let mut aggro_locks: u32 = 0;
     let mut last_smooth_tick = 0.0f64;
+    // The mid-turn combat cover opts in while it beds in — a sustained
+    // fight re-walks the fallback's remaining turn from the chord
+    // sounding now (`COMBAT_COVER=1`).
+    let combat_cover = std::env::var("COMBAT_COVER").is_ok_and(|value| value == "1");
     // The sustained voices' sounding tones — the common-tone legato's
     // memory (held tones skip the re-play; the rest get their note-offs).
     let mut sustained: Vec<(u8, u8)> = Vec::new();
@@ -244,6 +248,7 @@ async fn run_conductor(monitor: Monitor, jev: bool) {
                             let now = hub.now().await;
                             let dt = (now - last_smooth_tick).max(0.0) as f32;
                             last_smooth_tick = now;
+                            let prev_tension = score.combat_tension;
                             retune(&mut score, locks, dt);
 
                             let grid = if music::is_additive(score.rhythm_intensity) {
@@ -267,6 +272,39 @@ async fn run_conductor(monitor: Monitor, jev: bool) {
                                 tracing::info!(when = cut, "harmonic rhythm cut the chord short");
                                 slot_end = cut;
                                 pending_cut = true;
+                            }
+
+                            // The mid-turn combat cover: a sustained fight
+                            // — the accumulator crossing its onset this
+                            // tick — re-walks the fallback's remaining turn
+                            // from the chord sounding now, the harmony
+                            // leaning into the fight while the composer
+                            // decides. A composer plan outranks the cover,
+                            // and the re-walk only reaches slots not yet
+                            // sounded.
+                            if combat_cover
+                                && crossed_combat_onset(prev_tension, score.combat_tension)
+                                && !score.harmony.from_composer()
+                                && matches!(score.harmony, HarmonySource::Plan { .. })
+                            {
+                                let current = score.harmony.current_vocab(score.slot);
+                                let walked = network::combat_cover_turn(
+                                    current,
+                                    score.world_integrity,
+                                    &mut form_rng,
+                                );
+                                score.harmony = HarmonySource::Plan {
+                                    slots: walked.slots.clone(),
+                                    curve: score.cycle_curve.clone(),
+                                    dynamic: DynamicShape::Climb.curve(),
+                                    cursor: 0,
+                                    from_composer: false,
+                                    bass: vec![music::BassStrategy::Hug; walked.slots.len()],
+                                };
+                                tracing::info!(
+                                    slots = walked.slots.len(),
+                                    "the combat cover re-walked the turn"
+                                );
                             }
 
                             // The smoother tick and the (possibly moved)
@@ -562,6 +600,7 @@ async fn run_conductor(monitor: Monitor, jev: bool) {
                                 "world_integrity": score.world_integrity,
                                 "progress": score.objective,
                                 "just_moved": moved,
+                                "combat_tension": score.combat_tension,
                                 "drama": {
                                     "kills": drama_kills,
                                     "deaths": drama_deaths,

@@ -497,8 +497,8 @@ call per tick carrying only the questions that tick faces (an
 expiry's change and sequence, an episode's return; a quiet home
 stretch asks nothing), the state enriched with the phrase's drama
 (kills, deaths, descents, the aggro average and peak), the objective's
-progress and the stretch's arithmetic (a home cycle's length, an
-episode's cap). Each answer is a bare P(true) with no confidence of
+progress, the sustained-combat accumulator and the stretch's
+arithmetic (a home cycle's length, an episode's cap). Each answer is a bare P(true) with no confidence of
 its own — logged raw every tick — and taken only when it clears a
 coin by the same margin.
 The counsellor opts in with `--jev`; without it the deterministic
@@ -610,6 +610,9 @@ one at rest, two past a third of full flight, three in combat — and when
 sparse the soloist rotates through all three (two slots each) so calm
 exploration never sits still. The arrival lift (progress past 0.85)
 adds the airy beside the soloist — the goal's glow, audible from afar.
+The tiers keep a hysteresis — entered at the thirds, left below them —
+and the patterns' density walks one keep-level per slot, so a hovering
+intensity never strobes the texture.
 
 The idle bell plays polyrhythms: while the bass pulses its quavers, the
 bell lays N plinks evenly across each four-quaver window — 3:4, 5:4,
@@ -669,6 +672,8 @@ at note attacks. The percussive voices stay velocity-only.
 ||| Vault: min island / carved interior / mob / door open radius | 12 cells / 5×3 / 3 + 1 per 3 depths (cap 5) / 1.5 tiles |
 | Death dissolve | ~0.5 s, corruption-green eating edge |
 | Score: chord period / pattern gates / rhythm hold / smoothing | 8 → 6 → 4 → 2 crotchets, then 3+2 / 3+3+2 / 3+2+2 quavers (additive past 0.95 intensity) / A ≥1 lock, B ≥3 / 3 s before dropping down / τ 0.5 s attack, 8 s release |
+|| Sustained combat: accumulator / onset / cover | τ 4 s attack, 12 s release / 0.5, one fire per crossing / COMBAT_COVER=1 re-walks the fallback's remaining turn (climb arc, dominant-leaning cadence) |
+|| Drive hysteresis: tiers / density | enter 0.33, 0.66 — exit 0.28, 0.58 / one keep-level per slot (enters 0.25, 0.55, 0.85; exits 0.20, 0.50, 0.80) |
 ||| Bass: hug / pulses / relaxed figure / gate | every pulse hugs the curve's centre pc; sevenths fall to the next third, the leading third rises, no tone twice in a row / quavers / 6 then rest (periods of 3+ beats), continuous below / 0.6 × quaver ||| Bass characters (counselled) | hug / anchor (the root) / walk (stepwise) — one ranked call per turn, a question per slot; the plans carry the picks, all hugs otherwise |
 ||| Bass mod wheel: floor / lift rule | 24 CC / the phrase arc; a settled final slot rises monotonically to 127 |
 | Degraded zone: chromatic rotation | ±3 semitones per mapping, hash of the pitch class |
@@ -708,4 +713,5 @@ at note attacks. The percussive voices stay velocity-only.
 ## Pending and known gaps
 
 - Throwers never check line of sight before lobbing.
+- The mid-turn combat cover sleeps behind `COMBAT_COVER=1` until it has been heard in a run.
 - No persistence or rebinding UI.

@@ -572,3 +572,21 @@ call asks after them: one question per slot, the characters
 described in musical words, the favourite taking the slot. The
 plans and walks without a counsellor play byte-identically to
 Milestone 38.
+
+
+## Milestone 40 — The fight earns its entrance
+
+The conductor gained a memory of the fight's length: the sustained-combat
+accumulator — a bounded 0–1 field that fills while aggro locks are held
+and empties when they clear, on much longer time constants than the
+intensity's (a flicker of locks barely moves it, a held fight fills it).
+The counsellor's form state carries it (`combat_tension`), so a sustained
+scene is judged differently from a fresh spike. The arrangement's
+layering gained hysteresis: the drive tiers — sparse, mid, full — enter
+at the classic thirds and leave below them, and the patterns' density
+walks one keep-level per slot, so a hovering intensity holds its texture
+instead of strobing the voices. And the fallback learned to cover: with
+`COMBAT_COVER=1`, a fight sustained past the onset threshold re-walks the
+remaining turn from the chord sounding now — a rising movement profile,
+the cadence rolled toward the dominant — the harmony leaning into the
+fight while the composer decides.

@@ -24,7 +24,7 @@ use scalevec::Scale;
 use serde_json::json;
 
 use crate::counsellor::{ChoiceOption, DecisionClient, ProbabilityMap, RankedQuestion};
-use crate::curve::Curve;
+use crate::curve::{Curve, DynamicShape};
 use crate::harmony::{
     voice_leap_is_fine, Function, HarmonyPlan, PlanSlot, Quality, VOCABULARY,
 };
@@ -260,9 +260,13 @@ pub fn walk_turn(current: usize, dynamic: &Curve, integrity: f32, rng: &mut Smal
             return walked;
         }
     }
-    // The guaranteed ground: through the dominant, home — reachable and
-    // grammatical from any chord (the dim7 exempt, the rest within the
-    // span).
+    guaranteed_turn(current)
+}
+
+/// The guaranteed ground: through the dominant, home — reachable and
+/// grammatical from any chord (the dim7 exempt, the rest within the
+/// span).
+fn guaranteed_turn(current: usize) -> HarmonyPlan {
     HarmonyPlan {
         slots: [current, 10, 0]
             .iter()
@@ -275,19 +279,44 @@ pub fn walk_turn(current: usize, dynamic: &Curve, integrity: f32, rng: &mut Smal
     }
 }
 
+/// The tonic-chance the combat cover's cadence rolls with — the tension
+/// opens as the fight lands, whatever the world's mood.
+const COMBAT_DOMINANT_CHANCE: f32 = 0.25;
+
+/// The combat cover's turn: the fallback's own walk, from `current`,
+/// with a rising movement profile (the fight's build) and the cadence
+/// rolled toward the dominant. Same retries and guaranteed ground as
+/// `walk_turn`.
+pub fn combat_cover_turn(current: usize, integrity: f32, rng: &mut SmallRng) -> HarmonyPlan {
+    let dynamic = DynamicShape::Climb.curve();
+    for _ in 0..6 {
+        let walked = realise_plan(
+            &skeleton_turn(current, COMBAT_DOMINANT_CHANCE, rng),
+            &dynamic,
+            integrity,
+            rng,
+            None,
+        );
+        if validate_walk(&walked) {
+            return walked;
+        }
+    }
+    guaranteed_turn(current)
+}
+
 /// The skeleton for a turn's walk: the current chord as the start
-/// anchor, a rolled cadence (a tonic or a dominant — the world's
-/// integrity weighting the roll) as the end, the middle a loose
-/// grammatical ramble (realise_plan re-picks the middle to the
-/// movement profile anyway).
-fn skeleton_turn(current: usize, integrity: f32, rng: &mut SmallRng) -> HarmonyPlan {
+/// anchor, a rolled cadence (a tonic or a dominant — `tonic_chance`
+/// weighting the roll) as the end, the middle a loose grammatical
+/// ramble (realise_plan re-picks the middle to the movement profile
+/// anyway).
+fn skeleton_turn(current: usize, tonic_chance: f32, rng: &mut SmallRng) -> HarmonyPlan {
     let tonic_close: Vec<usize> = (0..VOCABULARY.len())
         .filter(|&index| VOCABULARY[index].function == Function::Tonic)
         .collect();
     let dominant_close: Vec<usize> = (0..VOCABULARY.len())
         .filter(|&index| VOCABULARY[index].function == Function::Dominant)
         .collect();
-    let closable = if rng.random::<f32>() < integrity {
+    let closable = if rng.random::<f32>() < tonic_chance {
         &tonic_close
     } else {
         &dominant_close
@@ -683,6 +712,20 @@ mod tests {
         .await
         .expect("the deterministic realisation walks");
         assert!(validate_walk(&walked));
+    }
+
+    #[test]
+    fn the_cover_turn_starts_at_the_current_chord_and_keeps_the_grammar() {
+        // Across seeds: the start anchor kept, the grammar held.
+        for seed in 0..64u64 {
+            let walked = combat_cover_turn(4, 0.8, &mut SmallRng::seed_from_u64(seed));
+            assert_eq!(
+                walked.slots.first().unwrap().chord,
+                4,
+                "seed {seed} forgot the sounding chord"
+            );
+            assert!(validate(&walked, None).is_ok(), "seed {seed} broke the grammar");
+        }
     }
 
     #[test]

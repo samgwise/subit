@@ -53,6 +53,8 @@ pub struct DriveView {
     pub aggro_locks: u32,
     /// Compressor-smoothed 0–1 intensity.
     pub intensity: f32,
+    /// The sustained-combat accumulator (0–1): how long the fight has lasted.
+    pub combat_tension: f32,
     /// The intensity the harmonic rhythm plays at (holds its rung).
     pub rhythm_intensity: f32,
     /// Seconds left on the rhythm's hold (0 = not holding).
@@ -300,6 +302,7 @@ impl UiSnapshot {
             drive: DriveView {
                 aggro_locks: state.aggro_locks,
                 intensity: state.intensity,
+                combat_tension: state.combat_tension,
                 rhythm_intensity: state.rhythm_intensity,
                 rhythm_hold: state.rhythm_hold,
                 degraded: state.degraded,
