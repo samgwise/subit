@@ -475,7 +475,16 @@ a clear 20-way pick scoring about 0.25), or an off-the-menu pick
 defers to the deterministic roll. The model loads in the background
 at startup (the cold load — about twenty seconds — dwarfs the
 decision timeout) and re-warms after any transport failure; a busy
-counsellor drops new requests rather than stalling the conductor.
+counsellor drops new requests rather than stalling the conductor. The
+form's live boolean rolls ride the endpoint's noul questions — one
+call per tick carrying only the questions that tick faces (an
+expiry's change and sequence, an episode's return; a quiet home
+stretch asks nothing), the state enriched with the phrase's drama
+(kills, deaths, descents, the aggro average and peak), the objective's
+progress and the stretch's arithmetic (a home cycle's length, an
+episode's cap). Each answer is a bare P(true) with no confidence of
+its own — logged raw every tick — and taken only when it clears a
+coin by the same margin.
 The counsellor opts in with `--jev`; without it the deterministic
 behaviour is the whole story.
 
@@ -521,6 +530,12 @@ change (60% — home has gravity, some cycles pass quietly). A change is a
 changes) or an **episode**: a departure to a related key — ♭III (the
 relative major), iv or v, as tonic offsets +3, +5 or +7 — for 2–4
 phrases, each rolling a 40% return chance, force-returned at the cap.
+Under `--jev` the counsellor is asked first: the live boolean rolls
+ride one noul call per phrase tick — prefetched after the previous
+tick (only when a roll is actually due), applied to the next behind a
+generation guard, an opinion taken only when it clears a coin by the
+margin (0.1); deferred, stale or failed, the loaded rolls play.
+Direction, destination, span and cycle length stay rolled.
 The key is runtime state: a tonic offset every voice resolves through —
 the pad, the bass and the patterns all transpose together, and the
 vocabulary (already degree-relative) speaks roman numerals so the same
@@ -651,6 +666,7 @@ at note attacks. The percussive voices stay velocity-only.
 || Monitor roll: window / log caps | 12 s back + 2 s ahead / 256 spans and points, 30 s trim |
 ||| Chord network: movement targets | the dynamic arc's shape at each transition — ≤⅓ holds (target 0), ≤⅔ allows one moving tone, past that two; anchors kept, walk degrades to the model's plan |
 ||| Counsellor | tev1:4b (TEV1_MODEL) via /v1/systemone / 1 s timeout / pick beats the roll by 0.1 / warm-up at spawn and after failures / --jev to enable |
+||| Form rolls (counselled) | the live rolls as noul in one call per tick (expiry asks change+sequence, an episode asks return; mid-cycle asks nothing) / state: the form's stretch arithmetic, integrity, progress, just-moved, the phrase's drama tallies / opinion taken past |P(true) − 0.5| ≥ 0.1, else the loaded 60/40 rolls |
 | Arrangement: layer thresholds / sparse rotation / arrival lift | 1 voice, 2 past 0.33, 3 past 0.66 / all three rotating, two slots each / airy added past 0.85 progress |
 | Idle bell: polyrhythms / plink gate | 3:4, 5:4, 6:4 or 7:4 per bell slot (N over the bass's four-quaver window, repeating) / 0.6 × the plink spacing |
 | Dynamics: marks ladder / phrase band / episode shade / expression | pp–ff (16–126), interpolated / 0.7–1.15 × general / one mark in an episode / CC11 on the sustained voices at each boundary |

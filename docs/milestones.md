@@ -515,3 +515,24 @@ defers to the deterministic roll; the model loads in the background at
 startup and re-warms after any transport failure. The tier opts in
 with `--jev` (the model and endpoint stay on `TEV1_MODEL` and
 `OLLAMA_URL`); without it the score plays as before.
+
+## Milestone 37 — The counsellor directs the form
+
+The form's change rolls left the dice. The boolean chances in the
+form controller — an expired home cycle moving (60%), the move being
+a one-phrase sequence rather than an episode (60%), and an episode's
+phrase returning home (40%) — became noul questions to the
+counsellor: one `/v1/systemone` call per phrase tick, asked only
+when a roll is actually due (an expiry asks change and sequence, an
+episode asks its return, a quiet home stretch asks nothing at all),
+the state enriched with the stretch's arithmetic (the home cycle's
+length, the episode's cap), the world's integrity, the objective's
+progress and the phrase's own drama tallies (kills, deaths,
+descents, the aggro average and peak). A bare P(true) comes back for
+each — logged raw every tick — and an opinion is taken only when it
+clears a coin by the margin (0.1 — the probe's own opinions, 0.496
+and 0.525, correctly defer); the prefetch fires after each tick and
+the next tick applies the reply behind a generation guard, so a late
+answer is discarded and the loaded rolls play on. The direction, the
+episode's destination and span, and the home cycle's length stay
+rolled.

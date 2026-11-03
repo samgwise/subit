@@ -13,6 +13,7 @@ use rand::RngExt;
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
 use serde::Serialize;
+use serde_json::{Value, json};
 
 use crate::music::KeyState;
 
@@ -78,6 +79,19 @@ impl Default for FormSummary {
     }
 }
 
+/// The form's dictated outcomes for one tick — `None` leaves each
+/// roll to its loaded die (the counsellor's opinions land here when
+/// the model has one worth taking).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FormDecisions {
+    /// An expired home cycle moves (true) or passes quietly (false).
+    pub change: Option<bool>,
+    /// A change is a one-phrase sequence (true) or an episode (false).
+    pub sequence: Option<bool>,
+    /// An episode's phrase returns home (true) or continues (false).
+    pub return_home: Option<bool>,
+}
+
 impl Form {
     /// A fresh form: home, with a rolled cycle.
     pub fn new(seed: u64) -> Self {
@@ -105,10 +119,11 @@ impl Form {
         }
     }
 
-    /// Advance one phrase and roll the chances. Returns whether the form
-    /// moved (a transition the daemon logs); an episode simply continuing
-    /// doesn't count.
-    pub fn tick(&mut self, rng: &mut SmallRng) -> bool {
+    /// Advance one phrase and take the chances — dictated where the
+    /// decisions carry an opinion, rolled where they don't. Returns
+    /// whether the form moved (a transition the daemon logs); an
+    /// episode simply continuing doesn't count.
+    pub fn tick(&mut self, rng: &mut SmallRng, decisions: &FormDecisions) -> bool {
         match self {
             Form::Home { phrases_left, .. } => {
                 *phrases_left -= 1;
@@ -117,11 +132,13 @@ impl Form {
                 }
                 // The cycle expired: home has gravity — some cycles pass
                 // quietly, and a quiet expiry re-rolls the next cycle.
-                if rng.random::<f32>() >= CHANGE_CHANCE {
+                let change = decisions.change.unwrap_or(rng.random::<f32>() < CHANGE_CHANCE);
+                if !change {
                     *self = Self::home(rng);
                     return false;
                 }
-                if rng.random::<f32>() < SEQUENCE_CHANCE {
+                let sequence = decisions.sequence.unwrap_or(rng.random::<f32>() < SEQUENCE_CHANCE);
+                if sequence {
                     let direction =
                         if rng.random::<bool>() { Direction::Up } else { Direction::Down };
                     *self = Form::Sequence {
@@ -144,7 +161,9 @@ impl Form {
                 true
             }
             Form::Episode { phrases_left, .. } => {
-                if rng.random::<f32>() < EPISODE_RETURN_CHANCE || *phrases_left <= 1 {
+                let return_home =
+                    decisions.return_home.unwrap_or(rng.random::<f32>() < EPISODE_RETURN_CHANCE);
+                if return_home || *phrases_left <= 1 {
                     *self = Self::home(rng);
                     true
                 } else {
@@ -152,6 +171,32 @@ impl Form {
                     false
                 }
             }
+        }
+    }
+
+    /// The counsellor's view of the form: the summary plus the
+    /// stretch's own arithmetic (a home cycle's length, an episode's
+    /// cap) so the model can read how long the state has held.
+    pub fn counsel_view(&self) -> Value {
+        let summary = self.summary();
+        match self {
+            Form::Home { phrases_left, cycle } => json!({
+                "state": summary.state,
+                "key": summary.key,
+                "phrases_left": phrases_left,
+                "cycle": cycle,
+            }),
+            Form::Sequence { .. } => json!({
+                "state": summary.state,
+                "key": summary.key,
+                "phrases_left": summary.phrases_left,
+            }),
+            Form::Episode { .. } => json!({
+                "state": summary.state,
+                "key": summary.key,
+                "phrases_left": summary.phrases_left,
+                "cap": EPISODE_MAX_PHRASES,
+            }),
         }
     }
 
@@ -185,7 +230,7 @@ mod tests {
         let mut form = Form::new(seed);
         let mut walked = vec![form.clone()];
         for _ in 0..phrases {
-            form.tick(&mut rng);
+            form.tick(&mut rng, &FormDecisions::default());
             walked.push(form.clone());
         }
         walked
@@ -213,7 +258,7 @@ mod tests {
             let mut run = 0;
             for _ in 0..60 {
                 let before = form.clone();
-                form.tick(&mut rng);
+                form.tick(&mut rng, &FormDecisions::default());
                 match (&before, &form) {
                     (Form::Episode { offset, .. }, Form::Episode { offset: after, .. }) => {
                         assert_eq!(offset, after, "an episode continues in its key");
@@ -255,8 +300,63 @@ mod tests {
                     assert!(EPISODE_OFFSETS.contains(episode));
                 }
             }
-            form.tick(&mut rng);
+            form.tick(&mut rng, &FormDecisions::default());
         }
+    }
+
+    #[test]
+    fn a_dictated_change_moves_the_form() {
+        // The cycle expires with phrases_left at 1; the dictated
+        // opinions land the move regardless of the dice.
+        let mut form = Form::Home { phrases_left: 1, cycle: 4 };
+        let decisions = FormDecisions {
+            change: Some(true),
+            sequence: Some(true),
+            return_home: None,
+        };
+        assert!(form.tick(&mut SmallRng::seed_from_u64(7), &decisions));
+        assert!(matches!(form, Form::Sequence { .. }));
+    }
+
+    #[test]
+    fn a_dictated_hold_stays_home_and_rerolls_the_cycle() {
+        let mut form = Form::Home { phrases_left: 1, cycle: 4 };
+        let decisions = FormDecisions { change: Some(false), ..Default::default() };
+        assert!(!form.tick(&mut SmallRng::seed_from_u64(7), &decisions));
+        assert!(
+            matches!(form, Form::Home { phrases_left, .. } if HOME_CYCLES.contains(&phrases_left)),
+            "a quiet expiry re-rolls the next cycle"
+        );
+    }
+
+    #[test]
+    fn a_dictated_return_goes_home() {
+        let mut form = Form::Episode { offset: 3, phrases_left: 3 };
+        let decisions = FormDecisions { return_home: Some(true), ..Default::default() };
+        assert!(form.tick(&mut SmallRng::seed_from_u64(7), &decisions));
+        assert!(matches!(form, Form::Home { .. }));
+    }
+
+    #[test]
+    fn the_forced_return_survives_a_dictated_continue() {
+        let mut form = Form::Episode { offset: 3, phrases_left: 1 };
+        let decisions = FormDecisions { return_home: Some(false), ..Default::default() };
+        assert!(form.tick(&mut SmallRng::seed_from_u64(7), &decisions));
+        assert!(matches!(form, Form::Home { .. }), "the cap is law");
+    }
+
+    #[test]
+    fn the_counsel_view_exposes_the_stretch_arithmetic() {
+        let home = Form::Home { phrases_left: 2, cycle: 6 };
+        let view = home.counsel_view();
+        assert_eq!(view["state"], "home");
+        assert_eq!(view["phrases_left"], 2);
+        assert_eq!(view["cycle"], 6);
+        let episode = Form::Episode { offset: 3, phrases_left: 2 };
+        let view = episode.counsel_view();
+        assert_eq!(view["state"], "episode");
+        assert_eq!(view["phrases_left"], 2);
+        assert_eq!(view["cap"], EPISODE_MAX_PHRASES);
     }
 
     #[test]

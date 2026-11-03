@@ -1,7 +1,8 @@
 //! The counsellor: a fast decision tier over ollama's decision models —
 //! Tev1 via the `/v1/systemone` endpoint (the Jev API). Where the
 //! composer plans phrases, the counsellor makes picks: tie-breaks,
-//! shape rolls, walk steps. Every decision fails closed — a transport
+//! shape rolls, walk steps — and answers the form's boolean
+//! questions. Every decision fails closed — a transport
 //! error, a timeout, or an answer that doesn't beat the roll it
 //! replaces defers to the deterministic roll, and the score never
 //! stalls on the model.
@@ -13,6 +14,7 @@ use rand::SeedableRng;
 use serde_json::{json, Value};
 use tokio::sync::watch;
 
+use crate::form::FormDecisions;
 use crate::harmony::HarmonyPlan;
 
 /// Seconds before a decision gives up; the fallback roll plays on.
@@ -36,6 +38,30 @@ pub struct ChoiceOption {
     pub key: String,
     pub description: String,
 }
+
+/// A boolean question — the endpoint's noul type. The answer names
+/// its P(true) directly.
+#[derive(Debug, Clone, Copy)]
+pub struct NoulQuestion {
+    pub name: &'static str,
+    pub instructions: &'static str,
+}
+
+/// The form's boolean questions — asked only when the next tick
+/// actually faces the roll, in one call.
+pub const CHANGE_QUESTION: NoulQuestion = NoulQuestion {
+    name: "change",
+    instructions: "Should the form change key for the next phrase of a generative game score?",
+};
+pub const SEQUENCE_QUESTION: NoulQuestion = NoulQuestion {
+    name: "sequence",
+    instructions: "If the form changes, should it be a brief one-phrase sequence rather than \
+        a longer episode?",
+};
+pub const RETURN_QUESTION: NoulQuestion = NoulQuestion {
+    name: "return_home",
+    instructions: "Should the episode end and the form return home now?",
+};
 
 /// One decision: the state to judge and a choice question over it.
 #[derive(Debug, Clone)]
@@ -85,6 +111,15 @@ pub trait DecisionClient {
         &self,
         decision: &Decision,
     ) -> impl std::future::Future<Output = Result<DecisionOutcome, DecisionError>> + Send;
+
+    /// The boolean questions, asked in ONE call and answered by name —
+    /// each `Some` only when the opinion clears a coin by
+    /// [`PROBABILITY_MARGIN`] (inside the band the loaded roll plays).
+    fn decide_noul(
+        &self,
+        state: &Value,
+        questions: &[NoulQuestion],
+    ) -> impl std::future::Future<Output = Result<Vec<Option<bool>>, DecisionError>> + Send;
 
     /// Bring the decision model resident — a no-op for in-memory
     /// transports. Fired at spawn and again after a transport failure,
@@ -143,21 +178,45 @@ impl DecisionClient for SystemOneClient {
             },
             "keep_alive": "10m",
         });
-        let response = self
-            .http
-            .post(format!("{}/v1/systemone", self.endpoint))
-            .json(&body)
-            .send()
-            .await
-            .map_err(DecisionError::Http)?;
-        let response = response
-            .error_for_status()
-            .map_err(|err| match err.status() {
-                Some(status) => DecisionError::Status(status.as_u16()),
-                None => DecisionError::Http(err),
-            })?;
-        let reply: Value = response.json().await.map_err(DecisionError::Http)?;
+        let reply = self.post_systemone(body).await?;
         Self::parse_reply(&reply, decision)
+    }
+
+    async fn decide_noul(
+        &self,
+        state: &Value,
+        questions: &[NoulQuestion],
+    ) -> Result<Vec<Option<bool>>, DecisionError> {
+        let entries: Value = questions
+            .iter()
+            .map(|question| {
+                (
+                    question.name.to_string(),
+                    json!({ "type": "noul", "instructions": question.instructions }),
+                )
+            })
+            .collect();
+        let body = json!({
+            "model": self.model,
+            "state": state,
+            "questions": entries,
+            "keep_alive": "10m",
+        });
+        let reply = self.post_systemone(body).await?;
+        // The raw answers ride the log — the model's own P(true) per
+        // question, taken or deferred — the cheapest way to hear what
+        // it thinks between the form's moves.
+        tracing::info!(
+            answers = %reply
+                .get("answers")
+                .map(|answers| answers.to_string())
+                .unwrap_or_default(),
+            "the counsellor's form opinions"
+        );
+        Ok(questions
+            .iter()
+            .map(|question| Self::parse_noul(&reply, question.name))
+            .collect())
     }
 
     fn warm_up(&self) -> impl std::future::Future<Output = ()> + Send {
@@ -211,6 +270,37 @@ impl DecisionClient for SystemOneClient {
 }
 
 impl SystemOneClient {
+    /// POST a built body to the system-one endpoint and return the
+    /// reply's JSON.
+    async fn post_systemone(&self, body: Value) -> Result<Value, DecisionError> {
+        let response = self
+            .http
+            .post(format!("{}/v1/systemone", self.endpoint))
+            .json(&body)
+            .send()
+            .await
+            .map_err(DecisionError::Http)?;
+        let response = response
+            .error_for_status()
+            .map_err(|err| match err.status() {
+                Some(status) => DecisionError::Status(status.as_u16()),
+                None => DecisionError::Http(err),
+            })?;
+        response.json().await.map_err(DecisionError::Http)
+    }
+
+    /// A noul answer names its P(true) directly (no confidence, no
+    /// probabilities map) — `Some` only when the opinion clears a coin
+    /// by [`PROBABILITY_MARGIN`]; a malformed or missing answer defers.
+    fn parse_noul(reply: &Value, name: &str) -> Option<bool> {
+        let probability = reply.get("answers")?.get(name)?.get("noul")?.as_f64()?;
+        if (probability - 0.5).abs() >= PROBABILITY_MARGIN {
+            Some(probability > 0.5)
+        } else {
+            None
+        }
+    }
+
     /// Map the reply's answer back to an option key — deferring (a None
     /// choice) when the pick fails to beat the roll it replaces, or
     /// the shape surprises us.
@@ -261,82 +351,117 @@ pub struct CounselledTurn {
     pub dynamic_shape: &'static str,
 }
 
-/// Spawn the counsellor task: consume turn requests, re-roll the tiles
-/// to the picked shapes and re-walk the turn with the model's picks,
-/// publishing the counselled turn on its watch channel. A failed or
-/// deferred decision publishes nothing — the deterministic walk plays
-/// on. The model warms at spawn (and again after any transport
-/// failure) — a cold load dwarfs the decision timeout. Returns the
-/// request sender and the counselled turns' view.
+/// Spawn the counsellor task: consume requests — a turn's counselled
+/// walk (re-rolling the tiles to the picked shapes, re-walking with
+/// the model's picks, publishing on the turns' watch) or a form tick's
+/// opinions (one noul call, published with its generation on the
+/// form's watch). A failed or deferred decision publishes nothing —
+/// the deterministic roll plays on. The model warms at spawn (and
+/// again after any transport failure) — a cold load dwarfs the
+/// decision timeout. Returns the request sender and the views.
 pub fn spawn<C: DecisionClient + Send + Sync + 'static>(
     client: C,
 ) -> (tokio::sync::mpsc::Sender<CounselRequest>, CounselView) {
     let (request_tx, mut request_rx) = tokio::sync::mpsc::channel::<CounselRequest>(4);
     let (turn_tx, turn_rx) = watch::channel(None);
+    let (form_tx, form_rx) = watch::channel(None);
     tokio::spawn(async move {
         client.warm_up().await;
         while let Some(request) = request_rx.recv().await {
-            // The tile pick: one call, two questions — the contour
-            // shape and the dynamic shape the walk should follow.
-            let state = json!({
-                "form": request.form_summary,
-                "world_integrity": request.integrity,
-            });
-            let decision = Decision {
-                state,
-                instructions: "Pick the shapes for the next phrase of a \
-                    generative game score, given its dramatic state."
-                    .into(),
-                options: crate::curve::shape_pair_options(),
-            };
-            let outcome = client.decide(&decision).await;
-            match outcome {
-                Ok(outcome) => {
-                    if let Some(key) = &outcome.choice {
-                        tracing::info!(
-                            pick = %key,
-                            confidence = outcome.confidence,
-                            "the counsellor picked the shapes"
-                        );
-                    }
-                    let picked = outcome
-                        .choice
-                        .as_deref()
-                        .and_then(crate::curve::shape_pair_from_key);
-                    let (contour, dynamic) =
-                        picked.unwrap_or((request.contour, request.dynamic));
-                    let dynamic_curve = dynamic.curve();
-                    let mut rng = SmallRng::seed_from_u64(request.seed);
-                    let walked = crate::network::counselled_walk(
-                        &client,
-                        request.current,
-                        &dynamic_curve,
-                        request.integrity,
-                        &mut rng,
-                    );
-                    if let Some(plan) = walked.await {
-                        let _ = turn_tx.send(Some(CounselledTurn {
-                            plan,
-                            contour_shape: contour.name(),
-                            dynamic_shape: dynamic.name(),
-                        }));
+            match request {
+                CounselRequest::Turn(turn) => {
+                    // The tile pick: one call, two questions — the
+                    // contour shape and the dynamic shape to follow.
+                    let state = json!({
+                        "form": turn.form_summary,
+                        "world_integrity": turn.integrity,
+                    });
+                    let decision = Decision {
+                        state,
+                        instructions: "Pick the shapes for the next phrase of a \
+                            generative game score, given its dramatic state."
+                            .into(),
+                        options: crate::curve::shape_pair_options(),
+                    };
+                    let outcome = client.decide(&decision).await;
+                    match outcome {
+                        Ok(outcome) => {
+                            if let Some(key) = &outcome.choice {
+                                tracing::info!(
+                                    pick = %key,
+                                    confidence = outcome.confidence,
+                                    "the counsellor picked the shapes"
+                                );
+                            }
+                            let picked = outcome
+                                .choice
+                                .as_deref()
+                                .and_then(crate::curve::shape_pair_from_key);
+                            let (contour, dynamic) =
+                                picked.unwrap_or((turn.contour, turn.dynamic));
+                            let dynamic_curve = dynamic.curve();
+                            let mut rng = SmallRng::seed_from_u64(turn.seed);
+                            let walked = crate::network::counselled_walk(
+                                &client,
+                                turn.current,
+                                &dynamic_curve,
+                                turn.integrity,
+                                &mut rng,
+                            );
+                            if let Some(plan) = walked.await {
+                                let _ = turn_tx.send(Some(CounselledTurn {
+                                    plan,
+                                    contour_shape: contour.name(),
+                                    dynamic_shape: dynamic.name(),
+                                }));
+                            }
+                        }
+                        Err(err) => {
+                            tracing::warn!("the counsellor's decision failed ({err}); the deterministic roll plays on");
+                            // A cold model times out every decision — the
+                            // load re-fires so the next turn gets decisions.
+                            client.warm_up().await;
+                        }
                     }
                 }
-                Err(err) => {
-                    tracing::warn!("the counsellor's decision failed ({err}); the deterministic roll plays on");
-                    // A cold model times out every decision — the load
-                    // re-fires so the next turn gets decisions again.
-                    client.warm_up().await;
+                CounselRequest::Form(form) => {
+                    match client.decide_noul(&form.state, form.questions).await {
+                        Ok(opinions) => {
+                            // The answers map back by question name — the
+                            // request may have carried any subset.
+                            let mut decisions = FormDecisions::default();
+                            for (question, opinion) in form.questions.iter().zip(opinions) {
+                                match question.name {
+                                    "change" => decisions.change = opinion,
+                                    "sequence" => decisions.sequence = opinion,
+                                    "return_home" => decisions.return_home = opinion,
+                                    _ => {}
+                                }
+                            }
+                            let _ = form_tx.send(Some((form.generation, decisions)));
+                        }
+                        Err(err) => tracing::warn!(
+                            "the counsellor's form opinions failed ({err}); the loaded rolls play on"
+                        ),
+                    }
                 }
             }
         }
     });
-    (request_tx, CounselView { rx: turn_rx })
+    (request_tx, CounselView { rx: turn_rx, form_rx })
+}
+
+/// A request to the counsellor task: a turn's counselled walk or the
+/// form's next-tick opinions.
+#[derive(Debug)]
+pub enum CounselRequest {
+    Turn(TurnRequest),
+    Form(FormRequest),
 }
 
 /// A turn request: everything the counselled walk needs.
 #[derive(Debug)]
-pub struct CounselRequest {
+pub struct TurnRequest {
     pub current: usize,
     pub contour: crate::curve::ContourShape,
     pub dynamic: crate::curve::DynamicShape,
@@ -346,10 +471,21 @@ pub struct CounselRequest {
     pub seed: u64,
 }
 
-/// The conductor's view of the counselled turns.
+/// A form request: the opinions asked for the next phrase tick — only
+/// the questions that tick will face. The generation guards the
+/// application — a late reply never steers a later tick.
+#[derive(Debug)]
+pub struct FormRequest {
+    pub generation: u64,
+    pub state: Value,
+    pub questions: &'static [NoulQuestion],
+}
+
+/// The conductor's view of the counsellor's outputs.
 #[derive(Clone)]
 pub struct CounselView {
     rx: watch::Receiver<Option<CounselledTurn>>,
+    form_rx: watch::Receiver<Option<(u64, FormDecisions)>>,
 }
 
 impl CounselView {
@@ -362,6 +498,19 @@ impl CounselView {
     pub async fn changed(&mut self) -> Result<(), tokio::sync::watch::error::RecvError> {
         self.rx.changed().await
     }
+
+    /// The latest form opinions with their generation (None before the
+    /// first Form request lands).
+    pub fn form_decisions(&self) -> Option<(u64, FormDecisions)> {
+        *self.form_rx.borrow()
+    }
+
+    /// Wait for the next form opinions to land.
+    pub async fn form_changed(
+        &mut self,
+    ) -> Result<(), tokio::sync::watch::error::RecvError> {
+        self.form_rx.changed().await
+    }
 }
 
 #[cfg(test)]
@@ -371,11 +520,20 @@ mod tests {
     /// A scripted client serving the queued outcomes.
     struct MockClient {
         replies: std::sync::Mutex<Vec<Result<DecisionOutcome, DecisionError>>>,
+        noul_replies: std::sync::Mutex<Vec<Result<Vec<Option<bool>>, DecisionError>>>,
     }
 
     impl DecisionClient for MockClient {
         async fn decide(&self, _decision: &Decision) -> Result<DecisionOutcome, DecisionError> {
             self.replies.lock().unwrap().remove(0)
+        }
+
+        async fn decide_noul(
+            &self,
+            _state: &Value,
+            _questions: &[NoulQuestion],
+        ) -> Result<Vec<Option<bool>>, DecisionError> {
+            self.noul_replies.lock().unwrap().remove(0)
         }
     }
 
@@ -392,7 +550,6 @@ mod tests {
 
     #[test]
     fn a_clear_pick_names_its_option() {
-        let client = SystemOneClient::new("http://127.0.0.1:1".into(), "tev1:4b".into());
         let reply = json!({
             "answers": { "pick": { "choice": "valley", "confidence": 0.9,
                 "probabilities": { "arc": 0.25, "valley": 0.75 } } }
@@ -442,6 +599,92 @@ mod tests {
         });
         let outcome = SystemOneClient::parse_reply(&reply, &decision()).unwrap();
         assert_eq!(outcome.choice, None, "no probability: fail closed");
+    }
+
+    #[test]
+    fn a_clear_noul_opinion_is_taken() {
+        let reply = json!({ "answers": { "change": { "noul": 0.72 } } });
+        assert_eq!(SystemOneClient::parse_noul(&reply, "change"), Some(true));
+        let reply = json!({ "answers": { "change": { "noul": 0.28 } } });
+        assert_eq!(SystemOneClient::parse_noul(&reply, "change"), Some(false));
+    }
+
+    #[test]
+    fn a_fenced_noul_opinion_defers() {
+        // The real probe's opinions: 0.496 and 0.525 — inside the
+        // coin-plus-margin band, the loaded roll plays.
+        for probability in [0.496_f64, 0.525, 0.55, 0.45] {
+            let reply = json!({ "answers": { "change": { "noul": probability } } });
+            assert_eq!(
+                SystemOneClient::parse_noul(&reply, "change"),
+                None,
+                "inside the band: defer ({probability})"
+            );
+        }
+    }
+
+    #[test]
+    fn a_shapeless_noul_reply_defers() {
+        assert_eq!(SystemOneClient::parse_noul(&json!({}), "change"), None);
+        assert_eq!(
+            SystemOneClient::parse_noul(&json!({ "answers": {} }), "change"),
+            None
+        );
+        assert_eq!(
+            SystemOneClient::parse_noul(
+                &json!({ "answers": { "change": { "noul": "maybe" } } }),
+                "change"
+            ),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn a_form_request_lands_its_opinions_with_their_generation() {
+        let (tx, mut view) = spawn(MockClient {
+            replies: std::sync::Mutex::new(Vec::new()),
+            noul_replies: std::sync::Mutex::new(vec![Ok(vec![
+                Some(true),
+                None,
+                Some(false),
+            ])]),
+        });
+        tx.send(CounselRequest::Form(FormRequest {
+            generation: 5,
+            state: json!({ "form": "home" }),
+            questions: &[CHANGE_QUESTION, SEQUENCE_QUESTION, RETURN_QUESTION],
+        }))
+        .await
+        .expect("the request queues");
+        view.form_changed().await.expect("the opinions land");
+        let (generation, decisions) = view.form_decisions().expect("the opinions land");
+        assert_eq!(generation, 5);
+        assert_eq!(decisions.change, Some(true));
+        assert_eq!(decisions.sequence, None);
+        assert_eq!(decisions.return_home, Some(false));
+    }
+
+    #[tokio::test]
+    async fn a_form_request_maps_a_subset_by_name() {
+        // Only the return question asked, first in the list — the
+        // mapping lands on return_home, not the first field.
+        let (tx, mut view) = spawn(MockClient {
+            replies: std::sync::Mutex::new(Vec::new()),
+            noul_replies: std::sync::Mutex::new(vec![Ok(vec![Some(true)])]),
+        });
+        tx.send(CounselRequest::Form(FormRequest {
+            generation: 2,
+            state: json!({ "form": "episode" }),
+            questions: &[RETURN_QUESTION],
+        }))
+        .await
+        .expect("the request queues");
+        view.form_changed().await.expect("the opinions land");
+        let (generation, decisions) = view.form_decisions().expect("the opinions land");
+        assert_eq!(generation, 2);
+        assert_eq!(decisions.change, None);
+        assert_eq!(decisions.sequence, None);
+        assert_eq!(decisions.return_home, Some(true));
     }
 
     #[test]

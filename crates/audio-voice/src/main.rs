@@ -18,7 +18,10 @@ use std::time::Duration;
 use audio_voice::composer::{
     EventTallies, PlanRequest, ReplanReason, ScoreContext, SlotRecord, Tally,
 };
-use audio_voice::counsellor::{self, CounselRequest};
+use audio_voice::counsellor::{
+    self, CHANGE_QUESTION, CounselRequest, FormRequest, NoulQuestion, RETURN_QUESTION,
+    SEQUENCE_QUESTION, TurnRequest,
+};
 use audio_voice::curve::Curve;
 use audio_voice::form::Form;
 use audio_voice::midi_log::MidiLog;
@@ -116,6 +119,10 @@ async fn run_conductor(monitor: Monitor, jev: bool) {
             .unwrap_or(0),
     );
     let mut form_rng = SmallRng::seed_from_u64(rand::random());
+    // The form's opinions are prefetched after each tick; the
+    // generation guards their application — a late reply never
+    // steers a later tick.
+    let mut form_generation: u64 = 0;
 
     // The composer: a slow planning tier over the engine. Accepted plans
     // arrive on the watch channel and steer the harmony until they deplete;
@@ -161,6 +168,13 @@ async fn run_conductor(monitor: Monitor, jev: bool) {
         last_replan: None,
         last_tallies: None,
     };
+    // The phrase's running drama — the slot tallies folded across the
+    // phrase — what the counsellor's form questions read at the next
+    // tick (the composer's own per-slot drain is untouched).
+    let mut drama_kills: u32 = 0;
+    let mut drama_deaths: u32 = 0;
+    let mut drama_descents: u32 = 0;
+    let mut drama_peak: u32 = 0;
     let mut last_intent: Option<String> = None;
     let mut event_log: VecDeque<EventLogEntry> = VecDeque::new();
 
@@ -428,6 +442,15 @@ async fn run_conductor(monitor: Monitor, jev: bool) {
                     history.pop_front();
                 }
 
+                // The slot's tallies, drained once and folded into the
+                // phrase's running drama — the counsellor's form
+                // questions read the phrase's total at the next tick.
+                let drained = tallies.drain();
+                drama_kills += drained.kills;
+                drama_deaths += drained.deaths;
+                drama_descents += drained.descents;
+                drama_peak = drama_peak.max(drained.aggro_peak);
+
                 // A phrase completed — a plan's last slot, or a full turn
                 // of the fallback cycle — and the form ticks: the next
                 // phrase lives wherever the form moves to.
@@ -436,9 +459,36 @@ async fn run_conductor(monitor: Monitor, jev: bool) {
                     None => music::cycle_turn_complete(score.slot),
                 };
                 if phrase_completed {
-                    if form.tick(&mut form_rng) {
+                    // The form ticks with whatever opinions landed for
+                    // this generation — a stale or absent reply leaves
+                    // the loaded rolls.
+                    let decisions = counsel_rx
+                        .as_ref()
+                        .and_then(|view| view.form_decisions())
+                        .filter(|(generation, _)| *generation + 1 == form_generation)
+                        .map(|(_, decisions)| decisions)
+                        .unwrap_or_default();
+                    // A directed move: an opinion applied to the roll
+                    // this transition actually faced.
+                    let directed = match &form {
+                        Form::Home { phrases_left, .. } => {
+                            *phrases_left == 1
+                                && (decisions.change.is_some() || decisions.sequence.is_some())
+                        }
+                        Form::Episode { .. } => decisions.return_home.is_some(),
+                        Form::Sequence { .. } => false, // a colour, not a decision
+                    };
+                    let moved = form.tick(&mut form_rng, &decisions);
+                    if moved {
                         let summary = form.summary();
                         tracing::info!(key = %summary.key, state = summary.state, "the form moved");
+                        if directed {
+                            tracing::info!(
+                                state = summary.state,
+                                key = %summary.key,
+                                "the counsellor directed the form"
+                            );
+                        }
                     }
                     score.key.tonic = form.key_offset();
                     // The cycle's next tiles: rolled from the form's RNG
@@ -474,7 +524,7 @@ async fn run_conductor(monitor: Monitor, jev: bool) {
                             // A busy counsellor must never stall the
                             // conductor — a dropped request just leaves
                             // the deterministic walk playing.
-                            let request = CounselRequest {
+                            let request = CounselRequest::Turn(TurnRequest {
                                 current,
                                 contour: score.cycle_shape,
                                 dynamic: score.cycle_dynamic_shape,
@@ -482,15 +532,55 @@ async fn run_conductor(monitor: Monitor, jev: bool) {
                                 form_summary: serde_json::to_value(form.summary())
                                     .unwrap_or(serde_json::Value::Null),
                                 seed: rand::random::<u64>(),
-                            };
+                            });
                             if let Err(err) = counsel_tx.try_send(request) {
                                 tracing::debug!("the counsellor is busy: {err}");
                             }
                         }
                     }
+                    // The form prefetch: only the questions the next
+                    // tick actually faces — an expiry's move questions,
+                    // an episode's return — and nothing at all while a
+                    // quiet home stretch runs (no roll is due). The
+                    // state carries the phrase's own drama so the model
+                    // can judge it. The conductor never waits.
+                    let questions: &[NoulQuestion] = match &form {
+                        Form::Home { phrases_left: 1, .. } => {
+                            &[CHANGE_QUESTION, SEQUENCE_QUESTION]
+                        }
+                        Form::Episode { .. } => &[RETURN_QUESTION],
+                        _ => &[],
+                    };
+                    if !questions.is_empty()
+                        && let Some(counsel_tx) = &counsel_tx
+                    {
+                        let request = CounselRequest::Form(FormRequest {
+                            generation: form_generation,
+                            state: serde_json::json!({
+                                "form": form.counsel_view(),
+                                "world_integrity": score.world_integrity,
+                                "progress": score.objective,
+                                "just_moved": moved,
+                                "drama": {
+                                    "kills": drama_kills,
+                                    "deaths": drama_deaths,
+                                    "descents": drama_descents,
+                                    "aggro_peak": drama_peak,
+                                },
+                            }),
+                            questions,
+                        });
+                        if let Err(err) = counsel_tx.try_send(request) {
+                            tracing::debug!("the counsellor is busy: {err}");
+                        }
+                    }
+                    form_generation += 1;
+                    drama_kills = 0;
+                    drama_deaths = 0;
+                    drama_descents = 0;
+                    drama_peak = 0;
                 }
 
-                let drained = tallies.drain();
                 conductor.note_tallies(drained.clone());
                 if let Some(reason) = audio_voice::composer::should_replan(
                     score.harmony.slots_remaining(),
